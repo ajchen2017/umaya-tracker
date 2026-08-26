@@ -218,7 +218,7 @@ fun HikeScreen(prefs: Prefs) {
                                     onClick = { menuExpanded = false; showIntervalDialog = true },
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("地圖與軌跡設定") },
+                                    text = { Text("警戒等級與地圖設定") },
                                     onClick = {
                                         menuExpanded = false
                                         try {

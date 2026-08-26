@@ -1,6 +1,7 @@
 const express = require('express');
 const pool = require('../db/pool');
-const { computeAlertLevel } = require('../lib/alertLevel');
+const { computeAlertLevel, resolveConfig, RANGES } = require('../lib/alertLevel');
+const { checkAdminPassword } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -23,6 +24,28 @@ router.get('/:shareToken', async (req, res) => {
 
   const alert = computeAlertLevel(pointsResult.rows, new Date(), hike.alert_config);
   res.json({ hike, points: pointsResult.rows, alert });
+});
+
+// Public read of the resolved (defaults-applied) alert thresholds + valid ranges,
+// for the settings page to pre-fill its form.
+router.get('/:shareToken/alert-config', async (req, res) => {
+  const { rows } = await pool.query('SELECT alert_config FROM hikes WHERE share_token = $1', [req.params.shareToken]);
+  if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+  res.json({ config: resolveConfig(rows[0].alert_config), ranges: RANGES });
+});
+
+// Tuning alert thresholds is admin-gated, not share-link-gated: with multiple
+// hikers each reachable via their own share link, letting anyone with a link
+// self-tune thresholds produced inconsistent, confusing behavior across hikes.
+router.put('/:shareToken/alert-config', async (req, res) => {
+  if (!checkAdminPassword(req, res)) return;
+  const resolved = resolveConfig(req.body);
+  const { rows } = await pool.query(
+    'UPDATE hikes SET alert_config = $1 WHERE share_token = $2 RETURNING id',
+    [JSON.stringify(resolved), req.params.shareToken]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+  res.json({ ok: true, config: resolved });
 });
 
 // Public route upload: whoever has the share link can attach/replace the planned
