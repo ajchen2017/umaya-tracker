@@ -31,8 +31,10 @@ import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import tw.umaya.tracker.data.ApiClient
 import tw.umaya.tracker.data.AppDatabase
 import tw.umaya.tracker.data.MARKER_LABELS
+import tw.umaya.tracker.data.PauseStateRequest
 import tw.umaya.tracker.data.Prefs
 import tw.umaya.tracker.data.TrackPoint
 import tw.umaya.tracker.data.intervalLabel
@@ -91,11 +93,13 @@ class LocationForegroundService : Service() {
                 stopLocationUpdates()
                 prefs.isPaused = true
                 updateNotification()
+                reportPauseState(true)
             }
             ACTION_RESUME -> {
                 prefs.isPaused = false
                 if (hasLocationPermission()) startLocationUpdates()
                 updateNotification()
+                reportPauseState(false)
             }
             ACTION_MARK_SOS -> markPoint("sos")
             ACTION_MARK_SAFE -> markPoint("safe")
@@ -159,6 +163,23 @@ class LocationForegroundService : Service() {
             }
         }.addOnFailureListener {
             toast("定位失敗：${it.message}")
+        }
+    }
+
+    // Best-effort, no retry: if this fails (no signal), the web page just keeps
+    // showing whatever the last successfully-delivered state was — same as any
+    // other signal from the phone. Doesn't ride SyncWorker's queue since pause
+    // state isn't a track point.
+    private fun reportPauseState(paused: Boolean) {
+        val hikeId = prefs.activeHikeId
+        val token = prefs.authToken
+        if (hikeId == -1L || token == null) return
+        scope.launch {
+            try {
+                ApiClient.service.setPauseState("Bearer $token", hikeId, PauseStateRequest(paused))
+            } catch (_: Exception) {
+                // No signal — acceptable, see comment above.
+            }
         }
     }
 

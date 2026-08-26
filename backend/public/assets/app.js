@@ -61,14 +61,28 @@ let hasCenteredOnStart = false;
 let startLatLng = null;
 let plannedRouteRendered = false;
 let lastRenderedPoints = null;
+let currentNickname = '';
+let lastPointRecordedAt = null;
 
 function fmtRelativeTime(iso) {
   const diffSec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (diffSec < 60) return '剛剛';
+  if (diffSec < 10) return '剛剛';
+  if (diffSec < 60) return `${Math.floor(diffSec)} 秒前`;
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分鐘前`;
   if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小時前`;
   return `${Math.floor(diffSec / 86400)} 天前`;
 }
+
+// Live label anchored to the hiker's current-position marker: nickname (falls
+// back to the account's display_name for hikes created before this field
+// existed) plus a relative-time readout that keeps ticking between polls.
+function buildMarkerLabel() {
+  if (!lastPointRecordedAt) return currentNickname;
+  return `${currentNickname} · ${fmtRelativeTime(lastPointRecordedAt)}`;
+}
+setInterval(() => {
+  if (lastMarker && lastPointRecordedAt) lastMarker.setTooltipContent(buildMarkerLabel());
+}, 5000);
 
 function updateLabelSize() {
   const zoom = map.getZoom();
@@ -177,9 +191,12 @@ function drawTrack(points) {
 
   // Endpoint marker (current position) always stays blue, regardless of track color.
   if (lastMarker) map.removeLayer(lastMarker);
+  lastPointRecordedAt = last.recorded_at;
   lastMarker = L.circleMarker([last.lat, last.lng], {
     radius: 8, color: '#2d7dd2', fillColor: '#4da3ff', fillOpacity: 1, weight: 3,
-  }).addTo(map);
+  })
+    .bindTooltip(buildMarkerLabel(), { permanent: true, direction: 'right', offset: [10, 0], className: 'waypoint-label' })
+    .addTo(map);
 
   sosLayer.clearLayers();
   sosPoints.forEach((p) => {
@@ -289,6 +306,8 @@ function updateHikeStatus(hike) {
   const el = document.getElementById('hikeStatus');
   if (hike.status === 'ended') {
     el.textContent = hike.ended_at ? `已結束（${fmtDateTime(hike.ended_at)}）` : '已結束';
+  } else if (hike.paused) {
+    el.textContent = '進行中（定位已暫停）';
   } else {
     el.textContent = '進行中';
   }
@@ -296,7 +315,8 @@ function updateHikeStatus(hike) {
 
 function render(data) {
   const { hike, points, alert } = data;
-  document.getElementById('hikeName').textContent = `${hike.hiker_name} · ${hike.name}`;
+  currentNickname = hike.nickname || hike.hiker_name;
+  document.getElementById('hikeName').textContent = `${currentNickname} · ${hike.name}`;
   updateAlertBanner(alert); // time-based, so must update even when no new points arrived
   updateSosAlert(alert);
   updateHikeStatus(hike);
@@ -367,6 +387,7 @@ function clearMapVisuals() {
   pointsLayer.clearLayers();
   sosLayer.clearLayers();
   if (lastMarker) { map.removeLayer(lastMarker); lastMarker = null; }
+  lastPointRecordedAt = null;
   lastPointCount = 0;
   hasCenteredOnStart = false;
   startLatLng = null;

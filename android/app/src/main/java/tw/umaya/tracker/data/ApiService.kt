@@ -17,7 +17,7 @@ data class UserDto(val id: Long, val email: String, val displayName: String, val
 
 data class RegisterRequest(val email: String, val password: String, val displayName: String)
 
-data class CreateHikeRequest(val name: String)
+data class CreateHikeRequest(val name: String, val nickname: String?)
 data class HikeDto(val id: Long, val name: String, val status: String)
 
 data class UploadPointDto(
@@ -32,6 +32,8 @@ data class UploadPointDto(
 )
 data class UploadPointsRequest(val points: List<UploadPointDto>)
 data class UploadPointsResponse(val inserted: Int, val skipped: Int)
+
+data class PauseStateRequest(val paused: Boolean)
 
 interface ApiService {
     @POST("auth/register")
@@ -64,5 +66,12 @@ interface ApiService {
         @Header("Authorization") bearer: String,
         @Path("id") hikeId: Long,
         @Body body: RequestBody,
+    ): Response<Unit>
+
+    @PATCH("hikes/{id}/pause-state")
+    suspend fun setPauseState(
+        @Header("Authorization") bearer: String,
+        @Path("id") hikeId: Long,
+        @Body body: PauseStateRequest,
     ): Response<Unit>
 }

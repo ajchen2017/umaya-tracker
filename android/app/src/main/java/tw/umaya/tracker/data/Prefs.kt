@@ -56,6 +56,11 @@ class Prefs(context: Context) {
         get() = prefs.getInt("interval_seconds", 180)
         set(value) = prefs.edit().putInt("interval_seconds", value).apply()
 
+    /** Remembers the last-entered per-hike nickname as the default for the next hike. */
+    var lastNickname: String
+        get() = prefs.getString("last_nickname", "") ?: ""
+        set(value) = prefs.edit().putString("last_nickname", value).apply()
+
     /** True while the hiker has paused GPS recording mid-hike (hike itself stays active). */
     var isPaused: Boolean
         get() = prefs.getBoolean("is_paused", false)

@@ -195,6 +195,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var hasActiveHike by remember { mutableStateOf(prefs.hasActiveHike) }
     val shareToken = prefs.shareToken // persistent per account, set at login — same link across every hike
     var hikeName by remember { mutableStateOf("") }
+    var nickname by remember { mutableStateOf(prefs.lastNickname) }
     var intervalSeconds by remember { mutableStateOf(prefs.intervalSeconds) }
     var menuExpanded by remember { mutableStateOf(false) }
     var showIntervalDialog by remember { mutableStateOf(false) }
@@ -281,6 +282,13 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     ) {
         if (!hasActiveHike) {
             OutlinedTextField(
+                value = nickname, onValueChange = { nickname = it },
+                label = { Text("暱稱（顯示給留守人看）") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+
+            OutlinedTextField(
                 value = hikeName, onValueChange = { hikeName = it },
                 label = { Text("行程名稱（例如：北大武）") },
                 modifier = Modifier.fillMaxWidth(),
@@ -296,10 +304,14 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     error = null
                     loading = true
                     prefs.intervalSeconds = intervalSeconds
+                    prefs.lastNickname = nickname
                     scope.launch {
                         try {
                             val token = prefs.authToken!!
-                            val res = ApiClient.service.createHike("Bearer $token", CreateHikeRequest(hikeName))
+                            val res = ApiClient.service.createHike(
+                                "Bearer $token",
+                                CreateHikeRequest(hikeName, nickname.ifBlank { null }),
+                            )
                             if (!res.isSuccessful) throw Exception("建立行程失敗")
                             val hike = res.body()!!
                             prefs.activeHikeId = hike.id

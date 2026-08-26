@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS hikes (
   id               SERIAL PRIMARY KEY,
   user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name             TEXT NOT NULL,
+  nickname         TEXT, -- per-hike display name, entered on the phone before starting; falls back to the account's display_name if blank
   status           TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'ended')),
+  paused           BOOLEAN NOT NULL DEFAULT false, -- hiker paused GPS recording mid-hike (see LocationForegroundService.ACTION_PAUSE); best-effort, not retried if offline
   started_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   ended_at         TIMESTAMPTZ,
   planned_route    TEXT, -- raw GPX or KML file content, as uploaded
@@ -27,6 +29,8 @@ CREATE TABLE IF NOT EXISTS hikes (
 );
 
 ALTER TABLE hikes ADD COLUMN IF NOT EXISTS alert_config JSONB;
+ALTER TABLE hikes ADD COLUMN IF NOT EXISTS paused BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE hikes ADD COLUMN IF NOT EXISTS nickname TEXT;
 -- Superseded by users.share_token (see above) — a hike-level token meant every
 -- new trip broke the family's saved link.
 ALTER TABLE hikes DROP COLUMN IF EXISTS share_token;

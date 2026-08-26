@@ -7,13 +7,18 @@ const router = express.Router();
 
 // The share token is per-user (issued at registration), not per-hike, so a
 // family's saved link keeps working across every trip the hiker records —
-// resolves to their active hike if there is one, else their most recent one.
+// resolves to the most recently started hike. Deliberately NOT "prefer any
+// active hike": a hike whose end-hike call failed (e.g. network timeout) can
+// be stuck "active" forever with no retry, and preferring it would keep
+// showing that stale orphan as 進行中 even after a later hike properly ended.
+// Recency alone is correct as long as at most one hike is genuinely active
+// at a time, which the app already enforces client-side.
 async function findHikeForShareToken(shareToken) {
   const { rows } = await pool.query(
     `SELECT h.*, u.display_name AS hiker_name
      FROM hikes h JOIN users u ON u.id = h.user_id
      WHERE u.share_token = $1
-     ORDER BY (h.status = 'active') DESC, h.started_at DESC
+     ORDER BY h.started_at DESC
      LIMIT 1`,
     [shareToken]
   );
