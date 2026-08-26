@@ -50,6 +50,8 @@ class LocationForegroundService : Service() {
         const val ACTION_MARK_SAFE = "tw.umaya.tracker.action.MARK_SAFE"
         const val ACTION_MARK_CAMPING = "tw.umaya.tracker.action.MARK_CAMPING"
         const val ACTION_UPDATE_INTERVAL = "tw.umaya.tracker.action.UPDATE_INTERVAL"
+        const val ACTION_PAUSE = "tw.umaya.tracker.action.PAUSE"
+        const val ACTION_RESUME = "tw.umaya.tracker.action.RESUME"
         private const val CHANNEL_ID = "tracking"
         private const val NOTIFICATION_ID = 1001
     }
@@ -84,7 +86,17 @@ class LocationForegroundService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_UPDATE_INTERVAL -> if (hasLocationPermission()) startLocationUpdates()
+            ACTION_UPDATE_INTERVAL -> if (hasLocationPermission() && !prefs.isPaused) startLocationUpdates()
+            ACTION_PAUSE -> {
+                stopLocationUpdates()
+                prefs.isPaused = true
+                updateNotification()
+            }
+            ACTION_RESUME -> {
+                prefs.isPaused = false
+                if (hasLocationPermission()) startLocationUpdates()
+                updateNotification()
+            }
             ACTION_MARK_SOS -> markPoint("sos")
             ACTION_MARK_SAFE -> markPoint("safe")
             ACTION_MARK_CAMPING -> markPoint("camping")
@@ -198,12 +210,19 @@ class LocationForegroundService : Service() {
             this, 0, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("行程記錄中")
-            .setContentText("正在背景記錄你的位置，每 ${intervalLabel(prefs.intervalSeconds)} 一筆")
+            .setContentTitle(if (prefs.isPaused) "行程已暫停" else "行程記錄中")
+            .setContentText(
+                if (prefs.isPaused) "定位記錄已暫停，行程仍在進行中"
+                else "正在背景記錄你的位置，每 ${intervalLabel(prefs.intervalSeconds)} 一筆"
+            )
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setOngoing(true)
             .addAction(0, "結束行程", stopPending)
             .build()
+    }
+
+    private fun updateNotification() {
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification())
     }
 
     private fun createNotificationChannel() {

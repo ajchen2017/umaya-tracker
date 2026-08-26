@@ -34,6 +34,17 @@ import tw.umaya.tracker.data.Prefs
 import tw.umaya.tracker.data.RegisterRequest
 import tw.umaya.tracker.data.intervalLabel
 import tw.umaya.tracker.location.LocationForegroundService
+import java.io.IOException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+
+/** Raw exception messages ("timeout", "Unable to resolve host…") aren't useful to a hiker. */
+private fun friendlyErrorMessage(e: Exception): String = when (e) {
+    is SocketTimeoutException -> "連線逾時，山區訊號較弱時常見，請稍後再試一次"
+    is UnknownHostException -> "連不上伺服器，請確認網路連線"
+    is IOException -> "網路連線失敗，請稍後再試一次"
+    else -> e.message ?: "發生未知錯誤"
+}
 
 /** Snaps to the fixed [INTERVAL_PRESETS] list rather than any continuous value. */
 @Composable
@@ -152,7 +163,7 @@ fun LoginScreen(prefs: Prefs, onLoggedIn: () -> Unit) {
                             onLoggedIn()
                         }
                     } catch (e: Exception) {
-                        error = e.message
+                        error = friendlyErrorMessage(e)
                     } finally {
                         loading = false
                     }
@@ -178,6 +189,7 @@ fun HikeScreen(prefs: Prefs) {
     var intervalSeconds by remember { mutableStateOf(prefs.intervalSeconds) }
     var menuExpanded by remember { mutableStateOf(false) }
     var showIntervalDialog by remember { mutableStateOf(false) }
+    var isPaused by remember { mutableStateOf(prefs.isPaused) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
 
@@ -259,7 +271,7 @@ fun HikeScreen(prefs: Prefs) {
                             hasActiveHike = true
                             shareToken = hike.shareToken
                         } catch (e: Exception) {
-                            error = e.message
+                            error = friendlyErrorMessage(e)
                         } finally {
                             loading = false
                         }
@@ -270,7 +282,7 @@ fun HikeScreen(prefs: Prefs) {
         } else {
             val shareUrl = "https://tracker.umaya.tw/t/$shareToken"
 
-            Text("行程進行中", style = MaterialTheme.typography.titleMedium)
+            Text(if (isPaused) "行程進行中（定位已暫停）" else "行程進行中", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
             Text("分享連結：$shareUrl")
             Spacer(Modifier.height(12.dp))
@@ -348,28 +360,45 @@ fun HikeScreen(prefs: Prefs) {
             }
 
             Spacer(Modifier.height(24.dp))
-            OutlinedButton(
-                onClick = {
-                    loading = true
-                    scope.launch {
-                        try {
-                            val token = prefs.authToken!!
-                            ApiClient.service.endHike("Bearer $token", prefs.activeHikeId)
-                        } catch (_: Exception) {
-                            // Ending on the server can be retried later; local stop must still proceed.
-                        } finally {
-                            context.startService(
-                                Intent(context, LocationForegroundService::class.java)
-                                    .setAction(LocationForegroundService.ACTION_STOP)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        isPaused = !isPaused
+                        prefs.isPaused = isPaused
+                        context.startService(
+                            Intent(context, LocationForegroundService::class.java).setAction(
+                                if (isPaused) LocationForegroundService.ACTION_PAUSE
+                                else LocationForegroundService.ACTION_RESUME
                             )
-                            prefs.clearActiveHike()
-                            hasActiveHike = false
-                            loading = false
+                        )
+                    },
+                ) { Text(if (isPaused) "▶️ 繼續" else "⏸ 暫停") }
+
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        loading = true
+                        scope.launch {
+                            try {
+                                val token = prefs.authToken!!
+                                ApiClient.service.endHike("Bearer $token", prefs.activeHikeId)
+                            } catch (_: Exception) {
+                                // Ending on the server can be retried later; local stop must still proceed.
+                            } finally {
+                                context.startService(
+                                    Intent(context, LocationForegroundService::class.java)
+                                        .setAction(LocationForegroundService.ACTION_STOP)
+                                )
+                                prefs.clearActiveHike()
+                                hasActiveHike = false
+                                isPaused = false
+                                loading = false
+                            }
                         }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("結束行程") }
+                    },
+                ) { Text("結束行程") }
+            }
         }
 
         error?.let {

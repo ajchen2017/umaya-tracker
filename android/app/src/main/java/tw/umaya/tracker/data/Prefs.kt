@@ -8,6 +8,7 @@ import androidx.security.crypto.MasterKey
 val INTERVAL_PRESETS = listOf(
     5 to "5 秒",
     10 to "10 秒",
+    20 to "20 秒",
     60 to "1 分鐘",
     180 to "3 分鐘",
     600 to "10 分鐘",
@@ -52,10 +53,15 @@ class Prefs(context: Context) {
         get() = prefs.getInt("interval_seconds", 180)
         set(value) = prefs.edit().putInt("interval_seconds", value).apply()
 
+    /** True while the hiker has paused GPS recording mid-hike (hike itself stays active). */
+    var isPaused: Boolean
+        get() = prefs.getBoolean("is_paused", false)
+        set(value) = prefs.edit().putBoolean("is_paused", value).apply()
+
     val isLoggedIn: Boolean get() = authToken != null
     val hasActiveHike: Boolean get() = activeHikeId != -1L
 
     fun clearActiveHike() {
-        prefs.edit().remove("active_hike_id").remove("active_share_token").apply()
+        prefs.edit().remove("active_hike_id").remove("active_share_token").remove("is_paused").apply()
     }
 }
