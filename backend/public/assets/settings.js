@@ -85,9 +85,11 @@ document.getElementById('btnUploadRoute').addEventListener('click', async () => 
   }
 });
 
+// --- Admin section: one shared password field for every admin-only action ---
+const adminSectionPassword = document.getElementById('adminSectionPassword');
+
 // --- Update RudyMap data (admin) ---
 document.getElementById('btnUpdateMap').addEventListener('click', async () => {
-  const passwordEl = document.getElementById('adminPassword');
   const statusEl = document.getElementById('mapStatus');
   const btn = document.getElementById('btnUpdateMap');
 
@@ -97,12 +99,11 @@ document.getElementById('btnUpdateMap').addEventListener('click', async () => {
     const res = await fetch('/api/admin/update-rudymap', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: passwordEl.value }),
+      body: JSON.stringify({ password: adminSectionPassword.value }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '更新失敗');
     setStatus(statusEl, `更新完成：${data.updated.join('、')}`, 'ok');
-    passwordEl.value = '';
   } catch (err) {
     setStatus(statusEl, err.message, 'err');
   } finally {
@@ -175,7 +176,6 @@ SIGNAL_CARRIERS.forEach(({ key, label, color }) => {
 });
 
 document.getElementById('btnUpdateSignalPoints').addEventListener('click', async () => {
-  const passwordEl = document.getElementById('signalAdminPassword');
   const statusEl = document.getElementById('signalStatus');
   const btn = document.getElementById('btnUpdateSignalPoints');
 
@@ -185,7 +185,7 @@ document.getElementById('btnUpdateSignalPoints').addEventListener('click', async
     const res = await fetch('/api/admin/update-signal-points', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: passwordEl.value }),
+      body: JSON.stringify({ password: adminSectionPassword.value }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '更新失敗');
@@ -196,7 +196,6 @@ document.getElementById('btnUpdateSignalPoints').addEventListener('click', async
     });
     const anyError = data.results.some((r) => r.error);
     setStatus(statusEl, lines.join('\n'), anyError ? 'err' : 'ok');
-    passwordEl.value = '';
   } catch (err) {
     setStatus(statusEl, err.message, 'err');
   } finally {

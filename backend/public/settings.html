@@ -78,6 +78,12 @@
   }
   .tierGroup { padding: 8px 0; }
   .tierGroup .tierTitle { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
+
+  .sectionTitle {
+    font-size: 14px; font-weight: 700; color: #555; margin: 20px 0 10px;
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  .sectionTitle:first-of-type { margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -88,20 +94,14 @@
   <h1>設定</h1>
 </div>
 
+<h2 class="sectionTitle">留守人設定</h2>
+
 <div class="card">
   <h2>上傳規劃路線（GPX / KML）</h2>
   <p class="hint">萬一登山者出發前忘了在手機上傳，這裡可以補傳，會直接覆蓋原本的規劃路線。</p>
   <input type="file" id="routeFile" accept=".gpx,.kml,application/gpx+xml,application/vnd.google-earth.kml+xml" />
   <button id="btnUploadRoute">上傳</button>
   <div class="status" id="routeStatus"></div>
-</div>
-
-<div class="card">
-  <h2>更新魯地圖（主圖／等高線／陰影圖）</h2>
-  <p class="hint">重新下載伺服器上最新的魯地圖資料，影響所有行程。需要管理密碼。</p>
-  <input type="password" id="adminPassword" placeholder="管理密碼" />
-  <button id="btnUpdateMap">更新</button>
-  <div class="status" id="mapStatus"></div>
 </div>
 
 <div class="card">
@@ -123,11 +123,6 @@
   </div>
 
   <div id="carrierList"></div>
-
-  <p class="hint" style="margin-top:12px;">更新可通訊點資料（自動比對林業保育署、玉山、太魯閣三個來源的檔案版本，沒變就不重新下載；雪霸資料是靜態匯入，不在這個檢查範圍內）。需要管理密碼。</p>
-  <input type="password" id="signalAdminPassword" placeholder="管理密碼" />
-  <button id="btnUpdateSignalPoints">檢查更新</button>
-  <div class="status" id="signalStatus"></div>
 </div>
 
 <div class="card">
@@ -189,6 +184,27 @@
   <div style="display:flex; gap:10px;">
     <a id="exportGpx" href="#"><button type="button">下載 GPX</button></a>
     <a id="exportKml" href="#"><button type="button">下載 KML</button></a>
+  </div>
+</div>
+
+<h2 class="sectionTitle">管理者設定</h2>
+
+<div class="card">
+  <p class="hint">以下動作影響伺服器上的共用資料（所有行程都看得到），需要管理密碼。</p>
+  <input type="password" id="adminSectionPassword" placeholder="管理密碼" />
+
+  <div class="tierGroup">
+    <div class="tierTitle">更新魯地圖（主圖／等高線／陰影圖）</div>
+    <p class="hint">重新下載伺服器上最新的魯地圖資料，影響所有行程。</p>
+    <button id="btnUpdateMap">更新</button>
+    <div class="status" id="mapStatus"></div>
+  </div>
+
+  <div class="tierGroup">
+    <div class="tierTitle">更新手機可通訊點</div>
+    <p class="hint">自動比對林業保育署、玉山、太魯閣三個來源的檔案版本，沒變就不重新下載；雪霸資料是靜態匯入，不在這個檢查範圍內。</p>
+    <button id="btnUpdateSignalPoints">檢查更新</button>
+    <div class="status" id="signalStatus"></div>
   </div>
 </div>
 </div>
