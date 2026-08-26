@@ -13,55 +13,6 @@ function setStatus(el, text, kind) {
   el.className = `status ${kind || ''}`;
 }
 
-// --- Alert level thresholds ---
-const ALERT_FIELD_IDS = {
-  greenHours: 'cfgGreenHours',
-  nightStart: 'cfgNightStart',
-  nightEnd: 'cfgNightEnd',
-  campingSilenceHours: 'cfgCampingSilenceHours',
-  dayOrangeStart: 'cfgDayOrangeStart',
-  dayOrangeEnd: 'cfgDayOrangeEnd',
-  redDayHours: 'cfgRedDayHours',
-};
-
-async function loadAlertConfig() {
-  try {
-    const res = await fetch(`/api/t/${shareToken}/alert-config`);
-    const data = await res.json();
-    for (const [key, elId] of Object.entries(ALERT_FIELD_IDS)) {
-      document.getElementById(elId).value = data.config[key];
-    }
-  } catch {
-    // leave fields blank; save will fail loudly if the user tries anyway
-  }
-}
-loadAlertConfig();
-
-document.getElementById('btnSaveAlertConfig').addEventListener('click', async () => {
-  const statusEl = document.getElementById('alertConfigStatus');
-  const body = {};
-  for (const [key, elId] of Object.entries(ALERT_FIELD_IDS)) {
-    const el = document.getElementById(elId);
-    body[key] = el.type === 'number' ? Number(el.value) : el.value;
-  }
-  try {
-    const res = await fetch(`/api/t/${shareToken}/alert-config`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || '儲存失敗');
-    // Server clamps out-of-range values — reflect what actually got saved.
-    for (const [key, elId] of Object.entries(ALERT_FIELD_IDS)) {
-      document.getElementById(elId).value = data.config[key];
-    }
-    setStatus(statusEl, '已儲存', 'ok');
-  } catch (err) {
-    setStatus(statusEl, err.message, 'err');
-  }
-});
-
 // --- Upload planned route (GPX/KML) ---
 document.getElementById('btnUploadRoute').addEventListener('click', async () => {
   const input = document.getElementById('routeFile');

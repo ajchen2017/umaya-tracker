@@ -62,22 +62,6 @@
   .carrierRow:first-of-type { border-top: none; }
   .carrierRow .dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
   .carrierRow input { width: 18px; height: 18px; margin-left: auto; }
-
-  .fieldRow {
-    display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    padding: 7px 0; border-top: 1px solid #eee; font-size: 13px;
-  }
-  .fieldRow:first-of-type { border-top: none; }
-  .fieldRow .desc { color: #444; }
-  .fieldRow .desc small { display: block; color: #999; font-size: 11px; margin-top: 1px; }
-  .fieldRow input[type=number] {
-    width: 56px; padding: 6px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; text-align: center;
-  }
-  .fieldRow input[type=time] {
-    padding: 6px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px;
-  }
-  .tierGroup { padding: 8px 0; }
-  .tierGroup .tierTitle { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
 </style>
 </head>
 <body>
@@ -128,58 +112,6 @@
   <input type="password" id="signalAdminPassword" placeholder="管理密碼" />
   <button id="btnUpdateSignalPoints">檢查更新</button>
   <div class="status" id="signalStatus"></div>
-</div>
-
-<div class="card">
-  <h2>警戒等級設定</h2>
-  <p class="hint">調整判斷 🟢🟡🟠🔴 等級的門檻，只影響這個行程。</p>
-
-  <div class="tierGroup">
-    <div class="tierTitle">🟢 綠</div>
-    <div class="fieldRow">
-      <span class="desc">N 小時內有回報視為正常<small>範圍 1–8</small></span>
-      <input type="number" id="cfgGreenHours" min="1" max="8" step="1" />
-    </div>
-  </div>
-
-  <div class="tierGroup">
-    <div class="tierTitle">🟡 黃</div>
-    <div class="fieldRow">
-      <span class="desc">夜間開始 T1</span>
-      <input type="time" id="cfgNightStart" />
-    </div>
-    <div class="fieldRow">
-      <span class="desc">夜間結束 T2（隔天）</span>
-      <input type="time" id="cfgNightEnd" />
-    </div>
-    <div class="fieldRow">
-      <span class="desc">斷訊超過 N 小時但判斷為紮營<small>範圍 3–8</small></span>
-      <input type="number" id="cfgCampingSilenceHours" min="3" max="8" step="1" />
-    </div>
-  </div>
-
-  <div class="tierGroup">
-    <div class="tierTitle">🟠 橘（白天）</div>
-    <div class="fieldRow">
-      <span class="desc">起點 N1<small>範圍 2–6</small></span>
-      <input type="number" id="cfgDayOrangeStart" min="2" max="6" step="1" />
-    </div>
-    <div class="fieldRow">
-      <span class="desc">終點 N2<small>範圍 6–12</small></span>
-      <input type="number" id="cfgDayOrangeEnd" min="6" max="12" step="1" />
-    </div>
-  </div>
-
-  <div class="tierGroup">
-    <div class="tierTitle">🔴 紅</div>
-    <div class="fieldRow">
-      <span class="desc">白天斷訊超過 N 小時<small>範圍 6–24</small></span>
-      <input type="number" id="cfgRedDayHours" min="6" max="24" step="1" />
-    </div>
-  </div>
-
-  <button id="btnSaveAlertConfig" style="margin-top:10px;">儲存</button>
-  <div class="status" id="alertConfigStatus"></div>
 </div>
 
 <div class="card">

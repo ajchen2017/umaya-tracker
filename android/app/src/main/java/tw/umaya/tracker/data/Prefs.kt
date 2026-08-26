@@ -4,6 +4,19 @@ import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
+/** Fixed set of selectable GPS-fix intervals: seconds value paired with its display label. */
+val INTERVAL_PRESETS = listOf(
+    5 to "5 秒",
+    10 to "10 秒",
+    60 to "1 分鐘",
+    180 to "3 分鐘",
+    600 to "10 分鐘",
+    3600 to "1 小時",
+)
+
+fun intervalLabel(seconds: Int): String =
+    INTERVAL_PRESETS.firstOrNull { it.first == seconds }?.second ?: "$seconds 秒"
+
 /** Local device state: auth token, the hike currently being recorded, and user settings. */
 class Prefs(context: Context) {
     private val masterKey = MasterKey.Builder(context)
@@ -28,10 +41,13 @@ class Prefs(context: Context) {
         get() = prefs.getString("active_share_token", null)
         set(value) = prefs.edit().putString("active_share_token", value).apply()
 
-    /** Minutes between GPS fixes. Configurable in-app; smaller = better tracking, worse battery. */
-    var intervalMinutes: Int
-        get() = prefs.getInt("interval_minutes", 3)
-        set(value) = prefs.edit().putInt("interval_minutes", value).apply()
+    /**
+     * Seconds between GPS fixes. Configurable in-app from a fixed preset list (see
+     * [tw.umaya.tracker.ui.INTERVAL_PRESETS]); smaller = better tracking, worse battery.
+     */
+    var intervalSeconds: Int
+        get() = prefs.getInt("interval_seconds", 180)
+        set(value) = prefs.edit().putInt("interval_seconds", value).apply()
 
     val isLoggedIn: Boolean get() = authToken != null
     val hasActiveHike: Boolean get() = activeHikeId != -1L

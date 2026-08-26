@@ -28,10 +28,26 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
 import tw.umaya.tracker.data.ApiClient
 import tw.umaya.tracker.data.CreateHikeRequest
+import tw.umaya.tracker.data.INTERVAL_PRESETS
 import tw.umaya.tracker.data.LoginRequest
 import tw.umaya.tracker.data.Prefs
 import tw.umaya.tracker.data.RegisterRequest
+import tw.umaya.tracker.data.intervalLabel
 import tw.umaya.tracker.location.LocationForegroundService
+
+/** Snaps to the fixed [INTERVAL_PRESETS] list rather than any continuous value. */
+@Composable
+private fun IntervalSlider(seconds: Int, onSecondsChange: (Int) -> Unit, onChangeFinished: () -> Unit = {}) {
+    val index = INTERVAL_PRESETS.indexOfFirst { it.first == seconds }.let { if (it < 0) 3 else it }
+    Text("定位頻率：每 ${intervalLabel(seconds)} 一筆", style = MaterialTheme.typography.bodyMedium)
+    Slider(
+        value = index.toFloat(),
+        onValueChange = { onSecondsChange(INTERVAL_PRESETS[it.toInt()].first) },
+        onValueChangeFinished = onChangeFinished,
+        valueRange = 0f..(INTERVAL_PRESETS.size - 1).toFloat(),
+        steps = INTERVAL_PRESETS.size - 2,
+    )
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -151,6 +167,7 @@ fun LoginScreen(prefs: Prefs, onLoggedIn: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HikeScreen(prefs: Prefs) {
     val context = LocalContext.current
@@ -158,17 +175,72 @@ fun HikeScreen(prefs: Prefs) {
     var hasActiveHike by remember { mutableStateOf(prefs.hasActiveHike) }
     var shareToken by remember { mutableStateOf(prefs.activeShareToken) }
     var hikeName by remember { mutableStateOf("") }
-    var intervalMinutes by remember { mutableStateOf(prefs.intervalMinutes) }
-    var showSettings by remember { mutableStateOf(false) }
+    var intervalSeconds by remember { mutableStateOf(prefs.intervalSeconds) }
+    var menuExpanded by remember { mutableStateOf(false) }
+    var showIntervalDialog by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
-    ) {
-        Text("登山健行定位追蹤", style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(24.dp))
+    if (showIntervalDialog) {
+        AlertDialog(
+            onDismissRequest = { showIntervalDialog = false },
+            title = { Text("定位頻率") },
+            text = {
+                Column { IntervalSlider(intervalSeconds, onSecondsChange = { intervalSeconds = it }) }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    prefs.intervalSeconds = intervalSeconds
+                    context.startService(
+                        Intent(context, LocationForegroundService::class.java)
+                            .setAction(LocationForegroundService.ACTION_UPDATE_INTERVAL)
+                    )
+                    showIntervalDialog = false
+                }) { Text("套用") }
+            },
+            dismissButton = { TextButton(onClick = { showIntervalDialog = false }) { Text("取消") } },
+        )
+    }
 
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("登山健行定位追蹤") },
+                actions = {
+                    if (hasActiveHike) {
+                        Box {
+                            TextButton(onClick = { menuExpanded = true }) {
+                                Text("⋮", style = MaterialTheme.typography.titleLarge)
+                            }
+                            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("定位頻率") },
+                                    onClick = { menuExpanded = false; showIntervalDialog = true },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("地圖與軌跡設定") },
+                                    onClick = {
+                                        menuExpanded = false
+                                        try {
+                                            context.startActivity(Intent(
+                                                Intent.ACTION_VIEW,
+                                                Uri.parse("https://tracker.umaya.tw/t/$shareToken/settings"),
+                                            ))
+                                        } catch (_: ActivityNotFoundException) {
+                                            Toast.makeText(context, "找不到可用的瀏覽器", Toast.LENGTH_LONG).show()
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
+                },
+            )
+        },
+    ) { paddingValues ->
+    Column(
+        modifier = Modifier.fillMaxSize().padding(paddingValues).padding(24.dp).verticalScroll(rememberScrollState()),
+    ) {
         if (!hasActiveHike) {
             OutlinedTextField(
                 value = hikeName, onValueChange = { hikeName = it },
@@ -177,13 +249,7 @@ fun HikeScreen(prefs: Prefs) {
             )
             Spacer(Modifier.height(12.dp))
 
-            Text("定位頻率：每 $intervalMinutes 分鐘一筆", style = MaterialTheme.typography.bodyMedium)
-            Slider(
-                value = intervalMinutes.toFloat(),
-                onValueChange = { intervalMinutes = it.toInt() },
-                valueRange = 1f..15f,
-                steps = 13,
-            )
+            IntervalSlider(intervalSeconds, onSecondsChange = { intervalSeconds = it })
 
             Spacer(Modifier.height(16.dp))
             Button(
@@ -191,7 +257,7 @@ fun HikeScreen(prefs: Prefs) {
                 onClick = {
                     error = null
                     loading = true
-                    prefs.intervalMinutes = intervalMinutes
+                    prefs.intervalSeconds = intervalSeconds
                     scope.launch {
                         try {
                             val token = prefs.authToken!!
@@ -259,9 +325,10 @@ fun HikeScreen(prefs: Prefs) {
 
             Spacer(Modifier.height(24.dp))
 
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                     onClick = {
                         context.startService(
@@ -273,6 +340,7 @@ fun HikeScreen(prefs: Prefs) {
 
                 OutlinedButton(
                     modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp),
                     onClick = {
                         context.startService(
                             Intent(context, LocationForegroundService::class.java)
@@ -283,6 +351,7 @@ fun HikeScreen(prefs: Prefs) {
 
                 OutlinedButton(
                     modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp),
                     onClick = {
                         context.startService(
                             Intent(context, LocationForegroundService::class.java)
@@ -290,42 +359,6 @@ fun HikeScreen(prefs: Prefs) {
                         )
                     },
                 ) { Text("⛺ 紮營中", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-            }
-
-            Spacer(Modifier.height(24.dp))
-            OutlinedButton(
-                onClick = { showSettings = !showSettings },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text(if (showSettings) "隱藏設定" else "設定") }
-
-            if (showSettings) {
-                Spacer(Modifier.height(12.dp))
-                Text("定位頻率：每 $intervalMinutes 分鐘一筆", style = MaterialTheme.typography.bodyMedium)
-                Slider(
-                    value = intervalMinutes.toFloat(),
-                    onValueChange = { intervalMinutes = it.toInt() },
-                    onValueChangeFinished = {
-                        prefs.intervalMinutes = intervalMinutes
-                        context.startService(
-                            Intent(context, LocationForegroundService::class.java)
-                                .setAction(LocationForegroundService.ACTION_UPDATE_INTERVAL)
-                        )
-                    },
-                    valueRange = 1f..15f,
-                    steps = 13,
-                )
-
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(
-                    onClick = {
-                        try {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$shareUrl/settings")))
-                        } catch (_: ActivityNotFoundException) {
-                            Toast.makeText(context, "找不到可用的瀏覽器", Toast.LENGTH_LONG).show()
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("⚠️ 警戒等級與地圖設定") }
             }
 
             Spacer(Modifier.height(24.dp))
@@ -357,5 +390,6 @@ fun HikeScreen(prefs: Prefs) {
             Spacer(Modifier.height(12.dp))
             Text(it, color = MaterialTheme.colorScheme.error)
         }
+    }
     }
 }

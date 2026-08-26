@@ -1,6 +1,6 @@
 const express = require('express');
 const pool = require('../db/pool');
-const { computeAlertLevel, resolveConfig, RANGES } = require('../lib/alertLevel');
+const { computeAlertLevel } = require('../lib/alertLevel');
 
 const router = express.Router();
 
@@ -23,26 +23,6 @@ router.get('/:shareToken', async (req, res) => {
 
   const alert = computeAlertLevel(pointsResult.rows, new Date(), hike.alert_config);
   res.json({ hike, points: pointsResult.rows, alert });
-});
-
-// Public read of the resolved (defaults-applied) alert thresholds + valid ranges,
-// for the settings page to pre-fill its form.
-router.get('/:shareToken/alert-config', async (req, res) => {
-  const { rows } = await pool.query('SELECT alert_config FROM hikes WHERE share_token = $1', [req.params.shareToken]);
-  if (!rows[0]) return res.status(404).json({ error: 'Not found' });
-  res.json({ config: resolveConfig(rows[0].alert_config), ranges: RANGES });
-});
-
-// Public write: whoever has the share link can tune the alert thresholds for
-// this hike (same trust model as route upload — the link itself is the key).
-router.put('/:shareToken/alert-config', express.json(), async (req, res) => {
-  const resolved = resolveConfig(req.body);
-  const { rows } = await pool.query(
-    'UPDATE hikes SET alert_config = $1 WHERE share_token = $2 RETURNING id',
-    [JSON.stringify(resolved), req.params.shareToken]
-  );
-  if (!rows[0]) return res.status(404).json({ error: 'Not found' });
-  res.json({ ok: true, config: resolved });
 });
 
 // Public route upload: whoever has the share link can attach/replace the planned

@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
 import tw.umaya.tracker.data.AppDatabase
 import tw.umaya.tracker.data.Prefs
 import tw.umaya.tracker.data.TrackPoint
+import tw.umaya.tracker.data.intervalLabel
 import tw.umaya.tracker.sync.SyncWorker
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -106,7 +107,7 @@ class LocationForegroundService : Service() {
     }
 
     private fun startLocationUpdates() {
-        val intervalMs = prefs.intervalMinutes * 60_000L
+        val intervalMs = prefs.intervalSeconds * 1_000L
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
             .setMinUpdateIntervalMillis(intervalMs / 2)
             .build()
@@ -198,7 +199,7 @@ class LocationForegroundService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("行程記錄中")
-            .setContentText("正在背景記錄你的位置，每 ${prefs.intervalMinutes} 分鐘一筆")
+            .setContentText("正在背景記錄你的位置，每 ${intervalLabel(prefs.intervalSeconds)} 一筆")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setOngoing(true)
             .addAction(0, "結束行程", stopPending)
