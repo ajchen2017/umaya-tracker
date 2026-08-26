@@ -80,7 +80,11 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     var loggedIn by remember { mutableStateOf(prefs.isLoggedIn) }
-                    if (loggedIn) HikeScreen(prefs) else LoginScreen(prefs) { loggedIn = true }
+                    if (loggedIn) {
+                        HikeScreen(prefs, onLoggedOut = { loggedIn = false })
+                    } else {
+                        LoginScreen(prefs) { loggedIn = true }
+                    }
                 }
             }
         }
@@ -185,7 +189,7 @@ fun LoginScreen(prefs: Prefs, onLoggedIn: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HikeScreen(prefs: Prefs) {
+fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var hasActiveHike by remember { mutableStateOf(prefs.hasActiveHike) }
@@ -242,12 +246,12 @@ fun HikeScreen(prefs: Prefs) {
             TopAppBar(
                 title = { Text("登山健行定位追蹤") },
                 actions = {
-                    if (hasActiveHike) {
-                        Box {
-                            TextButton(onClick = { menuExpanded = true }) {
-                                Text("⋮", style = MaterialTheme.typography.titleLarge)
-                            }
-                            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    Box {
+                        TextButton(onClick = { menuExpanded = true }) {
+                            Text("⋮", style = MaterialTheme.typography.titleLarge)
+                        }
+                        DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                            if (hasActiveHike) {
                                 DropdownMenuItem(
                                     text = { Text("定位頻率") },
                                     onClick = { menuExpanded = false; showIntervalDialog = true },
@@ -257,6 +261,15 @@ fun HikeScreen(prefs: Prefs) {
                                     onClick = { menuExpanded = false; routePickerLauncher.launch("*/*") },
                                 )
                             }
+                            DropdownMenuItem(
+                                text = { Text("登出") },
+                                onClick = {
+                                    menuExpanded = false
+                                    prefs.authToken = null
+                                    prefs.shareToken = null
+                                    onLoggedOut()
+                                },
+                            )
                         }
                     }
                 },
