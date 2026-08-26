@@ -1,5 +1,6 @@
 package tw.umaya.tracker.data
 
+import com.google.gson.annotations.SerializedName
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.Header
@@ -14,7 +15,12 @@ data class UserDto(val id: Long, val email: String, val displayName: String)
 data class RegisterRequest(val email: String, val password: String, val displayName: String)
 
 data class CreateHikeRequest(val name: String)
-data class HikeDto(val id: Long, val name: String, val shareToken: String, val status: String)
+data class HikeDto(
+    val id: Long,
+    val name: String,
+    @SerializedName("share_token") val shareToken: String,
+    val status: String,
+)
 
 data class UploadPointDto(
     val clientId: String,
