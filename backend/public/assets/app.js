@@ -346,6 +346,39 @@ document.getElementById('btnStart').addEventListener('click', () => {
   if (startLatLng) map.setView(startLatLng, 15);
 });
 
+// render()'s "points.length === lastPointCount → nothing new" guard never runs
+// drawTrack() again once points goes back to 0, so clear the drawn layers here
+// directly instead of waiting on the next poll to do it.
+function clearMapVisuals() {
+  polyline.setLatLngs([]);
+  pointsLayer.clearLayers();
+  sosLayer.clearLayers();
+  if (lastMarker) { map.removeLayer(lastMarker); lastMarker = null; }
+  lastPointCount = 0;
+  hasCenteredOnStart = false;
+  startLatLng = null;
+  lastRenderedPoints = null;
+  document.getElementById('btnStart').disabled = true;
+  document.getElementById('lastUpdate').textContent = '—';
+  document.getElementById('lastPos').textContent = '—';
+  const batteryEl = document.getElementById('lastBattery');
+  batteryEl.textContent = '—';
+  batteryEl.style.color = '';
+  batteryEl.style.fontWeight = '';
+}
+
+document.getElementById('btnClearTrack').addEventListener('click', async () => {
+  if (!confirm('確定要刪除這個行程目前所有的軌跡點嗎？此動作無法復原。')) return;
+  try {
+    const res = await fetch(`/api/t/${shareToken}/track`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '刪除失敗');
+    clearMapVisuals();
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
 const colorPicker = document.getElementById('colorPicker');
 const btnColorSwatch = document.getElementById('btnColorSwatch');
 

@@ -202,24 +202,3 @@ document.getElementById('btnUpdateSignalPoints').addEventListener('click', async
     btn.disabled = false;
   }
 });
-
-// --- Clear this hike's track data (share-link-gated, same trust model as route upload) ---
-document.getElementById('btnClearTrack').addEventListener('click', async () => {
-  const statusEl = document.getElementById('clearTrackStatus');
-  const btn = document.getElementById('btnClearTrack');
-
-  if (!confirm('確定要刪除這個行程目前所有的軌跡點嗎？此動作無法復原。')) return;
-
-  btn.disabled = true;
-  setStatus(statusEl, '刪除中…', '');
-  try {
-    const res = await fetch(`/api/t/${shareToken}/track`, { method: 'DELETE' });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || '刪除失敗');
-    setStatus(statusEl, `已刪除 ${data.deleted} 筆軌跡點`, 'ok');
-  } catch (err) {
-    setStatus(statusEl, err.message, 'err');
-  } finally {
-    btn.disabled = false;
-  }
-});
