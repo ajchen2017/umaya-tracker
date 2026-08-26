@@ -217,20 +217,6 @@ fun HikeScreen(prefs: Prefs) {
                                     text = { Text("定位頻率") },
                                     onClick = { menuExpanded = false; showIntervalDialog = true },
                                 )
-                                DropdownMenuItem(
-                                    text = { Text("警戒等級與地圖設定") },
-                                    onClick = {
-                                        menuExpanded = false
-                                        try {
-                                            context.startActivity(Intent(
-                                                Intent.ACTION_VIEW,
-                                                Uri.parse("https://tracker.umaya.tw/t/$shareToken/settings"),
-                                            ))
-                                        } catch (_: ActivityNotFoundException) {
-                                            Toast.makeText(context, "找不到可用的瀏覽器", Toast.LENGTH_LONG).show()
-                                        }
-                                    },
-                                )
                             }
                         }
                     }
