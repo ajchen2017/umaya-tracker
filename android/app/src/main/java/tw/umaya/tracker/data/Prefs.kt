@@ -41,9 +41,12 @@ class Prefs(context: Context) {
         get() = prefs.getLong("active_hike_id", -1L)
         set(value) = prefs.edit().putLong("active_hike_id", value).apply()
 
-    var activeShareToken: String?
-        get() = prefs.getString("active_share_token", null)
-        set(value) = prefs.edit().putString("active_share_token", value).apply()
+    /** Set once at login/register — persistent per account, not per hike, so the
+     *  family's link keeps working across every trip instead of breaking each time
+     *  a new hike starts. */
+    var shareToken: String?
+        get() = prefs.getString("share_token", null)
+        set(value) = prefs.edit().putString("share_token", value).apply()
 
     /**
      * Seconds between GPS fixes. Configurable in-app from a fixed preset list (see
@@ -62,6 +65,6 @@ class Prefs(context: Context) {
     val hasActiveHike: Boolean get() = activeHikeId != -1L
 
     fun clearActiveHike() {
-        prefs.edit().remove("active_hike_id").remove("active_share_token").remove("is_paused").apply()
+        prefs.edit().remove("active_hike_id").remove("is_paused").apply()
     }
 }

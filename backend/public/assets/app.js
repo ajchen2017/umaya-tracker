@@ -22,6 +22,19 @@ const map = L.map('map', {
   maxBounds: RUDY_BOUNDS, maxBoundsViscosity: 1.0,
 }).setView([23.6, 121], 8);
 
+// Before the hiker's first point arrives there's nothing to center on — use the
+// guardian's own location as a more useful default than "all of Taiwan". Only
+// applies if a real point hasn't already centered the map first (hasCenteredOnStart).
+if (navigator.geolocation) {
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      if (!hasCenteredOnStart) map.setView([pos.coords.latitude, pos.coords.longitude], 16);
+    },
+    () => {}, // denied/unavailable — keep the Taiwan-wide fallback view
+    { timeout: 10000 }
+  );
+}
+
 // bounds: Leaflet never requests tiles outside this box, so the coverage edge is
 // clean map background (ocean-blue), never a stray OpenStreetMap tile bleeding in.
 const rudyLayer = L.tileLayer(RUDY_TILE_URL, {
@@ -307,7 +320,7 @@ function render(data) {
 
   if (!hasCenteredOnStart) {
     hasCenteredOnStart = true;
-    map.setView(startLatLng, 15);
+    map.setView(startLatLng, 18);
   } else {
     map.fitBounds(polyline.getBounds(), { padding: [30, 30] });
   }
@@ -343,7 +356,7 @@ function switchLayer(layer) {
 document.getElementById('btnRudy').addEventListener('click', () => switchLayer('rudy'));
 document.getElementById('btnOsm').addEventListener('click', () => switchLayer('osm'));
 document.getElementById('btnStart').addEventListener('click', () => {
-  if (startLatLng) map.setView(startLatLng, 15);
+  if (startLatLng) map.setView(startLatLng, 18);
 });
 
 // render()'s "points.length === lastPointCount → nothing new" guard never runs

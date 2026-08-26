@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../db/pool');
@@ -12,10 +13,11 @@ router.post('/register', async (req, res) => {
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
+  const shareToken = crypto.randomBytes(8).toString('hex');
   try {
     const { rows } = await pool.query(
-      'INSERT INTO users (email, password_hash, display_name) VALUES ($1, $2, $3) RETURNING id, email, display_name',
-      [email, passwordHash, displayName]
+      'INSERT INTO users (email, password_hash, display_name, share_token) VALUES ($1, $2, $3, $4) RETURNING id, email, display_name',
+      [email, passwordHash, displayName, shareToken]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -33,7 +35,10 @@ router.post('/login', async (req, res) => {
   }
 
   const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
-  res.json({ token, user: { id: user.id, email: user.email, displayName: user.display_name } });
+  res.json({
+    token,
+    user: { id: user.id, email: user.email, displayName: user.display_name, shareToken: user.share_token },
+  });
 });
 
 module.exports = router;

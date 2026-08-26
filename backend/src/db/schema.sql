@@ -6,11 +6,19 @@ CREATE TABLE IF NOT EXISTS users (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Share token lives on the user, not the hike: a family's link should keep
+-- working across every trip the hiker records, not just the one it was issued
+-- for. Nullable at first so it can be added to an existing table, then
+-- backfilled and locked down below.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS share_token TEXT UNIQUE;
+UPDATE users SET share_token = substr(md5(random()::text || clock_timestamp()::text || id::text), 1, 16)
+  WHERE share_token IS NULL;
+ALTER TABLE users ALTER COLUMN share_token SET NOT NULL;
+
 CREATE TABLE IF NOT EXISTS hikes (
   id               SERIAL PRIMARY KEY,
   user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name             TEXT NOT NULL,
-  share_token      TEXT UNIQUE NOT NULL,
   status           TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'ended')),
   started_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   ended_at         TIMESTAMPTZ,
@@ -19,6 +27,9 @@ CREATE TABLE IF NOT EXISTS hikes (
 );
 
 ALTER TABLE hikes ADD COLUMN IF NOT EXISTS alert_config JSONB;
+-- Superseded by users.share_token (see above) — a hike-level token meant every
+-- new trip broke the family's saved link.
+ALTER TABLE hikes DROP COLUMN IF EXISTS share_token;
 
 CREATE TABLE IF NOT EXISTS track_points (
   id           SERIAL PRIMARY KEY,

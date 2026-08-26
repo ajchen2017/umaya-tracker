@@ -5,15 +5,24 @@ const { checkAdminPassword } = require('../middleware/auth');
 
 const router = express.Router();
 
+// The share token is per-user (issued at registration), not per-hike, so a
+// family's saved link keeps working across every trip the hiker records —
+// resolves to their active hike if there is one, else their most recent one.
+async function findHikeForShareToken(shareToken) {
+  const { rows } = await pool.query(
+    `SELECT h.*, u.display_name AS hiker_name
+     FROM hikes h JOIN users u ON u.id = h.user_id
+     WHERE u.share_token = $1
+     ORDER BY (h.status = 'active') DESC, h.started_at DESC
+     LIMIT 1`,
+    [shareToken]
+  );
+  return rows[0] || null;
+}
+
 // Public, no auth: family view via share link.
 router.get('/:shareToken', async (req, res) => {
-  const hikeResult = await pool.query(
-    `SELECT h.id, h.name, h.status, h.started_at, h.ended_at, h.planned_route, h.alert_config, u.display_name AS hiker_name
-     FROM hikes h JOIN users u ON u.id = h.user_id
-     WHERE h.share_token = $1`,
-    [req.params.shareToken]
-  );
-  const hike = hikeResult.rows[0];
+  const hike = await findHikeForShareToken(req.params.shareToken);
   if (!hike) return res.status(404).json({ error: 'Not found' });
 
   const pointsResult = await pool.query(
@@ -29,9 +38,9 @@ router.get('/:shareToken', async (req, res) => {
 // Public read of the resolved (defaults-applied) alert thresholds + valid ranges,
 // for the settings page to pre-fill its form.
 router.get('/:shareToken/alert-config', async (req, res) => {
-  const { rows } = await pool.query('SELECT alert_config FROM hikes WHERE share_token = $1', [req.params.shareToken]);
-  if (!rows[0]) return res.status(404).json({ error: 'Not found' });
-  res.json({ config: resolveConfig(rows[0].alert_config), ranges: RANGES });
+  const hike = await findHikeForShareToken(req.params.shareToken);
+  if (!hike) return res.status(404).json({ error: 'Not found' });
+  res.json({ config: resolveConfig(hike.alert_config), ranges: RANGES });
 });
 
 // Tuning alert thresholds is admin-gated, not share-link-gated: with multiple
@@ -39,23 +48,21 @@ router.get('/:shareToken/alert-config', async (req, res) => {
 // self-tune thresholds produced inconsistent, confusing behavior across hikes.
 router.put('/:shareToken/alert-config', async (req, res) => {
   if (!checkAdminPassword(req, res)) return;
+  const hike = await findHikeForShareToken(req.params.shareToken);
+  if (!hike) return res.status(404).json({ error: 'Not found' });
   const resolved = resolveConfig(req.body);
-  const { rows } = await pool.query(
-    'UPDATE hikes SET alert_config = $1 WHERE share_token = $2 RETURNING id',
-    [JSON.stringify(resolved), req.params.shareToken]
-  );
-  if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+  await pool.query('UPDATE hikes SET alert_config = $1 WHERE id = $2', [JSON.stringify(resolved), hike.id]);
   res.json({ ok: true, config: resolved });
 });
 
 // Share-link-gated, same trust model as route upload: wipe every recorded track
-// point for this hike (e.g. clearing test data), so the hike starts recording
-// fresh. Irreversible — no undo. New points the phone is still sending land
-// normally afterwards, since this only deletes what's already in the table.
+// point for the current/most recent hike (e.g. clearing test data), so it starts
+// recording fresh. Irreversible — no undo. New points the phone is still sending
+// land normally afterwards, since this only deletes what's already in the table.
 router.delete('/:shareToken/track', async (req, res) => {
-  const { rows } = await pool.query('SELECT id FROM hikes WHERE share_token = $1', [req.params.shareToken]);
-  if (!rows[0]) return res.status(404).json({ error: 'Not found' });
-  const { rowCount } = await pool.query('DELETE FROM track_points WHERE hike_id = $1', [rows[0].id]);
+  const hike = await findHikeForShareToken(req.params.shareToken);
+  if (!hike) return res.status(404).json({ error: 'Not found' });
+  const { rowCount } = await pool.query('DELETE FROM track_points WHERE hike_id = $1', [hike.id]);
   res.json({ ok: true, deleted: rowCount });
 });
 
@@ -67,11 +74,9 @@ router.put('/:shareToken/route', express.text({ type: '*/*', limit: '5mb' }), as
     return res.status(400).json({ error: 'Request body must be a GPX or KML (XML) document' });
   }
 
-  const { rows } = await pool.query(
-    'UPDATE hikes SET planned_route = $1 WHERE share_token = $2 RETURNING id',
-    [route, req.params.shareToken]
-  );
-  if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+  const hike = await findHikeForShareToken(req.params.shareToken);
+  if (!hike) return res.status(404).json({ error: 'Not found' });
+  await pool.query('UPDATE hikes SET planned_route = $1 WHERE id = $2', [route, hike.id]);
   res.json({ ok: true });
 });
 
@@ -82,13 +87,7 @@ function escapeXml(str) {
 }
 
 async function loadHikeWithPoints(shareToken) {
-  const hikeResult = await pool.query(
-    `SELECT h.id, h.name, u.display_name AS hiker_name
-     FROM hikes h JOIN users u ON u.id = h.user_id
-     WHERE h.share_token = $1`,
-    [shareToken]
-  );
-  const hike = hikeResult.rows[0];
+  const hike = await findHikeForShareToken(shareToken);
   if (!hike) return null;
 
   const pointsResult = await pool.query(

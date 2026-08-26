@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -37,6 +38,8 @@ import tw.umaya.tracker.location.LocationForegroundService
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 
 /** Raw exception messages ("timeout", "Unable to resolve host…") aren't useful to a hiker. */
 private fun friendlyErrorMessage(e: Exception): String = when (e) {
@@ -159,7 +162,9 @@ fun LoginScreen(prefs: Prefs, onLoggedIn: () -> Unit) {
                         } else {
                             val res = ApiClient.service.login(LoginRequest(email, password))
                             if (!res.isSuccessful) throw Exception("帳號或密碼錯誤")
-                            prefs.authToken = res.body()!!.token
+                            val body = res.body()!!
+                            prefs.authToken = body.token
+                            prefs.shareToken = body.user.shareToken
                             onLoggedIn()
                         }
                     } catch (e: Exception) {
@@ -184,7 +189,7 @@ fun HikeScreen(prefs: Prefs) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var hasActiveHike by remember { mutableStateOf(prefs.hasActiveHike) }
-    var shareToken by remember { mutableStateOf(prefs.activeShareToken) }
+    val shareToken = prefs.shareToken // persistent per account, set at login — same link across every hike
     var hikeName by remember { mutableStateOf("") }
     var intervalSeconds by remember { mutableStateOf(prefs.intervalSeconds) }
     var menuExpanded by remember { mutableStateOf(false) }
@@ -192,6 +197,24 @@ fun HikeScreen(prefs: Prefs) {
     var isPaused by remember { mutableStateOf(prefs.isPaused) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
+
+    val routePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    ?: throw Exception("無法讀取檔案")
+                if (!(text.contains("<gpx") || text.contains("<kml"))) throw Exception("檔案不是有效的 GPX 或 KML")
+                val token = prefs.authToken!!
+                val body = text.toRequestBody("application/xml".toMediaTypeOrNull())
+                val res = ApiClient.service.uploadRoute("Bearer $token", prefs.activeHikeId, body)
+                if (!res.isSuccessful) throw Exception("上傳失敗")
+                Toast.makeText(context, "規劃路線上傳成功", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, friendlyErrorMessage(e), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     if (showIntervalDialog) {
         AlertDialog(
@@ -229,6 +252,10 @@ fun HikeScreen(prefs: Prefs) {
                                     text = { Text("定位頻率") },
                                     onClick = { menuExpanded = false; showIntervalDialog = true },
                                 )
+                                DropdownMenuItem(
+                                    text = { Text("上傳規劃路線（GPX/KML）") },
+                                    onClick = { menuExpanded = false; routePickerLauncher.launch("*/*") },
+                                )
                             }
                         }
                     }
@@ -263,13 +290,11 @@ fun HikeScreen(prefs: Prefs) {
                             if (!res.isSuccessful) throw Exception("建立行程失敗")
                             val hike = res.body()!!
                             prefs.activeHikeId = hike.id
-                            prefs.activeShareToken = hike.shareToken
                             context.startForegroundService(
                                 Intent(context, LocationForegroundService::class.java)
                                     .setAction(LocationForegroundService.ACTION_START)
                             )
                             hasActiveHike = true
-                            shareToken = hike.shareToken
                         } catch (e: Exception) {
                             error = friendlyErrorMessage(e)
                         } finally {
@@ -382,9 +407,17 @@ fun HikeScreen(prefs: Prefs) {
                         scope.launch {
                             try {
                                 val token = prefs.authToken!!
-                                ApiClient.service.endHike("Bearer $token", prefs.activeHikeId)
-                            } catch (_: Exception) {
-                                // Ending on the server can be retried later; local stop must still proceed.
+                                val res = ApiClient.service.endHike("Bearer $token", prefs.activeHikeId)
+                                if (!res.isSuccessful) throw Exception("結束行程失敗")
+                            } catch (e: Exception) {
+                                // Server-side end can fail (e.g. timeout) while local stop must still
+                                // proceed either way — but the hike then stays "active" server-side
+                                // forever with no retry, so at least tell the hiker it happened.
+                                Toast.makeText(
+                                    context,
+                                    "結束行程時連線失敗，伺服器端可能還是顯示進行中：${friendlyErrorMessage(e)}",
+                                    Toast.LENGTH_LONG,
+                                ).show()
                             } finally {
                                 context.startService(
                                     Intent(context, LocationForegroundService::class.java)

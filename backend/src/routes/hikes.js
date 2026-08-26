@@ -1,5 +1,4 @@
 const express = require('express');
-const crypto = require('crypto');
 const pool = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
 
@@ -9,10 +8,9 @@ router.post('/', requireAuth, async (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
 
-  const shareToken = crypto.randomBytes(8).toString('hex');
   const { rows } = await pool.query(
-    'INSERT INTO hikes (user_id, name, share_token) VALUES ($1, $2, $3) RETURNING *',
-    [req.userId, name, shareToken]
+    'INSERT INTO hikes (user_id, name) VALUES ($1, $2) RETURNING *',
+    [req.userId, name]
   );
   res.status(201).json(rows[0]);
 });
