@@ -1,0 +1,15 @@
+[Unit]
+Description=tracker backend (Node.js)
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=aj
+WorkingDirectory=/opt/tracker/backend
+EnvironmentFile=/opt/tracker/backend/.env
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

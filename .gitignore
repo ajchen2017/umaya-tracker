@@ -1,0 +1,27 @@
+# Backend
+backend/node_modules/
+backend/.env
+backend/*.log
+
+# Tileserver — large binary map data, deployed via scp separately (see deploy/DEPLOY.md)
+tileserver/dem/
+tileserver/maps/
+tileserver/bin/
+
+# Android
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+android/.idea/
+android/*.iml
+android/app/*.iml
+android/captures/
+android/.cxx/
+
+# Local dev tooling (portable JDK / Android SDK), not part of the project
+tools/
+
+# OS
+.DS_Store
+Thumbs.db

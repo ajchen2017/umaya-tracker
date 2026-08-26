@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>登山位置追蹤</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif; }
+  /* Ocean-blue fallback so any unpainted gap (browser compositor quirks on very
+     wide/high-DPI screens, or RudyMap's coverage edge) reads as sea, not a void. */
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; background: #a8d4f0; }
+
+  #topbar {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 1000;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 12px; background: linear-gradient(rgba(0,0,0,.55), rgba(0,0,0,0));
+    color: #fff; pointer-events: none;
+  }
+  #topbar * { pointer-events: auto; }
+  /* margin-left clears Leaflet's default zoom control (top-left, ~40px wide) */
+  #hikeName { font-size: 16px; font-weight: 600; text-shadow: 0 1px 3px rgba(0,0,0,.6); margin-left: 44px; }
+
+  #zoomLevel {
+    position: absolute; left: 10px; top: 74px; z-index: 1000;
+    width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+    background: #fff; border-radius: 4px; font-size: 17px; font-weight: 700;
+    color: #333; box-shadow: 0 1px 4px rgba(0,0,0,.3); pointer-events: none;
+  }
+
+  #layerToggle {
+    display: flex; background: rgba(0,0,0,.55); border-radius: 20px; overflow: hidden;
+  }
+  #layerToggle button {
+    border: none; background: transparent; color: #fff; padding: 6px 14px; font-size: 13px; cursor: pointer;
+  }
+  #layerToggle button.active { background: #2d7dd2; }
+
+  #btnSettings {
+    margin-left: 8px; width: 44px; height: 44px; border-radius: 50%;
+    background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center;
+    font-size: 20px; text-decoration: none; cursor: pointer;
+  }
+
+  #statusbar {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 1000;
+    background: rgba(255,255,255,.95); padding: 10px 14px;
+    box-shadow: 0 -2px 8px rgba(0,0,0,.15);
+    font-size: 13px; color: #222;
+  }
+  #statusbar .row { display: flex; gap: 8px; margin-top: 2px; }
+  #statusbar .label { color: #777; }
+
+  #signalLegend {
+    display: none; flex-wrap: wrap; gap: 4px 12px; padding-bottom: 8px; margin-bottom: 6px;
+    border-bottom: 1px solid #eee;
+  }
+
+  /* Guardian-facing alert level — advisory only, see design proposal. Green
+     shows nothing (nothing to say); yellow/orange/red get progressively louder. */
+  #alertBanner {
+    display: none; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px;
+    margin-bottom: 8px; font-size: 13px; font-weight: 600;
+  }
+  #alertBanner.show { display: flex; }
+  #alertBanner.yellow { background: #fff6da; color: #8a6d00; }
+  #alertBanner.orange { background: #ffe8d1; color: #9a4b00; }
+  #alertBanner.red { background: #fdd; color: #a30000; }
+  #alertBanner .info { margin-left: auto; cursor: default; opacity: .7; }
+
+  #alertInfo { position: relative; display: inline-flex; cursor: default; opacity: .6; }
+  #alertInfo .tooltip {
+    display: none; position: absolute; bottom: 20px; right: 0; z-index: 1001;
+    background: #fff; color: #222; border-radius: 8px; padding: 10px 12px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.25); font-size: 12px; font-weight: 400;
+    line-height: 1.7; width: max-content; max-width: min(300px, 90vw);
+  }
+  #alertInfo:hover .tooltip, #alertInfo:focus .tooltip { display: block; }
+  #signalLegend.visible { display: flex; }
+  #signalLegend .item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #444; }
+  #signalLegend .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  #sosBanner {
+    display: none; position: absolute; top: 52px; left: 12px; right: 12px; z-index: 1000;
+    background: #d92b2b; color: #fff; padding: 8px 12px; border-radius: 8px;
+    font-weight: 600; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+  }
+
+  /* Moved under the settings gear (top-right) instead of bottom-right — the
+     status bar can grow tall enough (alert row, signal legend) to cover
+     bottom-anchored buttons otherwise. */
+  #btnStart {
+    position: absolute; right: 12px; top: 60px; z-index: 1000;
+    width: 44px; height: 44px; border-radius: 50%; border: none;
+    background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+    font-size: 20px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  }
+  #btnStart:disabled { opacity: .4; cursor: default; }
+
+  :root { --point-label-size: 10px; }
+
+  .waypoint-label {
+    background: rgba(45,125,210,.9); border: none; box-shadow: 0 1px 3px rgba(0,0,0,.3);
+    font-size: var(--point-label-size); padding: 1px 5px; color: #fff; font-weight: 600;
+    white-space: nowrap;
+  }
+  .waypoint-label::before { display: none; }
+
+  .signal-label-icon { background: none; border: none; }
+  .signal-label-text {
+    font-size: 11px; font-weight: 700; text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff;
+  }
+
+  #btnColor {
+    position: absolute; right: 12px; top: 112px; z-index: 1000;
+    width: 44px; height: 44px; border-radius: 50%; border: none;
+    background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+  }
+  #btnColor .swatch { width: 20px; height: 20px; border-radius: 50%; }
+
+  #colorPicker {
+    display: none; position: absolute; right: 12px; top: 164px; z-index: 1000;
+    background: #fff; border-radius: 12px; padding: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+    grid-template-columns: repeat(4, 1fr); gap: 6px;
+  }
+  #colorPicker.open { display: grid; }
+  #colorPicker button {
+    width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0;
+  }
+  #colorPicker button.selected { border-color: #222; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<div id="zoomLevel">—</div>
+
+<div id="topbar">
+  <div id="hikeName">載入中…</div>
+  <div id="layerToggle">
+    <button id="btnRudy" class="active">魯地圖</button>
+    <button id="btnOsm">線上地圖</button>
+  </div>
+  <a id="btnSettings" title="設定">⚙️</a>
+</div>
+
+<div id="sosBanner">🆘 已發出 SOS 標記，請確認登山者狀況</div>
+
+<button id="btnStart" disabled title="回到起點">📍</button>
+
+<button id="btnColor" title="軌跡顏色"><span class="swatch" id="btnColorSwatch"></span></button>
+<div id="colorPicker"></div>
+
+<div id="statusbar">
+  <div class="row" style="align-items:center;">
+    <span class="label">警戒狀態</span>
+    <span id="alertInfo" tabindex="0">ℹ️
+      <span class="tooltip" id="alertInfoTooltip"><!-- filled in dynamically from the hike's actual thresholds --></span>
+    </span>
+  </div>
+  <div id="alertBanner"></div>
+  <div id="signalLegend"></div>
+  <div class="row"><span class="label">最後更新</span><span id="lastUpdate">—</span></div>
+  <div class="row"><span class="label">目前位置</span><span id="lastPos">—</span></div>
+  <div class="row"><span class="label">手機電量</span><span id="lastBattery">—</span></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/t/assets/config.js"></script>
+<script src="/t/assets/app.js"></script>
+</body>
+</html>

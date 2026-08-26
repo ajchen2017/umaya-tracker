@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>設定</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif;
+    background: #f5f5f5; color: #222;
+  }
+  /* Phone-width layout even on a wide desktop browser — this is a phone page, not a desktop one. */
+  #page { max-width: 480px; margin: 0 auto; }
+  #topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  #topbar a { color: #2d7dd2; text-decoration: none; font-size: 15px; }
+  h1 { font-size: 18px; margin: 0; }
+
+  .card {
+    background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.1);
+  }
+  .card h2 { font-size: 15px; margin: 0 0 4px; }
+  .card p.hint { font-size: 13px; color: #777; margin: 0 0 12px; }
+
+  input[type=file], input[type=password] {
+    width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; margin-bottom: 10px;
+  }
+  button {
+    background: #2d7dd2; color: #fff; border: none; border-radius: 8px;
+    padding: 10px 16px; font-size: 14px; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+
+  .status { font-size: 13px; margin-top: 8px; white-space: pre-line; }
+  .status.ok { color: #1a9c4a; }
+  .status.err { color: #d92b2b; }
+
+  #colorGrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+  #colorGrid button {
+    width: 100%; aspect-ratio: 1; border-radius: 50%; border: 3px solid transparent; padding: 0;
+  }
+  #colorGrid button.selected { border-color: #222; }
+
+  .switchRow { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .switchRow span.label { font-size: 14px; }
+  .switch { position: relative; width: 44px; height: 26px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .track {
+    position: absolute; inset: 0; background: #ccc; border-radius: 13px; cursor: pointer; transition: background .15s;
+  }
+  .switch .track::before {
+    content: ""; position: absolute; width: 20px; height: 20px; left: 3px; top: 3px;
+    background: #fff; border-radius: 50%; transition: transform .15s;
+  }
+  .switch input:checked + .track { background: #2d7dd2; }
+  .switch input:checked + .track::before { transform: translateX(18px); }
+
+  .carrierRow {
+    display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid #eee; font-size: 14px;
+  }
+  .carrierRow:first-of-type { border-top: none; }
+  .carrierRow .dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+  .carrierRow input { width: 18px; height: 18px; margin-left: auto; }
+
+  .fieldRow {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 7px 0; border-top: 1px solid #eee; font-size: 13px;
+  }
+  .fieldRow:first-of-type { border-top: none; }
+  .fieldRow .desc { color: #444; }
+  .fieldRow .desc small { display: block; color: #999; font-size: 11px; margin-top: 1px; }
+  .fieldRow input[type=number] {
+    width: 56px; padding: 6px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; text-align: center;
+  }
+  .fieldRow input[type=time] {
+    padding: 6px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px;
+  }
+  .tierGroup { padding: 8px 0; }
+  .tierGroup .tierTitle { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
+</style>
+</head>
+<body>
+
+<div id="page">
+<div id="topbar">
+  <a href="#" id="backLink">← 返回地圖</a>
+  <h1>設定</h1>
+</div>
+
+<div class="card">
+  <h2>上傳規劃路線（GPX / KML）</h2>
+  <p class="hint">萬一登山者出發前忘了在手機上傳，這裡可以補傳，會直接覆蓋原本的規劃路線。</p>
+  <input type="file" id="routeFile" accept=".gpx,.kml,application/gpx+xml,application/vnd.google-earth.kml+xml" />
+  <button id="btnUploadRoute">上傳</button>
+  <div class="status" id="routeStatus"></div>
+</div>
+
+<div class="card">
+  <h2>更新魯地圖（主圖／等高線／陰影圖）</h2>
+  <p class="hint">重新下載伺服器上最新的魯地圖資料，影響所有行程。需要管理密碼。</p>
+  <input type="password" id="adminPassword" placeholder="管理密碼" />
+  <button id="btnUpdateMap">更新</button>
+  <div class="status" id="mapStatus"></div>
+</div>
+
+<div class="card">
+  <h2>登山者軌跡顏色</h2>
+  <p class="hint">選擇地圖上軌跡線和記錄點的顏色，只影響你這個瀏覽器的顯示。</p>
+  <div id="colorGrid"></div>
+</div>
+
+<div class="card">
+  <h2>手機可通訊點</h2>
+  <p class="hint">林業保育署公布的山區手機可通訊點，只影響你這個瀏覽器的顯示。</p>
+
+  <div class="switchRow">
+    <span class="label">在地圖上顯示</span>
+    <label class="switch">
+      <input type="checkbox" id="signalToggle" />
+      <span class="track"></span>
+    </label>
+  </div>
+
+  <div id="carrierList"></div>
+
+  <p class="hint" style="margin-top:12px;">更新可通訊點資料（自動比對林業保育署、玉山、太魯閣三個來源的檔案版本，沒變就不重新下載；雪霸資料是靜態匯入，不在這個檢查範圍內）。需要管理密碼。</p>
+  <input type="password" id="signalAdminPassword" placeholder="管理密碼" />
+  <button id="btnUpdateSignalPoints">檢查更新</button>
+  <div class="status" id="signalStatus"></div>
+</div>
+
+<div class="card">
+  <h2>警戒等級設定</h2>
+  <p class="hint">調整判斷 🟢🟡🟠🔴 等級的門檻，只影響這個行程。</p>
+
+  <div class="tierGroup">
+    <div class="tierTitle">🟢 綠</div>
+    <div class="fieldRow">
+      <span class="desc">N 小時內有回報視為正常<small>範圍 1–8</small></span>
+      <input type="number" id="cfgGreenHours" min="1" max="8" step="1" />
+    </div>
+  </div>
+
+  <div class="tierGroup">
+    <div class="tierTitle">🟡 黃</div>
+    <div class="fieldRow">
+      <span class="desc">夜間開始 T1</span>
+      <input type="time" id="cfgNightStart" />
+    </div>
+    <div class="fieldRow">
+      <span class="desc">夜間結束 T2（隔天）</span>
+      <input type="time" id="cfgNightEnd" />
+    </div>
+    <div class="fieldRow">
+      <span class="desc">斷訊超過 N 小時但判斷為紮營<small>範圍 3–8</small></span>
+      <input type="number" id="cfgCampingSilenceHours" min="3" max="8" step="1" />
+    </div>
+  </div>
+
+  <div class="tierGroup">
+    <div class="tierTitle">🟠 橘（白天）</div>
+    <div class="fieldRow">
+      <span class="desc">起點 N1<small>範圍 2–6</small></span>
+      <input type="number" id="cfgDayOrangeStart" min="2" max="6" step="1" />
+    </div>
+    <div class="fieldRow">
+      <span class="desc">終點 N2<small>範圍 6–12</small></span>
+      <input type="number" id="cfgDayOrangeEnd" min="6" max="12" step="1" />
+    </div>
+  </div>
+
+  <div class="tierGroup">
+    <div class="tierTitle">🔴 紅</div>
+    <div class="fieldRow">
+      <span class="desc">白天斷訊超過 N 小時<small>範圍 6–24</small></span>
+      <input type="number" id="cfgRedDayHours" min="6" max="24" step="1" />
+    </div>
+  </div>
+
+  <button id="btnSaveAlertConfig" style="margin-top:10px;">儲存</button>
+  <div class="status" id="alertConfigStatus"></div>
+</div>
+
+<div class="card">
+  <h2>匯出登山者軌跡</h2>
+  <p class="hint">下載目前實際記錄到的 GPS 軌跡（不是規劃路線），可直接匯入救援人員的裝置或系統使用。</p>
+  <div style="display:flex; gap:10px;">
+    <a id="exportGpx" href="#"><button type="button">下載 GPX</button></a>
+    <a id="exportKml" href="#"><button type="button">下載 KML</button></a>
+  </div>
+</div>
+</div>
+
+<script src="/t/assets/settings.js"></script>
+</body>
+</html>
