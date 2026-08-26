@@ -11,10 +11,11 @@ const RUDY_BOUNDS = L.latLngBounds([21.4, 118.0], [26.5, 122.3]);
 
 // RudyMap's own theme only defines text sizing up to z19 — past that, contour
 // lines/roads keep scaling (true vector geometry) but labels stay pinned at the
-// z19 size, so letting the map zoom further just makes text look proportionally
-// tinier next to everything else. Cap here to where the theme was actually designed for.
-const RUDY_MAX_ZOOM = 19;
-const OSM_MAX_ZOOM = 19;
+// z19 size, so text looks proportionally smaller next to everything else at
+// z20-21. Allowed anyway per explicit request — geometry still scales correctly,
+// only label size stops growing.
+const RUDY_MAX_ZOOM = 21;
+const OSM_MAX_ZOOM = 21;
 
 const map = L.map('map', {
   zoomControl: true, maxZoom: RUDY_MAX_ZOOM, minZoom: RUDY_MIN_ZOOM,
@@ -271,11 +272,21 @@ function updateSosAlert(alert) {
   }
 }
 
+function updateHikeStatus(hike) {
+  const el = document.getElementById('hikeStatus');
+  if (hike.status === 'ended') {
+    el.textContent = hike.ended_at ? `已結束（${fmtDateTime(hike.ended_at)}）` : '已結束';
+  } else {
+    el.textContent = '進行中';
+  }
+}
+
 function render(data) {
   const { hike, points, alert } = data;
   document.getElementById('hikeName').textContent = `${hike.hiker_name} · ${hike.name}`;
   updateAlertBanner(alert); // time-based, so must update even when no new points arrived
   updateSosAlert(alert);
+  updateHikeStatus(hike);
 
   if (hike.planned_route && !plannedRouteRendered) {
     plannedRouteRendered = true;

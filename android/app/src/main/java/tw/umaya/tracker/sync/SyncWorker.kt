@@ -1,6 +1,9 @@
 package tw.umaya.tracker.sync
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
@@ -10,6 +13,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import tw.umaya.tracker.data.ApiClient
 import tw.umaya.tracker.data.AppDatabase
+import tw.umaya.tracker.data.MARKER_LABELS
 import tw.umaya.tracker.data.Prefs
 import tw.umaya.tracker.data.UploadPointDto
 import tw.umaya.tracker.data.UploadPointsRequest
@@ -49,6 +53,14 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             val response = ApiClient.service.uploadPoints("Bearer $token", hikeId, body)
             if (response.isSuccessful) {
                 dao.markSynced(pending.map { it.clientId })
+                // Confirms actual server delivery, distinct from the "queued locally" toast
+                // shown at record time — the hiker needs to know an SOS really went out.
+                pending.mapNotNull { MARKER_LABELS[it.markerType] }.distinct().forEach { label ->
+                    val text = "✅ $label 已送達"
+                    Handler(Looper.getMainLooper()).post {
+                        Toast.makeText(applicationContext, text, Toast.LENGTH_LONG).show()
+                    }
+                }
                 // More may have queued up while this batch was in flight.
                 if (dao.pendingCount(hikeId) > 0) enqueue(applicationContext)
                 Result.success()

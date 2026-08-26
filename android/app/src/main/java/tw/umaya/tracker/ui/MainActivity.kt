@@ -289,7 +289,7 @@ fun HikeScreen(prefs: Prefs) {
                             Toast.makeText(context, "找不到可用的郵件 App", Toast.LENGTH_LONG).show()
                         }
                     },
-                ) { Text("✉️ 寄給家人") }
+                ) { Text("✉️ 寄給留守人") }
 
                 OutlinedButton(
                     modifier = Modifier.weight(1f),

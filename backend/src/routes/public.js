@@ -48,6 +48,17 @@ router.put('/:shareToken/alert-config', async (req, res) => {
   res.json({ ok: true, config: resolved });
 });
 
+// Share-link-gated, same trust model as route upload: wipe every recorded track
+// point for this hike (e.g. clearing test data), so the hike starts recording
+// fresh. Irreversible — no undo. New points the phone is still sending land
+// normally afterwards, since this only deletes what's already in the table.
+router.delete('/:shareToken/track', async (req, res) => {
+  const { rows } = await pool.query('SELECT id FROM hikes WHERE share_token = $1', [req.params.shareToken]);
+  if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+  const { rowCount } = await pool.query('DELETE FROM track_points WHERE hike_id = $1', [rows[0].id]);
+  res.json({ ok: true, deleted: rowCount });
+});
+
 // Public route upload: whoever has the share link can attach/replace the planned
 // route (in case the hiker forgot to upload it from the phone before setting off).
 router.put('/:shareToken/route', express.text({ type: '*/*', limit: '5mb' }), async (req, res) => {

@@ -32,6 +32,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import tw.umaya.tracker.data.AppDatabase
+import tw.umaya.tracker.data.MARKER_LABELS
 import tw.umaya.tracker.data.Prefs
 import tw.umaya.tracker.data.TrackPoint
 import tw.umaya.tracker.data.intervalLabel
@@ -49,7 +50,6 @@ class LocationForegroundService : Service() {
         const val ACTION_MARK_SAFE = "tw.umaya.tracker.action.MARK_SAFE"
         const val ACTION_MARK_CAMPING = "tw.umaya.tracker.action.MARK_CAMPING"
         const val ACTION_UPDATE_INTERVAL = "tw.umaya.tracker.action.UPDATE_INTERVAL"
-        private val MARKER_LABELS = mapOf("sos" to "SOS", "safe" to "我很好", "camping" to "紮營中")
         private const val CHANNEL_ID = "tracking"
         private const val NOTIFICATION_ID = 1001
     }
