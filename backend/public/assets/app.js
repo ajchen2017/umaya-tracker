@@ -179,7 +179,6 @@ function drawTrack(points) {
     `${last.lat.toFixed(5)}, ${last.lng.toFixed(5)}` +
     (last.altitude ? ` · 海拔${Math.round(last.altitude)}m` : '') +
     (last.accuracy ? ` · 誤差±${Math.round(last.accuracy)}m` : '');
-  document.getElementById('sosBanner').style.display = sosPoints.length ? 'block' : 'none';
 
   const batteryEl = document.getElementById('lastBattery');
   if (last.battery_pct != null) {
@@ -226,10 +225,57 @@ function updateAlertBanner(alert) {
   `;
 }
 
+// Sound is best-effort: browsers block AudioContext until the page has had a user
+// gesture, so this can silently no-op on first load — the visual frame/banner is
+// the primary alert either way. Unlocked below on the first click anywhere.
+let audioCtx = null;
+let sosBeepTimer = null;
+
+function ensureAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+  return audioCtx;
+}
+document.addEventListener('click', () => { try { ensureAudioCtx(); } catch {} }, { once: true });
+
+function sosBeep() {
+  try {
+    const ctx = ensureAudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.4);
+  } catch {
+    // AudioContext unavailable/blocked — nothing more to do, see comment above.
+  }
+}
+
+// Driven by the server-computed alert (respects a later "safe" clearing an
+// earlier SOS), not raw historical SOS points — those never un-happen, but the
+// active emergency state should stop once the hiker checks in.
+function updateSosAlert(alert) {
+  const active = !!alert && alert.level === 'red' && alert.reason === 'sos';
+  document.getElementById('sosBanner').style.display = active ? 'block' : 'none';
+  document.getElementById('sosFrame').classList.toggle('show', active);
+
+  if (active && !sosBeepTimer) {
+    sosBeep();
+    sosBeepTimer = setInterval(sosBeep, 1500);
+  } else if (!active && sosBeepTimer) {
+    clearInterval(sosBeepTimer);
+    sosBeepTimer = null;
+  }
+}
+
 function render(data) {
   const { hike, points, alert } = data;
   document.getElementById('hikeName').textContent = `${hike.hiker_name} · ${hike.name}`;
   updateAlertBanner(alert); // time-based, so must update even when no new points arrived
+  updateSosAlert(alert);
 
   if (hike.planned_route && !plannedRouteRendered) {
     plannedRouteRendered = true;

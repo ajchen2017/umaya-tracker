@@ -12,13 +12,13 @@
     <application
         android:name=".TrackerApp"
         android:allowBackup="false"
-        android:label="登山定位追蹤"
+        android:label="登山健行定位追蹤"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
-            android:label="登山定位追蹤">
+            android:label="登山健行定位追蹤">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

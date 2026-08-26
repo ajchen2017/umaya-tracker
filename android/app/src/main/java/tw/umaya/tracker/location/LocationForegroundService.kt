@@ -1,5 +1,6 @@
 package tw.umaya.tracker.location
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,17 +8,26 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.location.Location
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -37,6 +47,8 @@ class LocationForegroundService : Service() {
         const val ACTION_MARK_SOS = "tw.umaya.tracker.action.MARK_SOS"
         const val ACTION_MARK_SAFE = "tw.umaya.tracker.action.MARK_SAFE"
         const val ACTION_MARK_CAMPING = "tw.umaya.tracker.action.MARK_CAMPING"
+        const val ACTION_UPDATE_INTERVAL = "tw.umaya.tracker.action.UPDATE_INTERVAL"
+        private val MARKER_LABELS = mapOf("sos" to "SOS", "safe" to "我很好", "camping" to "紮營中")
         private const val CHANNEL_ID = "tracking"
         private const val NOTIFICATION_ID = 1001
     }
@@ -45,6 +57,7 @@ class LocationForegroundService : Service() {
     private lateinit var prefs: Prefs
     private lateinit var db: AppDatabase
     private val scope = CoroutineScope(Dispatchers.IO)
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var lastLocation: Location? = null
 
     private val locationCallback = object : LocationCallback() {
@@ -70,9 +83,10 @@ class LocationForegroundService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_MARK_SOS -> lastLocation?.let { recordPoint(it, "sos") }
-            ACTION_MARK_SAFE -> lastLocation?.let { recordPoint(it, "safe") }
-            ACTION_MARK_CAMPING -> lastLocation?.let { recordPoint(it, "camping") }
+            ACTION_UPDATE_INTERVAL -> if (hasLocationPermission()) startLocationUpdates()
+            ACTION_MARK_SOS -> markPoint("sos")
+            ACTION_MARK_SAFE -> markPoint("safe")
+            ACTION_MARK_CAMPING -> markPoint("camping")
             else -> {
                 startForeground(NOTIFICATION_ID, buildNotification())
                 startLocationUpdates()
@@ -81,16 +95,62 @@ class LocationForegroundService : Service() {
         return START_STICKY
     }
 
+    private fun hasLocationPermission() =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun hasNetwork(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
     private fun startLocationUpdates() {
         val intervalMs = prefs.intervalMinutes * 60_000L
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
             .setMinUpdateIntervalMillis(intervalMs / 2)
             .build()
+        fusedClient.removeLocationUpdates(locationCallback)
         fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
     }
 
     private fun stopLocationUpdates() {
         fusedClient.removeLocationUpdates(locationCallback)
+    }
+
+    /**
+     * Marker buttons must never silently do nothing: [lastLocation] is only populated once the
+     * first periodic fix lands, which can be minutes away, so fall back to an on-demand fix and
+     * always end in either a recorded point or a toast explaining why not.
+     */
+    private fun markPoint(markerType: String) {
+        val cached = lastLocation
+        if (cached != null) {
+            recordPoint(cached, markerType)
+            return
+        }
+        if (!hasLocationPermission()) {
+            toast("沒有定位權限，無法標記")
+            return
+        }
+        val cancellationToken = CancellationTokenSource()
+        fusedClient.getCurrentLocation(
+            CurrentLocationRequest.Builder().setPriority(Priority.PRIORITY_HIGH_ACCURACY).build(),
+            cancellationToken.token,
+        ).addOnSuccessListener { location ->
+            if (location == null) {
+                toast("目前無法取得定位，請稍後再試")
+            } else {
+                lastLocation = location
+                recordPoint(location, markerType)
+            }
+        }.addOnFailureListener {
+            toast("定位失敗：${it.message}")
+        }
+    }
+
+    private fun toast(message: String) {
+        mainHandler.post { Toast.makeText(applicationContext, message, Toast.LENGTH_LONG).show() }
     }
 
     private fun recordPoint(location: Location, markerType: String) {
@@ -111,6 +171,11 @@ class LocationForegroundService : Service() {
                 )
             )
             SyncWorker.enqueue(applicationContext)
+            if (markerType in MARKER_LABELS) {
+                val label = MARKER_LABELS[markerType]
+                val status = if (hasNetwork()) "已標記：$label，正在同步" else "已標記：$label（目前無訊號，恢復後自動同步）"
+                toast(status)
+            }
         }
     }
 

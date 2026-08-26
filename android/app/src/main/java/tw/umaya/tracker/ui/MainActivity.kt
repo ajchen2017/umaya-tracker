@@ -1,10 +1,13 @@
 package tw.umaya.tracker.ui
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
@@ -155,13 +159,14 @@ fun HikeScreen(prefs: Prefs) {
     var shareToken by remember { mutableStateOf(prefs.activeShareToken) }
     var hikeName by remember { mutableStateOf("") }
     var intervalMinutes by remember { mutableStateOf(prefs.intervalMinutes) }
+    var showSettings by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
     ) {
-        Text("登山定位追蹤", style = MaterialTheme.typography.headlineSmall)
+        Text("登山健行定位追蹤", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(24.dp))
 
         if (!hasActiveHike) {
@@ -211,13 +216,52 @@ fun HikeScreen(prefs: Prefs) {
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("開始行程") }
         } else {
+            val shareUrl = "https://tracker.umaya.tw/t/$shareToken"
+
             Text("行程進行中", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
-            Text("分享連結：https://tracker.umaya.tw/t/$shareToken")
+            Text("分享連結：$shareUrl")
+            Spacer(Modifier.height(12.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_SENDTO).apply {
+                                data = Uri.parse("mailto:")
+                                putExtra(Intent.EXTRA_SUBJECT, "登山健行定位追蹤 - $hikeName")
+                                putExtra(Intent.EXTRA_TEXT, "可以在這裡看到我的即時位置：\n$shareUrl")
+                            })
+                        } catch (_: ActivityNotFoundException) {
+                            Toast.makeText(context, "找不到可用的郵件 App", Toast.LENGTH_LONG).show()
+                        }
+                    },
+                ) { Text("✉️ 寄給家人") }
+
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        try {
+                            context.startActivity(Intent.createChooser(
+                                Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_TEXT, shareUrl)
+                                },
+                                "分享行程連結",
+                            ))
+                        } catch (_: ActivityNotFoundException) {
+                            Toast.makeText(context, "找不到可用的分享 App", Toast.LENGTH_LONG).show()
+                        }
+                    },
+                ) { Text("分享") }
+            }
+
             Spacer(Modifier.height(24.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
+                    modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                     onClick = {
                         context.startService(
@@ -225,25 +269,63 @@ fun HikeScreen(prefs: Prefs) {
                                 .setAction(LocationForegroundService.ACTION_MARK_SOS)
                         )
                     },
-                ) { Text("🆘 SOS") }
+                ) { Text("🆘 SOS", maxLines = 1, overflow = TextOverflow.Ellipsis) }
 
                 OutlinedButton(
+                    modifier = Modifier.weight(1f),
                     onClick = {
                         context.startService(
                             Intent(context, LocationForegroundService::class.java)
                                 .setAction(LocationForegroundService.ACTION_MARK_SAFE)
                         )
                     },
-                ) { Text("我很好") }
+                ) { Text("我很好", maxLines = 1, overflow = TextOverflow.Ellipsis) }
 
                 OutlinedButton(
+                    modifier = Modifier.weight(1f),
                     onClick = {
                         context.startService(
                             Intent(context, LocationForegroundService::class.java)
                                 .setAction(LocationForegroundService.ACTION_MARK_CAMPING)
                         )
                     },
-                ) { Text("⛺ 紮營中") }
+                ) { Text("⛺ 紮營中", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            }
+
+            Spacer(Modifier.height(24.dp))
+            OutlinedButton(
+                onClick = { showSettings = !showSettings },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (showSettings) "隱藏設定" else "設定") }
+
+            if (showSettings) {
+                Spacer(Modifier.height(12.dp))
+                Text("定位頻率：每 $intervalMinutes 分鐘一筆", style = MaterialTheme.typography.bodyMedium)
+                Slider(
+                    value = intervalMinutes.toFloat(),
+                    onValueChange = { intervalMinutes = it.toInt() },
+                    onValueChangeFinished = {
+                        prefs.intervalMinutes = intervalMinutes
+                        context.startService(
+                            Intent(context, LocationForegroundService::class.java)
+                                .setAction(LocationForegroundService.ACTION_UPDATE_INTERVAL)
+                        )
+                    },
+                    valueRange = 1f..15f,
+                    steps = 13,
+                )
+
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$shareUrl/settings")))
+                        } catch (_: ActivityNotFoundException) {
+                            Toast.makeText(context, "找不到可用的瀏覽器", Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("⚠️ 警戒等級與地圖設定") }
             }
 
             Spacer(Modifier.height(24.dp))
