@@ -328,7 +328,9 @@ function drawTrack(points) {
     if (idx === 0) return [p.lat, p.lng];
     const basePoint = map.latLngToLayerPoint([p.lat, p.lng]);
     const angle = idx * 137.5 * (Math.PI / 180); // golden-angle spiral — spreads evenly, never re-aligns
-    const radius = 28 * Math.sqrt(idx);
+    // SOS is the largest icon in play (72px, 36px radius) — the gap has to clear that even
+    // when it's SOS-vs-SOS overlapping, not just SOS-vs-small-event-icon.
+    const radius = 80 * Math.sqrt(idx);
     const offsetLatLng = map.layerPointToLatLng(
       L.point(basePoint.x + radius * Math.cos(angle), basePoint.y + radius * Math.sin(angle))
     );
