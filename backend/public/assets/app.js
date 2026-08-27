@@ -25,10 +25,23 @@ const map = L.map('map', {
 // Before the hiker's first point arrives there's nothing to center on — use the
 // guardian's own location as a more useful default than "all of Taiwan". Only
 // applies if a real point hasn't already centered the map first (hasCenteredOnStart).
+// Also drop a small person-icon marker at the guardian's own position, distinct
+// from the hiker's blue endpoint marker, so it's clear which dot is "me".
+const GUARDIAN_ICON_HTML =
+  '<div class="guardian-dot"><svg viewBox="0 0 24 24" width="16" height="16" fill="#fff">' +
+  '<path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>' +
+  '</svg></div>';
+
 if (navigator.geolocation) {
   navigator.geolocation.getCurrentPosition(
     (pos) => {
-      if (!hasCenteredOnStart) map.setView([pos.coords.latitude, pos.coords.longitude], 16);
+      const guardianLatLng = [pos.coords.latitude, pos.coords.longitude];
+      if (!hasCenteredOnStart) map.setView(guardianLatLng, 16);
+      L.marker(guardianLatLng, {
+        icon: L.divIcon({ html: GUARDIAN_ICON_HTML, className: '', iconSize: [28, 28] }),
+      })
+        .bindTooltip('你的位置', { permanent: true, direction: 'right', offset: [14, 0], className: 'waypoint-label' })
+        .addTo(map);
     },
     () => {}, // denied/unavailable — keep the Taiwan-wide fallback view
     { timeout: 10000 }
