@@ -132,7 +132,7 @@ function computeAlertLevel(points, now = new Date(), userConfig = null, hikeEnde
   const cfg = resolveConfig(userConfig);
 
   if (points.length === 0) {
-    return { level: 'green', reason: 'no_data', message: '尚未開始回報', config: cfg };
+    return { level: 'green', reason: 'no_data', message: '（等待追蹤的行程開始）', config: cfg };
   }
 
   // points[] is chronological (ORDER BY recorded_at ASC) — an SOS stays active
