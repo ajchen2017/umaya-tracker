@@ -284,7 +284,7 @@ function renderPlannedRoute(routeText) {
 
 // Non-routine marker types get their own icon on the map — otherwise "我很好"
 // and "停駐中" points look exactly like ordinary background pings.
-const MARKER_EVENT_ICONS = { safe: '✅', camping: '⛺' };
+const MARKER_EVENT_ICONS = { safe: '😊', camping: '⛺' };
 const MARKER_EVENT_LABELS = { safe: '我很好', camping: '停駐中' };
 
 function drawTrack(points) {
@@ -370,16 +370,23 @@ function setTrackColor(color) {
 
 let lastRenderedAlertConfig = null;
 
-const ALERT_LEVEL_ICONS = { green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴' };
+// Three-dot severity gauge, replacing the old single green/yellow/orange/red
+// dot — filled (red) count from the left is the escalation signal itself, not
+// just a color swap. 0 filled = 原綠燈, 1 = 原橘燈, 2 = 原黃燈, 3 = SOS/原紅燈.
+const ALERT_LEVEL_FILLED = { green: 0, orange: 1, yellow: 2, red: 3 };
+
+function alertDots(level) {
+  const filled = ALERT_LEVEL_FILLED[level] ?? 0;
+  return '🔴'.repeat(filled) + '⚪'.repeat(3 - filled);
+}
 
 function updateAlertBanner(alert) {
   const el = document.getElementById('alertBanner');
-  document.getElementById('alertIcon').textContent = ALERT_LEVEL_ICONS[alert && alert.level] || '🟢';
+  document.getElementById('alertIcon').textContent = alertDots(alert && alert.level);
   if (!alert || alert.level === 'green' || !alert.message) {
     el.classList.remove('show', 'yellow', 'orange', 'red');
   } else {
-    const icon = ALERT_LEVEL_ICONS[alert.level] || '';
-    el.textContent = `${icon} ${alert.message}`;
+    el.textContent = `${alertDots(alert.level)} ${alert.message}`;
     el.className = `show ${alert.level}`;
   }
 
@@ -390,10 +397,10 @@ function updateAlertBanner(alert) {
   lastRenderedAlertConfig = cfg;
 
   document.getElementById('alertInfoTooltip').innerHTML = `
-    🟢 綠：${cfg.greenHours} 小時內有回報，或已標記「停駐中」<br>
-    🟡 黃：登山者當地夜間（依定位經緯度計算日出日落）斷訊，或斷訊超過 ${cfg.campingSilenceHours} 小時但判斷為停駐<br>
-    🟠 橘：白天斷訊 ${cfg.dayOrangeStart}–${cfg.dayOrangeEnd} 小時<br>
-    🔴 紅：SOS，或白天斷訊超過 ${cfg.redDayHours} 小時
+    ${alertDots('green')} 綠：${cfg.greenHours} 小時內有回報，或已標記「停駐中」<br>
+    ${alertDots('orange')} 橘：白天斷訊 ${cfg.dayOrangeStart}–${cfg.dayOrangeEnd} 小時<br>
+    ${alertDots('yellow')} 黃：登山者當地夜間（依定位經緯度計算日出日落）斷訊，或斷訊超過 ${cfg.campingSilenceHours} 小時但判斷為停駐<br>
+    ${alertDots('red')} 紅／SOS：SOS，或白天斷訊超過 ${cfg.redDayHours} 小時
   `;
 }
 
@@ -491,7 +498,7 @@ const ELEVATION_GRID_LEVELS = [
   { sec: 60 * 60, label: '1 小時' },
   { sec: 2 * 60 * 60, label: '2 小時' },
 ];
-const ELEVATION_EVENT_LABELS = { sos: 'SOS', safe: '✅', camping: '⛺' };
+const ELEVATION_EVENT_LABELS = { sos: 'SOS', safe: '😊', camping: '⛺' };
 let elevationHikeId = null;
 let elevationFrozen = false;
 let elevationGridLevelIdx = 0; // index into ELEVATION_GRID_LEVELS; 0 = finest (1 分鐘/格)
