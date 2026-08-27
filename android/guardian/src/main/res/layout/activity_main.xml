@@ -50,20 +50,21 @@
 
         <!-- bottom|end, not a top corner — the page itself already fills every top/side
              corner with its own controls (Leaflet zoom, settings gear, layer icon column).
-             Person icon, not a pencil — this switches WHO you're tracking, not just edits text. -->
-        <TextView
+             Person icon, not a pencil — this switches WHO you're tracking, not just edits
+             text. A real vector drawable, not an emoji glyph — emoji font fallback on some
+             OEM skins rendered a flat, low-contrast monochrome glyph instead of the full-
+             color emoji. -->
+        <ImageButton
             android:id="@+id/btnChangeLink"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
             android:layout_gravity="bottom|end"
             android:layout_margin="10dp"
-            android:background="#88000000"
+            android:background="@drawable/bg_circle_dark"
             android:contentDescription="變更連結"
-            android:gravity="center"
-            android:text="👤"
-            android:textSize="20sp"
-            android:clickable="true"
-            android:focusable="true" />
+            android:padding="10dp"
+            android:src="@drawable/ic_person"
+            app:tint="#FFFFFF" />
 
     </FrameLayout>
 
