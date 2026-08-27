@@ -314,9 +314,46 @@ function drawTrack(points) {
       .addTo(pointsLayer);
   });
 
+  // An SOS cancelled right where it was raised (我很好/停駐中 logged from the same
+  // spot) lands on the exact same coordinate — without this, the two markers'
+  // icons and permanent tooltips would sit exactly on top of each other and
+  // read as a garbled overlap. Fan out later markers at a shared coordinate in
+  // a small pixel-space spiral instead of moving the true SOS position, so the
+  // SOS marker itself always stays exactly where it actually happened.
+  const clusterCounts = {};
+  function clusterCoord(p) {
+    const key = `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`;
+    const idx = clusterCounts[key] || 0;
+    clusterCounts[key] = idx + 1;
+    if (idx === 0) return [p.lat, p.lng];
+    const basePoint = map.latLngToLayerPoint([p.lat, p.lng]);
+    const angle = idx * 137.5 * (Math.PI / 180); // golden-angle spiral — spreads evenly, never re-aligns
+    const radius = 28 * Math.sqrt(idx);
+    const offsetLatLng = map.layerPointToLatLng(
+      L.point(basePoint.x + radius * Math.cos(angle), basePoint.y + radius * Math.sin(angle))
+    );
+    return [offsetLatLng.lat, offsetLatLng.lng];
+  }
+
+  // SOS markers claim their coordinate first — an SOS always stays exactly
+  // where it actually happened; a 我很好/停駐中 logged from the same spot is
+  // what gets fanned out around it, never the other way round.
+  sosLayer.clearLayers();
+  sosPoints.forEach((p) => {
+    // Red dot with "SOS" written inside, at 3x the size of an ordinary marker —
+    // this is the one thing on the map that must never be missed. No separate
+    // text tooltip: the circle already says "SOS", a second label next to it
+    // just reads as a duplicate.
+    L.marker(clusterCoord(p), {
+      icon: L.divIcon({ html: '<div class="sos-dot">SOS</div>', className: '', iconSize: [72, 72] }),
+    })
+      .bindPopup(`SOS<br>${fmtDateTime(p.recorded_at, p.lng)}`)
+      .addTo(sosLayer);
+  });
+
   markerEventLayer.clearLayers();
   eventPoints.forEach((p) => {
-    L.marker([p.lat, p.lng], {
+    L.marker(clusterCoord(p), {
       icon: L.divIcon({ html: MARKER_EVENT_ICONS[p.marker_type], className: '', iconSize: [22, 22] }),
     })
       .bindTooltip(MARKER_EVENT_ICONS[p.marker_type], { permanent: true, direction: 'right', offset: [10, 0], className: 'waypoint-label' })
@@ -332,18 +369,6 @@ function drawTrack(points) {
   })
     .bindTooltip(buildMarkerLabel(), { permanent: true, direction: 'right', offset: [10, 0], className: 'waypoint-label' })
     .addTo(map);
-
-  sosLayer.clearLayers();
-  sosPoints.forEach((p) => {
-    // Red dot with "SOS" written inside, at 3x the size of an ordinary marker —
-    // this is the one thing on the map that must never be missed.
-    L.marker([p.lat, p.lng], {
-      icon: L.divIcon({ html: '<div class="sos-dot">SOS</div>', className: '', iconSize: [72, 72] }),
-    })
-      .bindTooltip('SOS', { permanent: true, direction: 'right', offset: [36, 0], className: 'waypoint-label' })
-      .bindPopup(`SOS<br>${fmtDateTime(p.recorded_at, p.lng)}`)
-      .addTo(sosLayer);
-  });
 
   document.getElementById('lastUpdate').textContent = fmtRelativeTime(last.recorded_at);
   document.getElementById('lastPos').textContent =
@@ -586,11 +611,20 @@ function drawElevationChart() {
   });
 
   let labelsSvg = '';
+  // An SOS cancelled from the same spot (same recorded_at) lands on the same x — stack
+  // labels that land too close together further up instead of drawing them on top of
+  // each other, resetting once a label lands with real horizontal room again.
+  let lastLabelX = -Infinity;
+  let labelStack = 0;
   withAltitude.forEach((p, i) => {
     const label = ELEVATION_EVENT_LABELS[p.marker_type];
     if (!label) return;
     const cls = p.marker_type === 'sos' ? 'event-label sos' : 'event-label icon';
-    labelsSvg += `<text class="${cls}" x="${xAt(i).toFixed(1)}" y="${(yAt(p.altitude) - 6).toFixed(1)}">${label}</text>`;
+    const x = xAt(i);
+    labelStack = x - lastLabelX < 18 ? labelStack + 1 : 0;
+    lastLabelX = x;
+    const y = yAt(p.altitude) - 6 - labelStack * 14;
+    labelsSvg += `<text class="${cls}" x="${x.toFixed(1)}" y="${y.toFixed(1)}">${label}</text>`;
   });
   const lastX = xAt(withAltitude.length - 1).toFixed(1);
   if (hike.status === 'ended') {
