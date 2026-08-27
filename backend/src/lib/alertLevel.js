@@ -12,8 +12,6 @@
 // defaults and valid ranges shown/enforced on the settings page.
 const DEFAULT_CONFIG = {
   greenHours: 2, // range 1-8
-  nightStart: '18:00', // T1 — wraps past midnight to nightEnd, always treated as valid
-  nightEnd: '06:00', // T2
   campingSilenceHours: 6, // N for "silent 6h+ but plausibly camping" -> yellow; range 3-8
   dayOrangeStart: 2, // N1 — day silence orange floor; range 2-6
   dayOrangeEnd: 6, // N2 — day silence orange ceiling (red starts above this); range 6-12
@@ -32,10 +30,6 @@ function clamp(value, [min, max]) {
   return Math.min(max, Math.max(min, value));
 }
 
-function isValidHHMM(s) {
-  return typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
-}
-
 // Merge user config over defaults, clamping/rejecting anything out of range
 // rather than trusting client input outright.
 function resolveConfig(userConfig) {
@@ -46,32 +40,92 @@ function resolveConfig(userConfig) {
     const v = Number(userConfig[key]);
     if (Number.isFinite(v)) cfg[key] = clamp(v, RANGES[key]);
   }
-  if (isValidHHMM(userConfig.nightStart)) cfg.nightStart = userConfig.nightStart;
-  if (isValidHHMM(userConfig.nightEnd)) cfg.nightEnd = userConfig.nightEnd;
 
   return cfg;
 }
 
-const TAIPEI_UTC_OFFSET_HOURS = 8;
+// --- Astronomical day/night, from the hiker's own last-known position ---
+// Was previously a fixed 18:00-06:00 Taipei-clock window — wrong for anyone recording
+// outside Taiwan (e.g. a Finland test hike: Taipei's night doesn't line up with Finland's
+// at all, off by the ~5-6h zone difference, so day/night came out backwards). Real
+// sunrise/sunset at the actual lat/lng works anywhere without ever needing to know the
+// hiker's timezone — the whole calculation runs in UTC, using longitude itself as the
+// "which way to lean" input. Standard sunrise-equation approximation (the same one behind
+// most "sunrise time for my location" tools); accurate to a few minutes, plenty for a
+// coarse day/night check.
+const RAD = Math.PI / 180;
+const DAY_MS = 86400000;
+const J1970 = 2440588;
+const J2000 = 2451545;
 
-function taipeiMinutesOfDay(date) {
-  const h = (date.getUTCHours() + TAIPEI_UTC_OFFSET_HOURS) % 24;
-  return h * 60 + date.getUTCMinutes();
+function toJulian(date) {
+  return date.getTime() / DAY_MS - 0.5 + J1970;
+}
+function fromJulian(J) {
+  return new Date((J + 0.5 - J1970) * DAY_MS);
+}
+function toDays(date) {
+  return toJulian(date) - J2000;
+}
+function solarMeanAnomaly(d) {
+  return RAD * (357.5291 + 0.98560028 * d);
+}
+function eclipticLongitude(M) {
+  const C = RAD * (1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M));
+  const P = RAD * 102.9372;
+  return M + C + P + Math.PI;
+}
+function declination(l) {
+  const e = RAD * 23.4397; // Earth's axial tilt; sun's own ecliptic latitude is ~0
+  return Math.asin(Math.sin(l) * Math.sin(e));
+}
+function julianCycle(d, lw) {
+  return Math.round(d - 0.0009 - lw / (2 * Math.PI));
+}
+function approxTransit(Ht, lw, n) {
+  return 0.0009 + (Ht + lw) / (2 * Math.PI) + n;
+}
+function solarTransitJ(ds, M, L) {
+  return J2000 + ds + 0.0053 * Math.sin(M) - 0.0069 * Math.sin(2 * L);
+}
+function hourAngle(h, phi, d) {
+  return Math.acos((Math.sin(h) - Math.sin(phi) * Math.sin(d)) / (Math.cos(phi) * Math.cos(d)));
 }
 
-function hhmmToMinutes(hhmm) {
-  const [h, m] = hhmm.split(':').map(Number);
-  return h * 60 + m;
+// Returns { sunrise, sunset } (both Date, UTC) for the UTC calendar day containing `date`,
+// at the given latitude/longitude — or null for either if the sun doesn't rise/set that
+// day at all (polar day/night, only reachable at extreme latitudes).
+function sunTimes(date, lat, lng) {
+  const lw = RAD * -lng;
+  const phi = RAD * lat;
+  const d = toDays(date);
+  const n = julianCycle(d, lw);
+  const ds = approxTransit(0, lw, n);
+  const M = solarMeanAnomaly(ds);
+  const L = eclipticLongitude(M);
+  const dec = declination(L);
+  const Jnoon = solarTransitJ(ds, M, L);
+
+  const h0 = -0.833 * RAD; // standard sunrise/sunset altitude — atmospheric refraction + sun's apparent radius
+  const w0 = hourAngle(h0, phi, dec);
+  if (Number.isNaN(w0)) return { sunrise: null, sunset: null }; // polar day/night this date
+  const Jset = solarTransitJ(approxTransit(w0, lw, n), M, L);
+  const Jrise = Jnoon - (Jset - Jnoon);
+  return { sunrise: fromJulian(Jrise), sunset: fromJulian(Jset) };
 }
 
-// Night window wraps past midnight whenever end <= start (e.g. 18:00 -> 06:00),
-// which is the expected shape, not an error — see the settings page discussion.
-function isNightInTaipei(date, cfg) {
-  const now = taipeiMinutesOfDay(date);
-  const start = hhmmToMinutes(cfg.nightStart);
-  const end = hhmmToMinutes(cfg.nightEnd);
-  if (end <= start) return now >= start || now < end;
-  return now >= start && now < end;
+// Checks yesterday/today/tomorrow's (UTC-calendar-date) sun windows for whichever one
+// actually contains `now` — avoids getting the wrong day's sunrise/sunset near a UTC
+// midnight boundary, which a single day's calculation could otherwise straddle.
+function isNight(now, lat, lng) {
+  if (typeof lat !== 'number' || typeof lng !== 'number') return false; // no position yet — default to day (the less lenient tier)
+  for (const offsetDays of [-1, 0, 1]) {
+    const probe = new Date(now.getTime() + offsetDays * DAY_MS);
+    const { sunrise, sunset } = sunTimes(probe, lat, lng);
+    if (!sunrise || !sunset) continue; // polar day/night — try an adjacent date
+    if (now >= sunrise && now < sunset) return false; // daytime
+  }
+  return true; // not inside any day window found — night (or genuine polar night)
 }
 
 function computeAlertLevel(points, now = new Date(), userConfig = null) {
@@ -95,10 +149,10 @@ function computeAlertLevel(points, now = new Date(), userConfig = null) {
   const hoursSince = (now.getTime() - lastAt.getTime()) / 3_600_000;
   const hrs = Math.floor(hoursSince);
   const isCamping = last.marker_type === 'camping';
-  // Whether *now* (evaluation time) falls in typical camp/sleep hours — not when
-  // the last point was recorded — since that's what makes an ongoing silence
-  // plausible ("it's night now, they're probably asleep") rather than the past.
-  const night = isNightInTaipei(now, cfg);
+  // Whether *now* (evaluation time) is day or night at the hiker's last known position —
+  // not when the last point was recorded — since that's what makes an ongoing silence
+  // plausible ("it's dark there right now, they're probably asleep") rather than the past.
+  const night = isNight(now, last.lat, last.lng);
 
   if (isCamping) {
     if (hoursSince < cfg.campingSilenceHours) {
@@ -126,4 +180,4 @@ function computeAlertLevel(points, now = new Date(), userConfig = null) {
   return { level: 'red', reason: 'extended_silence', message: `已 ${hrs} 小時沒有回報，請留意`, config: cfg };
 }
 
-module.exports = { computeAlertLevel, isNightInTaipei, resolveConfig, DEFAULT_CONFIG, RANGES };
+module.exports = { computeAlertLevel, isNight, sunTimes, resolveConfig, DEFAULT_CONFIG, RANGES };

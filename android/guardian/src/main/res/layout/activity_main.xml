@@ -49,8 +49,9 @@
             android:layout_height="match_parent" />
 
         <!-- bottom|end, not a top corner — the page itself already fills every top/side
-             corner with its own controls (Leaflet zoom, settings gear, layer icon column). -->
-        <ImageButton
+             corner with its own controls (Leaflet zoom, settings gear, layer icon column).
+             Person icon, not a pencil — this switches WHO you're tracking, not just edits text. -->
+        <TextView
             android:id="@+id/btnChangeLink"
             android:layout_width="40dp"
             android:layout_height="40dp"
@@ -58,8 +59,11 @@
             android:layout_margin="10dp"
             android:background="#88000000"
             android:contentDescription="變更連結"
-            android:src="@android:drawable/ic_menu_edit"
-            app:tint="#ffffff" />
+            android:gravity="center"
+            android:text="👤"
+            android:textSize="20sp"
+            android:clickable="true"
+            android:focusable="true" />
 
     </FrameLayout>
 

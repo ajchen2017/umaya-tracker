@@ -351,7 +351,7 @@ function updateAlertBanner(alert) {
 
   document.getElementById('alertInfoTooltip').innerHTML = `
     🟢 綠：${cfg.greenHours} 小時內有回報，或已標記「停駐中」<br>
-    🟡 黃：夜間（${cfg.nightStart}–${cfg.nightEnd}）斷訊，或斷訊超過 ${cfg.campingSilenceHours} 小時但判斷為停駐<br>
+    🟡 黃：登山者當地夜間（依定位經緯度計算日出日落）斷訊，或斷訊超過 ${cfg.campingSilenceHours} 小時但判斷為停駐<br>
     🟠 橘：白天斷訊 ${cfg.dayOrangeStart}–${cfg.dayOrangeEnd} 小時<br>
     🔴 紅：SOS，或白天斷訊超過 ${cfg.redDayHours} 小時
   `;
@@ -368,10 +368,7 @@ function ensureAudioCtx() {
   if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
   return audioCtx;
 }
-document.addEventListener('click', () => {
-  try { ensureAudioCtx(); } catch {}
-  try { window.speechSynthesis && window.speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch {}
-}, { once: true });
+document.addEventListener('click', () => { try { ensureAudioCtx(); } catch {} }, { once: true });
 
 function sosBeep() {
   try {
@@ -386,21 +383,6 @@ function sosBeep() {
     osc.stop(ctx.currentTime + 0.4);
   } catch {
     // AudioContext unavailable/blocked — nothing more to do, see comment above.
-  }
-}
-
-// Same best-effort/gesture-unlock caveat as sosBeep — speechSynthesis is also blocked by
-// browser autoplay policy until a user gesture has happened on the page. English/lang
-// forced so it doesn't get read in whatever voice the device's default locale picks.
-function sosSpeak() {
-  try {
-    if (!window.speechSynthesis) return;
-    const utter = new SpeechSynthesisUtterance('Help, Help');
-    utter.lang = 'en-US';
-    utter.volume = 1;
-    window.speechSynthesis.speak(utter);
-  } catch {
-    // speechSynthesis unavailable/blocked — the beep and visual banner/frame still stand.
   }
 }
 
@@ -420,20 +402,18 @@ function updateSosAlert(alert) {
   banner.textContent = sosMuted
     ? '🆘 已發出 SOS 標記，請確認登山者狀況（聲音已靜音，點擊恢復）'
     : '🆘 已發出 SOS 標記，請確認登山者狀況（點擊靜音）';
+  // Flashing is the primary channel, not gated by the sound mute — sound can be blocked
+  // outright by the browser (autoplay policy, no gesture on the page yet), flashing can't.
+  banner.classList.toggle('flashing', active);
   document.getElementById('sosFrame').classList.toggle('show', active);
+  document.getElementById('sosFrame').classList.toggle('flashing', active);
 
   if (active && !sosMuted && !sosBeepTimer) {
     sosBeep();
-    sosSpeak();
-    let tick = 0;
-    sosBeepTimer = setInterval(() => {
-      sosBeep();
-      if (tick++ % 2 === 0) sosSpeak(); // every other tick (~3s) — "Help, Help" is longer than a beep
-    }, 1500);
+    sosBeepTimer = setInterval(sosBeep, 1500);
   } else if ((!active || sosMuted) && sosBeepTimer) {
     clearInterval(sosBeepTimer);
     sosBeepTimer = null;
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
   }
 }
 

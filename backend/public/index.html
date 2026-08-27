@@ -172,6 +172,27 @@
   }
   #sosFrame.show { display: block; }
 
+  /* Flashing is the alert's primary channel — sound can be silently blocked outright by
+     the browser's autoplay policy until the guardian has clicked anywhere on the page, but
+     nothing can block a plain color/opacity animation from showing. */
+  @media (prefers-reduced-motion: no-preference) {
+    #sosBanner.flashing { animation: sosBannerFlash 1s infinite; }
+    #sosFrame.flashing { animation: sosFrameFlash 1s infinite; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    /* Still needs to read as unmistakably "alarmed", just without motion. */
+    #sosBanner.flashing { background: #ff2d2d; }
+    #sosFrame.flashing { border-color: #ff2d2d; }
+  }
+  @keyframes sosBannerFlash {
+    0%, 100% { background: #d92b2b; }
+    50% { background: #ff7a7a; color: #7a0000; }
+  }
+  @keyframes sosFrameFlash {
+    0%, 100% { border-color: #d92b2b; opacity: 1; }
+    50% { border-color: #ff7a7a; opacity: 0.5; }
+  }
+
   /* Whole right-side icon column at plain fixed offsets, stacked 52px apart under
      btnSettings — hikeName's max-width above keeps its wrapped text out of this column
      entirely, so none of these need to track the topbar's (variable) height. */

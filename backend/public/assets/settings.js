@@ -16,8 +16,6 @@ function setStatus(el, text, kind) {
 // --- Alert level thresholds (admin-gated: see routes/public.js) ---
 const ALERT_FIELD_IDS = {
   greenHours: 'cfgGreenHours',
-  nightStart: 'cfgNightStart',
-  nightEnd: 'cfgNightEnd',
   campingSilenceHours: 'cfgCampingSilenceHours',
   dayOrangeStart: 'cfgDayOrangeStart',
   dayOrangeEnd: 'cfgDayOrangeEnd',

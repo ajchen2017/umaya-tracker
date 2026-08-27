@@ -11,7 +11,7 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.ImageButton
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -52,7 +52,7 @@ class MainActivity : AppCompatActivity() {
         linkInput = findViewById(R.id.linkInput)
         webView = findViewById(R.id.webView)
         val btnGo = findViewById<Button>(R.id.btnGo)
-        val btnChangeLink = findViewById<ImageButton>(R.id.btnChangeLink)
+        val btnChangeLink = findViewById<TextView>(R.id.btnChangeLink)
 
         setupWebView()
 
