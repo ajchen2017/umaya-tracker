@@ -828,6 +828,11 @@ function clearMapVisuals() {
   hasCenteredOnStart = false;
   startLatLng = null;
   lastRenderedPoints = null;
+  // Without this the RudyMap-bounds check on the 🗺️ button kept comparing against
+  // the just-deleted hike's last (possibly out-of-Taiwan) position, refusing to
+  // switch back to 魯地圖 even though there's no longer any track to be out of bounds.
+  lastLatLng = null;
+  if (currentMapLayer !== 'rudy') switchLayer('rudy');
   document.getElementById('btnStart').disabled = true;
   document.getElementById('lastUpdate').textContent = '—';
   document.getElementById('lastPos').textContent = '—';
