@@ -372,6 +372,9 @@ let elevationFrozen = false;
 let elevationPxPerPoint = 8;
 let lastElevationHike = null;
 let lastElevationPoints = null;
+// Default off: most check-ins never need it, and it used to eat space in the
+// status bar even when nobody looked at it. Remembered per-browser once toggled on.
+let elevationChartVisible = localStorage.getItem('elevationChartVisible') === '1';
 
 // Median (not mean) so one long gap — a dead zone, a pause — doesn't skew the
 // "per grid" estimate away from the actual recording interval.
@@ -469,7 +472,7 @@ function drawElevationChart() {
   const frameSvg = `<rect class="chart-frame" x="${padX}" y="${padTop}" width="${totalW - padX * 2}" height="${plotH}" />`;
 
   scrollEl.innerHTML = `<svg width="${totalW}" height="${H}" viewBox="0 0 ${totalW} ${H}" preserveAspectRatio="none">${frameSvg}${gridSvg}<path class="elevation-line" d="${pathD}" />${dotsSvg}${labelsSvg}</svg>`;
-  el.classList.add('show');
+  el.classList.toggle('show', elevationChartVisible);
   el.dataset.frozen = elevationFrozen ? '1' : '0';
 
   if (wasNearRightEdge) requestAnimationFrame(() => { scrollEl.scrollLeft = scrollEl.scrollWidth; });
@@ -493,6 +496,15 @@ function drawElevationChart() {
   const perGrid = interval ? ` · 每格約 ${formatDuration(interval * 5)}` : '';
   xAxisEl.textContent = `時間（定位頻率）${perGrid}`;
 }
+
+const btnElevToggle = document.getElementById('btnElevToggle');
+btnElevToggle.classList.toggle('active', elevationChartVisible);
+btnElevToggle.addEventListener('click', () => {
+  elevationChartVisible = !elevationChartVisible;
+  localStorage.setItem('elevationChartVisible', elevationChartVisible ? '1' : '0');
+  btnElevToggle.classList.toggle('active', elevationChartVisible);
+  drawElevationChart();
+});
 
 document.getElementById('btnElevZoomIn').addEventListener('click', () => {
   elevationPxPerPoint = Math.min(ELEVATION_PX_MAX, elevationPxPerPoint + 3);

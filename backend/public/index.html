@@ -56,17 +56,27 @@
   #statusbar .row { display: flex; gap: 8px; margin-top: 2px; }
   #statusbar .label { color: #777; }
 
-  /* Live elevation-vs-time strip chart — only takes space once there's
-     something to plot, so it doesn't eat room on the initial "no data" view.
-     Split into three pieces: a fixed Y-axis gutter (left), the horizontally
-     scrollable plot itself (native scrollbar = the "drag back through
-     history" ask), and a fixed X-axis caption row below — so the axis labels
-     never scroll away with the data, only the plot does. */
+  /* Live elevation-vs-time strip chart — floats over the left edge of the map
+     rather than living in the bottom status bar, and only shows when the
+     guardian has explicitly turned it on (default off — most check-ins never
+     need it, and it used to eat status-bar space even empty). Split into
+     three pieces: a fixed Y-axis gutter (left), the horizontally scrollable
+     plot itself (native scrollbar = the "drag back through history" ask),
+     and a fixed X-axis caption row below — so the axis labels never scroll
+     away with the data, only the plot does. */
   #elevationChart {
-    display: none; flex: 1 1 auto; min-width: 150px; max-width: 260px; height: 122px;
-    position: relative; flex-direction: column;
+    display: none; flex-direction: column;
+    position: fixed; left: 0; top: 50%; transform: translateY(-50%); z-index: 900;
+    min-width: 150px; max-width: 260px; height: 122px;
+    background: rgba(255,255,255,.95); border-radius: 0 8px 8px 0;
+    box-shadow: 0 1px 8px rgba(0,0,0,.3); padding: 6px 6px 4px;
   }
   #elevationChart.show { display: flex; }
+  #btnElevToggle {
+    margin-left: 8px; border: none; border-radius: 20px; background: rgba(0,0,0,.55);
+    color: #fff; padding: 6px 14px; font-size: 13px; cursor: pointer;
+  }
+  #btnElevToggle.active { background: #2d7dd2; }
   #elevationMain { flex: 1 1 auto; display: flex; overflow: hidden; min-height: 0; }
   #elevationAxisY { flex: 0 0 32px; }
   #elevationAxisY svg { display: block; width: 100%; height: 100%; }
@@ -209,6 +219,7 @@
     <button id="btnRudy" class="active">魯地圖</button>
     <button id="btnOsm">線上地圖</button>
   </div>
+  <button id="btnElevToggle" title="顯示／隱藏高度曲線">📈 曲線</button>
   <a id="btnSettings" title="設定">⚙️</a>
 </div>
 
@@ -239,17 +250,18 @@
     <div class="row"><span class="label">目前位置</span><span id="lastPos">—</span></div>
     <div class="row"><span class="label">手機電量</span><span id="lastBattery">—</span></div>
   </div>
-  <div id="elevationChart">
-    <div id="elevationZoomControls">
-      <button id="btnElevZoomOut" title="縮小（點間距變窄，看更多歷史）">－</button>
-      <button id="btnElevZoomIn" title="放大（點間距變寬）">＋</button>
-    </div>
-    <div id="elevationMain">
-      <div id="elevationAxisY"></div>
-      <div id="elevationScroll"></div>
-    </div>
-    <div id="elevationAxisX"></div>
+</div>
+
+<div id="elevationChart">
+  <div id="elevationZoomControls">
+    <button id="btnElevZoomOut" title="縮小（點間距變窄，看更多歷史）">－</button>
+    <button id="btnElevZoomIn" title="放大（點間距變寬）">＋</button>
   </div>
+  <div id="elevationMain">
+    <div id="elevationAxisY"></div>
+    <div id="elevationScroll"></div>
+  </div>
+  <div id="elevationAxisX"></div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
