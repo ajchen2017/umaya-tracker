@@ -410,12 +410,13 @@ function alertDots(level) {
 }
 
 function updateAlertBanner(alert) {
-  const el = document.getElementById('alertBanner');
+  const el = document.getElementById('alertMessage');
   document.getElementById('alertIcon').textContent = alertDots(alert && alert.level);
   if (!alert || alert.level === 'green' || !alert.message) {
     el.classList.remove('show', 'yellow', 'orange', 'red');
   } else {
-    el.textContent = `${alertDots(alert.level)} ${alert.message}`;
+    // Dots already shown right before this in #alertIcon — no need to repeat them here.
+    el.textContent = alert.message;
     el.className = `show ${alert.level}`;
   }
 

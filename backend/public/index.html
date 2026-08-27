@@ -134,16 +134,13 @@
   }
 
   /* Guardian-facing alert level — advisory only, see design proposal. Green
-     shows nothing (nothing to say); yellow/orange/red get progressively louder. */
-  #alertBanner {
-    display: none; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px;
-    margin-bottom: 8px; font-size: 13px; font-weight: 600;
-  }
-  #alertBanner.show { display: flex; }
-  #alertBanner.yellow { background: #fff6da; color: #8a6d00; }
-  #alertBanner.orange { background: #ffe8d1; color: #9a4b00; }
-  #alertBanner.red { background: #fdd; color: #a30000; }
-  #alertBanner .info { margin-left: auto; cursor: default; opacity: .7; }
+     shows nothing (nothing to say); yellow/orange/red get progressively louder.
+     Sits inline in the 警戒狀態 row next to the dot gauge, not its own banner row. */
+  #alertMessage { display: none; font-size: 10px; font-weight: 600; }
+  #alertMessage.show { display: inline; }
+  #alertMessage.yellow { color: #8a6d00; }
+  #alertMessage.orange { color: #9a4b00; }
+  #alertMessage.red { color: #a30000; }
 
   #alertInfo { position: relative; display: inline-flex; align-items: center; cursor: default; }
   #alertIcon { font-size: 15px; }
@@ -302,8 +299,8 @@
         <span id="alertIcon">⚪⚪⚪</span>
         <span class="tooltip" id="alertInfoTooltip"><!-- filled in dynamically from the hike's actual thresholds --></span>
       </span>
+      <span id="alertMessage"></span>
     </div>
-    <div id="alertBanner"></div>
     <div id="signalLegend"></div>
     <div class="row"><span class="label">行程狀態</span><span id="hikeStatus">—</span></div>
     <div class="row"><span class="label">最後更新</span><span id="lastUpdate">—</span></div>
