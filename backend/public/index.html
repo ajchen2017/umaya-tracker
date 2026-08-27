@@ -64,11 +64,13 @@
      plot itself (native scrollbar = the "drag back through history" ask),
      and a fixed X-axis caption row below — so the axis labels never scroll
      away with the data, only the plot does. */
+  /* bottom is set from JS to sit flush against the status bar's actual (variable)
+     height — the bar grows/shrinks with the alert banner and signal legend. */
   #elevationChart {
     display: none; flex-direction: column;
-    position: fixed; left: 0; top: 50%; transform: translateY(-50%); z-index: 900;
+    position: fixed; left: 0; z-index: 900;
     min-width: 150px; max-width: 260px; height: 122px;
-    background: rgba(255,255,255,.95); border-radius: 0 8px 8px 0;
+    background: rgba(255,255,255,.95); border-radius: 8px 8px 0 0;
     box-shadow: 0 1px 8px rgba(0,0,0,.3); padding: 6px 6px 4px;
   }
   #elevationChart.show { display: flex; }

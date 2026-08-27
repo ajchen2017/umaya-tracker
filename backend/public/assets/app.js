@@ -474,6 +474,9 @@ function drawElevationChart() {
   scrollEl.innerHTML = `<svg width="${totalW}" height="${H}" viewBox="0 0 ${totalW} ${H}" preserveAspectRatio="none">${frameSvg}${gridSvg}<path class="elevation-line" d="${pathD}" />${dotsSvg}${labelsSvg}</svg>`;
   el.classList.toggle('show', elevationChartVisible);
   el.dataset.frozen = elevationFrozen ? '1' : '0';
+  // Status bar's height varies (alert banner, signal legend) — pin flush above it, not a
+  // hardcoded offset that would drift out of place whenever that content changes.
+  el.style.bottom = `${document.getElementById('statusbar').offsetHeight}px`;
 
   if (wasNearRightEdge) requestAnimationFrame(() => { scrollEl.scrollLeft = scrollEl.scrollWidth; });
 
