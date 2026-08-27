@@ -23,6 +23,9 @@ app.use('/api/signal-points', signalPointsRoutes);
 
 // Family view (SPA): static assets + one HTML shell for any share token.
 app.use('/t/assets', express.static(path.join(__dirname, '..', 'public', 'assets')));
+// Debug-build APK for manual distribution to testers — not linked from anywhere, just a
+// stable URL to hand out. The file itself isn't tracked in git; deployed by scp.
+app.use('/downloads', express.static(path.join(__dirname, '..', 'public', 'downloads')));
 app.get('/t/:shareToken/settings', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'settings.html'));
 });
