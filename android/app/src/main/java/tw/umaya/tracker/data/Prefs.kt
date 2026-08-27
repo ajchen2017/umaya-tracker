@@ -6,13 +6,14 @@ import androidx.security.crypto.MasterKey
 
 /** Fixed set of selectable GPS-fix intervals: seconds value paired with its display label. */
 val INTERVAL_PRESETS = listOf(
-    5 to "5 秒",
-    10 to "10 秒",
-    20 to "20 秒",
+    30 to "0.5 分鐘",
     60 to "1 分鐘",
-    180 to "3 分鐘",
+    120 to "2 分鐘",
+    300 to "5 分鐘",
     600 to "10 分鐘",
-    3600 to "1 小時",
+    900 to "15 分鐘",
+    1800 to "30 分鐘",
+    3600 to "60 分鐘",
 )
 
 fun intervalLabel(seconds: Int): String =
@@ -53,7 +54,7 @@ class Prefs(context: Context) {
      * [tw.umaya.tracker.ui.INTERVAL_PRESETS]); smaller = better tracking, worse battery.
      */
     var intervalSeconds: Int
-        get() = prefs.getInt("interval_seconds", 180)
+        get() = prefs.getInt("interval_seconds", 60)
         set(value) = prefs.edit().putInt("interval_seconds", value).apply()
 
     /** Remembers the last-entered per-hike nickname as the default for the next hike. */

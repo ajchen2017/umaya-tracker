@@ -37,8 +37,11 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -97,7 +100,7 @@ private fun requestBackgroundExecutionExemption(context: android.content.Context
 /** Snaps to the fixed [INTERVAL_PRESETS] list rather than any continuous value. */
 @Composable
 private fun IntervalSlider(seconds: Int, onSecondsChange: (Int) -> Unit, onChangeFinished: () -> Unit = {}) {
-    val index = INTERVAL_PRESETS.indexOfFirst { it.first == seconds }.let { if (it < 0) 3 else it }
+    val index = INTERVAL_PRESETS.indexOfFirst { it.first == seconds }.let { if (it < 0) 1 else it }
     Text("定位頻率：每 ${intervalLabel(seconds)} 一筆", style = MaterialTheme.typography.bodyMedium)
     Slider(
         value = index.toFloat(),
@@ -756,7 +759,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("伺服器狀態：")
+                Text("伺服器狀態：", fontWeight = FontWeight.Bold)
                 Text(
                     when (serverOnline) {
                         true -> "正常"
@@ -790,7 +793,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             Spacer(Modifier.height(8.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("行程狀態：", style = MaterialTheme.typography.titleMedium)
+                Text("行程狀態：", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text(
                     if (isPaused) "進行中（定位已暫停）" else "進行中",
                     style = MaterialTheme.typography.titleMedium,
@@ -801,7 +804,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             Spacer(Modifier.height(8.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("分享連結給留守人：")
+                Text("分享連結給留守人：", fontWeight = FontWeight.Bold)
                 TooltipBox(
                     positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
                     tooltip = { PlainTooltip { Text("寄給留守人") } },
@@ -845,12 +848,16 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     ) { Text("📤") }
                 }
             }
-            Text(shareUrl)
-            Text(
-                "（每隻手機配有一個固定連結網址）",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Text(buildAnnotatedString {
+                append(shareUrl)
+                append(" ")
+                withStyle(
+                    SpanStyle(
+                        fontSize = MaterialTheme.typography.bodySmall.fontSize,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                ) { append("（每隻手機配有一個固定連結網址）") }
+            })
 
             Spacer(Modifier.height(24.dp))
 
