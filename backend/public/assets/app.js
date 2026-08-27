@@ -362,32 +362,31 @@ function updateHikeStatus(hike) {
 // --- Live elevation-vs-time strip chart ---
 // Horizontally scrollable (native scrollbar) so the guardian can drag back
 // through the whole hike's history, not just a fixed recent window; zoom
-// buttons adjust px-per-point. Auto-follows the live edge only while already
-// scrolled near it, so browsing history doesn't get yanked back on the next poll.
+// buttons step through what one grid division represents. X is real elapsed
+// time, not point index — a delayed/dropped point doesn't drift off a
+// nominal grid, it just leaves a gap, same as a paused/silent stretch would.
+// Auto-follows the live edge only while already scrolled near it, so
+// browsing history doesn't get yanked back on the next poll.
 const ELEVATION_MAX_POINTS = 2000; // sanity cap for very long hikes, not a "recent window"
-const ELEVATION_PX_MIN = 3, ELEVATION_PX_MAX = 24;
+const ELEVATION_PX_PER_GRID = 60; // constant on-screen spacing between gridlines at any zoom level
+const ELEVATION_GRID_LEVELS = [
+  { sec: 60, label: '1 分鐘' },
+  { sec: 5 * 60, label: '5 分鐘' },
+  { sec: 15 * 60, label: '15 分鐘' },
+  { sec: 30 * 60, label: '30 分鐘' },
+  { sec: 60 * 60, label: '1 小時' },
+  { sec: 2 * 60 * 60, label: '2 小時' },
+];
 const ELEVATION_EVENT_LABELS = { sos: 'SOS', safe: '我很好', camping: '停駐中' };
 let elevationHikeId = null;
 let elevationFrozen = false;
-let elevationPxPerPoint = 8;
+let elevationGridLevelIdx = 0; // index into ELEVATION_GRID_LEVELS; 0 = finest (1 分鐘/格)
 let lastElevationHike = null;
 let lastElevationPoints = null;
 // Default off: most check-ins never need it, and it used to eat space in the
 // status bar even when nobody looked at it. Remembered per-browser once toggled on.
 let elevationChartVisible = localStorage.getItem('elevationChartVisible') === '1';
 
-// Median (not mean) so one long gap — a dead zone, a pause — doesn't skew the
-// "per grid" estimate away from the actual recording interval.
-function medianIntervalSeconds(pts) {
-  const deltas = [];
-  for (let i = 1; i < pts.length; i++) {
-    const d = (new Date(pts[i].recorded_at) - new Date(pts[i - 1].recorded_at)) / 1000;
-    if (d > 0) deltas.push(d);
-  }
-  if (!deltas.length) return null;
-  deltas.sort((a, b) => a - b);
-  return deltas[Math.floor(deltas.length / 2)];
-}
 function formatDuration(sec) {
   if (sec < 60) return `${Math.round(sec)} 秒`;
   if (sec < 3600) return `${Math.round(sec / 60)} 分`;
@@ -421,33 +420,34 @@ function drawElevationChart() {
   const maxAlt = Math.max(...alts);
   const altRange = Math.max(1, maxAlt - minAlt); // avoid divide-by-zero on flat ground
 
-  // Fixed pixel dimensions (not a responsive viewBox) — width grows with the
-  // point count so the scroll container actually has something to scroll.
-  // No room reserved here for axis text anymore — that lives in the separate
-  // fixed Y-axis/X-axis panels, which is what keeps it from scrolling away.
+  // Fixed pixel dimensions (not a responsive viewBox) — width grows with elapsed real
+  // time so the scroll container actually has something to scroll. No room reserved
+  // here for axis text anymore — that lives in the separate fixed Y-axis/X-axis
+  // panels, which is what keeps it from scrolling away.
   const H = 96;
   const padX = 6, padTop = 18, padBottom = 6;
   const plotH = H - padTop - padBottom;
-  const dataW = padX * 2 + (withAltitude.length - 1) * elevationPxPerPoint;
+  const gridSec = ELEVATION_GRID_LEVELS[elevationGridLevelIdx].sec;
+  const pxPerSec = ELEVATION_PX_PER_GRID / gridSec;
+  const times = withAltitude.map((p) => new Date(p.recorded_at).getTime());
+  const startMs = times[0];
+  // X is real elapsed time since the first point — not point index. A delayed or
+  // dropped point doesn't drift off a nominal grid, it just leaves a visible gap.
+  const xAt = (i) => padX + ((times[i] - startMs) / 1000) * pxPerSec;
+  const yAt = (alt) => padTop + plotH - ((alt - minAlt) / altRange) * plotH;
+  const dataW = xAt(withAltitude.length - 1) + padX;
   // Grid/frame always fill at least the visible panel — pre-drawn regardless of how much
   // data exists yet, so only the line/dots/labels grow as new points arrive, not the canvas.
   const totalW = Math.max(dataW, scrollEl.clientWidth || 0);
-  const xAt = (i) => padX + i * elevationPxPerPoint;
-  const yAt = (alt) => padTop + plotH - ((alt - minAlt) / altRange) * plotH;
 
   let gridSvg = '';
   for (let g = 0; g <= 2; g++) {
     const y = (padTop + (plotH / 2) * g).toFixed(1);
     gridSvg += `<line class="axis-line" x1="${padX}" y1="${y}" x2="${totalW - padX}" y2="${y}" />`;
   }
-  // Vertical ticks one per real minute — not "every 5 points", since the phone's
-  // configured recording interval (not knowable from here except by inferring it from
-  // the actual gaps) decides how many points that actually is. Drawn across the full
-  // canvas, not stopped at the last real data point — a fixed grid pattern.
-  const medianIntervalSec = medianIntervalSeconds(withAltitude);
-  const pointsPerMinute = medianIntervalSec ? Math.max(1, Math.round(60 / medianIntervalSec)) : 5;
-  const vTickStep = pointsPerMinute * elevationPxPerPoint;
-  for (let x = padX; x <= totalW - padX; x += vTickStep) {
+  // Vertical ticks at a constant on-screen spacing, each spanning gridSec of real
+  // time — a true time axis at whatever granularity the zoom level currently is.
+  for (let x = padX; x <= totalW - padX; x += ELEVATION_PX_PER_GRID) {
     gridSvg += `<line class="axis-line" x1="${x.toFixed(1)}" y1="${padTop}" x2="${x.toFixed(1)}" y2="${H - padBottom}" />`;
   }
 
@@ -498,11 +498,12 @@ function drawElevationChart() {
     ${yTicks}
   </svg>`;
 
-  // Fixed X-axis caption: what one grid division actually spans in time — the phone's
-  // configured interval isn't sent to the server, so this is inferred from the real gaps
-  // between recorded points (same basis as vTickStep above).
-  const perGrid = medianIntervalSec ? ` · 每格 ${formatDuration(medianIntervalSec * pointsPerMinute)}` : '';
-  xAxisEl.textContent = `時間（定位頻率）${perGrid}`;
+  // X is a true time axis now, so "每格" is always exactly what the current zoom level
+  // says, by construction — no longer an estimate. Still surface the phone's actual
+  // configured recording interval when the hike has one, since that's separate useful
+  // context (how dense the real data is), not what the grid spacing means.
+  const intervalNote = hike.interval_seconds ? ` · 定位頻率 ${formatDuration(hike.interval_seconds)}` : '';
+  xAxisEl.textContent = `時間（每格 ${ELEVATION_GRID_LEVELS[elevationGridLevelIdx].label}）${intervalNote}`;
 }
 
 const btnElevToggle = document.getElementById('btnElevToggle');
@@ -515,11 +516,15 @@ btnElevToggle.addEventListener('click', () => {
 });
 
 document.getElementById('btnElevZoomIn').addEventListener('click', () => {
-  elevationPxPerPoint = Math.min(ELEVATION_PX_MAX, elevationPxPerPoint + 3);
+  elevationGridLevelIdx = Math.max(0, elevationGridLevelIdx - 1);
   drawElevationChart();
 });
 document.getElementById('btnElevZoomOut').addEventListener('click', () => {
-  elevationPxPerPoint = Math.max(ELEVATION_PX_MIN, elevationPxPerPoint - 3);
+  elevationGridLevelIdx = Math.min(ELEVATION_GRID_LEVELS.length - 1, elevationGridLevelIdx + 1);
+  drawElevationChart();
+});
+document.getElementById('btnElevZoomReset').addEventListener('click', () => {
+  elevationGridLevelIdx = 0;
   drawElevationChart();
 });
 

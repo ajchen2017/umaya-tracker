@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS hikes (
 ALTER TABLE hikes ADD COLUMN IF NOT EXISTS alert_config JSONB;
 ALTER TABLE hikes ADD COLUMN IF NOT EXISTS paused BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE hikes ADD COLUMN IF NOT EXISTS nickname TEXT;
+-- The phone's configured recording interval, so the family page can label its
+-- elevation-chart grid with the real value instead of inferring it from point gaps.
+ALTER TABLE hikes ADD COLUMN IF NOT EXISTS interval_seconds INTEGER;
 -- Superseded by users.share_token (see above) — a hike-level token meant every
 -- new trip broke the family's saved link.
 ALTER TABLE hikes DROP COLUMN IF EXISTS share_token;

@@ -5,12 +5,12 @@ const { requireAuth } = require('../middleware/auth');
 const router = express.Router();
 
 router.post('/', requireAuth, async (req, res) => {
-  const { name, nickname } = req.body;
+  const { name, nickname, intervalSeconds } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
 
   const { rows } = await pool.query(
-    'INSERT INTO hikes (user_id, name, nickname) VALUES ($1, $2, $3) RETURNING *',
-    [req.userId, name, nickname || null]
+    'INSERT INTO hikes (user_id, name, nickname, interval_seconds) VALUES ($1, $2, $3, $4) RETURNING *',
+    [req.userId, name, nickname || null, intervalSeconds || null]
   );
   res.status(201).json(rows[0]);
 });
@@ -49,6 +49,22 @@ router.patch('/:id/pause-state', requireAuth, async (req, res) => {
   const { rows } = await pool.query(
     'UPDATE hikes SET paused = $1 WHERE id = $2 AND user_id = $3 RETURNING id',
     [paused, req.params.id, req.userId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'Hike not found' });
+  res.json({ ok: true });
+});
+
+// Same best-effort contract as pause-state — reflects a mid-hike interval change
+// (定位頻率 dialog) on the family page's elevation-chart grid.
+router.patch('/:id/interval', requireAuth, async (req, res) => {
+  const { intervalSeconds } = req.body;
+  if (!Number.isInteger(intervalSeconds) || intervalSeconds <= 0) {
+    return res.status(400).json({ error: 'intervalSeconds (positive integer) is required' });
+  }
+
+  const { rows } = await pool.query(
+    'UPDATE hikes SET interval_seconds = $1 WHERE id = $2 AND user_id = $3 RETURNING id',
+    [intervalSeconds, req.params.id, req.userId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Hike not found' });
   res.json({ ok: true });

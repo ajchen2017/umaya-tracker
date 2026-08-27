@@ -85,7 +85,11 @@
   #elevationScroll { flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
   #elevationScroll svg { display: block; height: 100%; }
   #elevationAxisX { flex: 0 0 auto; font-size: 10px; color: #888; text-align: center; padding-top: 2px; }
-  #elevationZoomControls { position: absolute; top: 0; right: 0; display: flex; gap: 2px; z-index: 1; }
+  #elevationZoomControls {
+    position: absolute; top: 0; right: 0; z-index: 1;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+  }
+  #elevationZoomRow { display: flex; gap: 2px; }
   #elevationZoomControls button {
     width: 16px; height: 16px; font-size: 12px; line-height: 1; padding: 0;
     border: 1px solid #ccc; border-radius: 3px; background: rgba(255,255,255,.9); cursor: pointer;
@@ -256,8 +260,11 @@
 
 <div id="elevationChart">
   <div id="elevationZoomControls">
-    <button id="btnElevZoomOut" title="縮小（點間距變窄，看更多歷史）">－</button>
-    <button id="btnElevZoomIn" title="放大（點間距變寬）">＋</button>
+    <div id="elevationZoomRow">
+      <button id="btnElevZoomOut" title="縮小（每格時間跨度變長，可看更久的歷史，最粗到 2 小時一格）">－</button>
+      <button id="btnElevZoomIn" title="放大（每格時間跨度變短）">＋</button>
+    </div>
+    <button id="btnElevZoomReset" title="重設為預設縮放（每格 1 分鐘）">↺</button>
   </div>
   <div id="elevationMain">
     <div id="elevationAxisY"></div>
