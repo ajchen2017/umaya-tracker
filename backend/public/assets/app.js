@@ -42,6 +42,7 @@ const rudyLayer = L.tileLayer(RUDY_TILE_URL, {
 });
 const osmLayer = L.tileLayer(OSM_TILE_URL, { maxZoom: 19, maxNativeZoom: 19, attribution: '&copy; OpenStreetMap contributors' });
 let currentMapLayer = 'rudy';
+const MAP_LAYER_LABEL = { rudy: '魯地圖', osm: '線上地圖' };
 switchLayer('rudy'); // also sets btnMapLayer's initial title — real default (Taiwan vs. not) applies once the hiker's actual position is known, see render()
 
 const TRACK_COLORS = [
@@ -699,8 +700,6 @@ async function refresh() {
 document.getElementById('btnRefresh').addEventListener('click', () => {
   location.href = location.pathname + '?_=' + Date.now();
 });
-
-const MAP_LAYER_LABEL = { rudy: '魯地圖', osm: '線上地圖' };
 
 function switchLayer(layer) {
   currentMapLayer = layer;
