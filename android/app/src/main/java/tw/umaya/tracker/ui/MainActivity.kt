@@ -28,6 +28,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import tw.umaya.tracker.data.ApiClient
 import tw.umaya.tracker.data.CreateHikeRequest
@@ -207,6 +208,18 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
 
+    // Confirms the server actually has (or no longer has) the route — not just that
+    // the PUT/DELETE returned 200 — before telling the hiker it's done. Polls briefly
+    // since the write and this read can race.
+    suspend fun verifyRouteStatus(token: String, expectPresent: Boolean): Boolean {
+        repeat(5) { attempt ->
+            val res = ApiClient.service.getRouteStatus("Bearer $token", prefs.activeHikeId)
+            if (res.isSuccessful && res.body()?.hasRoute == expectPresent) return true
+            if (attempt < 4) delay(500)
+        }
+        return false
+    }
+
     val routePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
@@ -218,7 +231,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 val body = text.toRequestBody("application/xml".toMediaTypeOrNull())
                 val res = ApiClient.service.uploadRoute("Bearer $token", prefs.activeHikeId, body)
                 if (!res.isSuccessful) throw Exception("上傳失敗")
-                Toast.makeText(context, "✅ 規劃路線已上傳", Toast.LENGTH_LONG).show()
+                if (!verifyRouteStatus(token, expectPresent = true)) throw Exception("已上傳，但伺服器尚未確認存好，請稍後查看留守人網頁")
+                Toast.makeText(context, "✅ 規劃路線已上傳並確認", Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
                 Toast.makeText(context, friendlyErrorMessage(e), Toast.LENGTH_LONG).show()
             }
@@ -238,7 +252,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                             val token = prefs.authToken!!
                             val res = ApiClient.service.deleteRoute("Bearer $token", prefs.activeHikeId)
                             if (!res.isSuccessful) throw Exception("清除失敗")
-                            Toast.makeText(context, "✅ 規劃路線已清除", Toast.LENGTH_LONG).show()
+                            if (!verifyRouteStatus(token, expectPresent = false)) throw Exception("已送出清除，但伺服器尚未確認，請稍後查看留守人網頁")
+                            Toast.makeText(context, "✅ 規劃路線已清除並確認", Toast.LENGTH_LONG).show()
                         } catch (e: Exception) {
                             Toast.makeText(context, friendlyErrorMessage(e), Toast.LENGTH_LONG).show()
                         }

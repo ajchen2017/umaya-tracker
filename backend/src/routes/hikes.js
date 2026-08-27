@@ -57,6 +57,18 @@ router.put('/:id/route', requireAuth, express.text({ type: '*/*', limit: '5mb' }
   res.json({ ok: true });
 });
 
+// Confirms what the server actually has stored right now — used by the app to
+// verify an upload/clear really landed before telling the hiker it's done,
+// rather than trusting the PUT/DELETE response alone.
+router.get('/:id/route', requireAuth, async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT planned_route FROM hikes WHERE id = $1 AND user_id = $2',
+    [req.params.id, req.userId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'Hike not found' });
+  res.json({ hasRoute: rows[0].planned_route != null });
+});
+
 // Removes the planned route without replacing it (e.g. the hiker changed plans).
 router.delete('/:id/route', requireAuth, async (req, res) => {
   const { rows } = await pool.query(

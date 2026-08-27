@@ -60,7 +60,7 @@ let plannedLayer = L.layerGroup().addTo(map);
 let lastPointCount = 0;
 let hasCenteredOnStart = false;
 let startLatLng = null;
-let plannedRouteRendered = false;
+let lastPlannedRoute = undefined; // undefined = never checked yet, distinct from null (cleared)
 let lastRenderedPoints = null;
 let currentNickname = '';
 let lastPointRecordedAt = null;
@@ -339,9 +339,15 @@ function render(data) {
   updateSosAlert(alert);
   updateHikeStatus(hike);
 
-  if (hike.planned_route && !plannedRouteRendered) {
-    plannedRouteRendered = true;
-    renderPlannedRoute(hike.planned_route);
+  // Re-check every poll, not just once: the planned route can be replaced or
+  // cleared from the phone/settings page mid-hike, and the map needs to follow.
+  if (hike.planned_route !== lastPlannedRoute) {
+    lastPlannedRoute = hike.planned_route;
+    if (hike.planned_route) {
+      renderPlannedRoute(hike.planned_route);
+    } else {
+      plannedLayer.clearLayers();
+    }
   }
 
   if (points.length === lastPointCount) return; // nothing new

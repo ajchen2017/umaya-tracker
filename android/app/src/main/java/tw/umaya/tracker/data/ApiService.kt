@@ -4,6 +4,7 @@ import okhttp3.RequestBody
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.DELETE
+import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.PATCH
 import retrofit2.http.POST
@@ -35,6 +36,7 @@ data class UploadPointsRequest(val points: List<UploadPointDto>)
 data class UploadPointsResponse(val inserted: Int, val skipped: Int)
 
 data class PauseStateRequest(val paused: Boolean)
+data class RouteStatusDto(val hasRoute: Boolean)
 
 interface ApiService {
     @POST("auth/register")
@@ -81,4 +83,10 @@ interface ApiService {
         @Header("Authorization") bearer: String,
         @Path("id") hikeId: Long,
     ): Response<Unit>
+
+    @GET("hikes/{id}/route")
+    suspend fun getRouteStatus(
+        @Header("Authorization") bearer: String,
+        @Path("id") hikeId: Long,
+    ): Response<RouteStatusDto>
 }
