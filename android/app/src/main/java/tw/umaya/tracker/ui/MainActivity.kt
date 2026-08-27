@@ -443,6 +443,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var showIntervalDialog by remember { mutableStateOf(false) }
     var showClearRouteDialog by remember { mutableStateOf(false) }
     var showBackgroundExecDialog by remember { mutableStateOf(false) }
+    var showExitConfirmDialog by remember { mutableStateOf(false) }
     var backgroundExecutionEnabled by remember { mutableStateOf(prefs.backgroundExecutionEnabled) }
     var isPaused by remember { mutableStateOf(prefs.isPaused) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -501,6 +502,21 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 }) { Text("清除") }
             },
             dismissButton = { TextButton(onClick = { showClearRouteDialog = false }) { Text("取消") } },
+        )
+    }
+
+    if (showExitConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showExitConfirmDialog = false },
+            title = { Text("結束程式") },
+            text = { Text("確定要完整結束 App 嗎？如果行程還在進行中，定位追蹤也會跟著停止。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showExitConfirmDialog = false
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                }) { Text("結束") }
+            },
+            dismissButton = { TextButton(onClick = { showExitConfirmDialog = false }) { Text("取消") } },
         )
     }
 
@@ -619,6 +635,10 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                     prefs.shareToken = null
                                     onLoggedOut()
                                 },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("結束") },
+                                onClick = { menuExpanded = false; showExitConfirmDialog = true },
                             )
                         }
                     }
