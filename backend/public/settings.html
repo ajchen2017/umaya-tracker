@@ -36,6 +36,11 @@
   .status.ok { color: #1a9c4a; }
   .status.err { color: #d92b2b; }
 
+  #travelModeGrid button {
+    background: #fff; color: #444; border: 2px solid #ddd; padding: 10px 8px; border-radius: 8px; font-size: 14px;
+  }
+  #travelModeGrid button.selected { background: #2d7dd2; color: #fff; border-color: #2d7dd2; }
+
   #colorGrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
   #colorGrid button {
     width: 100%; aspect-ratio: 1; border-radius: 50%; border: 3px solid transparent; padding: 0;
@@ -103,6 +108,15 @@
   <input type="file" id="routeFile" accept=".gpx,.kml,application/gpx+xml,application/vnd.google-earth.kml+xml" />
   <button id="btnUploadRoute">上傳</button>
   <div class="status" id="routeStatus"></div>
+</div>
+
+<div class="card">
+  <h2>行進模式</h2>
+  <p class="hint">影響地圖上軌跡線怎麼判斷「這段連線合不合理」，只影響你這個瀏覽器的顯示，不影響原始資料。</p>
+  <div id="travelModeGrid" style="display:flex; gap:10px;">
+    <button type="button" id="modeHiking" style="flex:1;">🥾 健行模式</button>
+    <button type="button" id="modeCycling" style="flex:1;">🚴 自行車模式</button>
+  </div>
 </div>
 
 <div class="card">

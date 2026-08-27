@@ -51,6 +51,45 @@ const PLANNED_ROUTE_COLOR = '#2d7dd2'; // uploaded GPX/KML route is always blue
 
 let trackColor = localStorage.getItem('trackColor') || TRACK_COLORS[0];
 
+// Meters/second a mode is plausibly capable of — hiking tops out around a brisk walk/jog
+// (200m/min), cycling around 40km/h (700m/min). Set on the settings page, read here.
+const TRAVEL_MODE_SPEED_MPS = { hiking: 200 / 60, cycling: 700 / 60 };
+let travelMode = localStorage.getItem('travelMode') || 'hiking';
+window.addEventListener('storage', (e) => {
+  if (e.key !== 'travelMode') return;
+  travelMode = e.newValue || 'hiking';
+  if (lastRenderedPoints) drawTrack(lastRenderedPoints);
+});
+
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Keeps a point only if its straight-line distance from the last KEPT point implies a
+// plausible speed for the current travel mode (checked against the last kept point, not
+// the raw previous one — so skipping one bad point doesn't also reject the next good one).
+// Same idea as the phone's own GPS teleport filter, applied here to how the line is drawn.
+function filterPlausiblePoints(points) {
+  const speedLimit = TRAVEL_MODE_SPEED_MPS[travelMode] || TRAVEL_MODE_SPEED_MPS.hiking;
+  const kept = [];
+  let last = null;
+  points.forEach((p) => {
+    if (!last) { kept.push(p); last = p; return; }
+    const dtSec = (new Date(p.recorded_at) - new Date(last.recorded_at)) / 1000;
+    if (dtSec <= 0) return; // duplicate/out-of-order timestamp — no speed can be computed
+    const distM = haversineMeters(last.lat, last.lng, p.lat, p.lng);
+    if (distM / dtSec > speedLimit) return; // implausible for this mode — drop
+    kept.push(p);
+    last = p;
+  });
+  return kept;
+}
+
 const polyline = L.polyline([], { color: trackColor, weight: 4 }).addTo(map);
 let lastMarker = null;
 let sosLayer = L.layerGroup().addTo(map);
@@ -196,8 +235,12 @@ const MARKER_EVENT_ICONS = { safe: '✅', camping: '⛺' };
 const MARKER_EVENT_LABELS = { safe: '我很好', camping: '停駐中' };
 
 function drawTrack(points) {
-  const latlngs = points.map((p) => [p.lat, p.lng]);
+  // Status readout / blue endpoint marker always reflect the true latest reading — only
+  // the line and its dots are filtered, so "last updated" never looks stale because the
+  // newest point happened to look implausible.
   const last = points[points.length - 1];
+  const validPoints = filterPlausiblePoints(points);
+  const latlngs = validPoints.map((p) => [p.lat, p.lng]);
   const sosPoints = points.filter((p) => p.marker_type === 'sos');
   const eventPoints = points.filter((p) => p.marker_type === 'safe' || p.marker_type === 'camping');
 
@@ -205,7 +248,7 @@ function drawTrack(points) {
   polyline.setLatLngs(latlngs);
 
   pointsLayer.clearLayers();
-  points.forEach((p) => {
+  validPoints.forEach((p) => {
     const label = MARKER_EVENT_LABELS[p.marker_type];
     L.circleMarker([p.lat, p.lng], {
       radius: 4, color: trackColor, fillColor: '#fff', fillOpacity: 1, weight: 2,
@@ -312,7 +355,10 @@ function ensureAudioCtx() {
   if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
   return audioCtx;
 }
-document.addEventListener('click', () => { try { ensureAudioCtx(); } catch {} }, { once: true });
+document.addEventListener('click', () => {
+  try { ensureAudioCtx(); } catch {}
+  try { window.speechSynthesis && window.speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch {}
+}, { once: true });
 
 function sosBeep() {
   try {
@@ -327,6 +373,21 @@ function sosBeep() {
     osc.stop(ctx.currentTime + 0.4);
   } catch {
     // AudioContext unavailable/blocked — nothing more to do, see comment above.
+  }
+}
+
+// Same best-effort/gesture-unlock caveat as sosBeep — speechSynthesis is also blocked by
+// browser autoplay policy until a user gesture has happened on the page. English/lang
+// forced so it doesn't get read in whatever voice the device's default locale picks.
+function sosSpeak() {
+  try {
+    if (!window.speechSynthesis) return;
+    const utter = new SpeechSynthesisUtterance('Help, Help');
+    utter.lang = 'en-US';
+    utter.volume = 1;
+    window.speechSynthesis.speak(utter);
+  } catch {
+    // speechSynthesis unavailable/blocked — the beep and visual banner/frame still stand.
   }
 }
 
@@ -350,10 +411,16 @@ function updateSosAlert(alert) {
 
   if (active && !sosMuted && !sosBeepTimer) {
     sosBeep();
-    sosBeepTimer = setInterval(sosBeep, 1500);
+    sosSpeak();
+    let tick = 0;
+    sosBeepTimer = setInterval(() => {
+      sosBeep();
+      if (tick++ % 2 === 0) sosSpeak(); // every other tick (~3s) — "Help, Help" is longer than a beep
+    }, 1500);
   } else if ((!active || sosMuted) && sosBeepTimer) {
     clearInterval(sosBeepTimer);
     sosBeepTimer = null;
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
   }
 }
 

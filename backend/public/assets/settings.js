@@ -111,6 +111,19 @@ document.getElementById('btnUpdateMap').addEventListener('click', async () => {
   }
 });
 
+// --- Travel mode (walking-speed vs cycling-speed plausibility check for the track line) ---
+let travelMode = localStorage.getItem('travelMode') || 'hiking';
+const modeHikingBtn = document.getElementById('modeHiking');
+const modeCyclingBtn = document.getElementById('modeCycling');
+
+function refreshTravelMode() {
+  modeHikingBtn.classList.toggle('selected', travelMode === 'hiking');
+  modeCyclingBtn.classList.toggle('selected', travelMode === 'cycling');
+}
+modeHikingBtn.addEventListener('click', () => { travelMode = 'hiking'; localStorage.setItem('travelMode', travelMode); refreshTravelMode(); });
+modeCyclingBtn.addEventListener('click', () => { travelMode = 'cycling'; localStorage.setItem('travelMode', travelMode); refreshTravelMode(); });
+refreshTravelMode();
+
 // --- Track color ---
 const colorGrid = document.getElementById('colorGrid');
 let trackColor = localStorage.getItem('trackColor') || TRACK_COLORS[0];

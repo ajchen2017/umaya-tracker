@@ -138,7 +138,7 @@
   #signalLegend .item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #444; }
   #signalLegend .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
   #sosBanner {
-    display: none; position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
+    display: none; position: absolute; top: calc(var(--topbar-h) + 6px); left: 50%; transform: translateX(-50%);
     width: 50%; z-index: 1000;
     background: #d92b2b; color: #fff; padding: 8px 12px; border-radius: 8px; border: none;
     font: inherit; font-weight: 700; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,.3);
