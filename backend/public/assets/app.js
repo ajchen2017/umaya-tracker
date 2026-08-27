@@ -41,7 +41,7 @@ const rudyLayer = L.tileLayer(RUDY_TILE_URL, {
   maxZoom: RUDY_MAX_ZOOM, bounds: RUDY_BOUNDS, attribution: '地圖資料 &copy; RudyMap',
 });
 const osmLayer = L.tileLayer(OSM_TILE_URL, { maxZoom: 19, maxNativeZoom: 19, attribution: '&copy; OpenStreetMap contributors' });
-rudyLayer.addTo(map);
+switchLayer('rudy'); // also sets btnMapLayer's initial title — real default (Taiwan vs. not) applies once the hiker's actual position is known, see render()
 
 const TRACK_COLORS = [
   '#e63946', '#f4a261', '#e9c46a', '#2a9d8f', '#06d6a0', '#118ab2',
@@ -60,6 +60,8 @@ let plannedLayer = L.layerGroup().addTo(map);
 let lastPointCount = 0;
 let hasCenteredOnStart = false;
 let startLatLng = null;
+let lastLatLng = null; // newest point — what 📍 recenters to, and what decides the RudyMap-bounds check
+let currentMapLayer = 'rudy';
 let lastPlannedRoute = undefined; // undefined = never checked yet, distinct from null (cleared)
 let lastRenderedPoints = null;
 let currentNickname = '';
@@ -100,10 +102,22 @@ map.on('zoom', updateLabelSize);
 updateLabelSize();
 
 function updateZoomLevel() {
-  document.getElementById('zoomLevel').textContent = map.getZoom();
+  // map.getZoom() returns fractional values mid-gesture (pinch-zoom) — round it, or the
+  // number box shows a long decimal string that only resolves once the finger lifts.
+  document.getElementById('zoomLevel').textContent = Math.round(map.getZoom());
 }
 map.on('zoom', updateZoomLevel);
 updateZoomLevel();
+
+// A long hike name wraps to two lines on narrow phones, growing the topbar past the
+// height the right-side button column (btnStart/btnColor/...) and zoomLevel box assume —
+// re-measure whenever it might have changed instead of hardcoding a single-line height.
+function updateTopbarHeight() {
+  document.documentElement.style.setProperty('--topbar-h', `${document.getElementById('topbar').offsetHeight}px`);
+}
+window.addEventListener('resize', updateTopbarHeight);
+new ResizeObserver(updateTopbarHeight).observe(document.getElementById('topbar'));
+updateTopbarHeight();
 
 function fmtDateTime(iso) {
   const d = new Date(iso);
@@ -587,10 +601,16 @@ function render(data) {
     startLatLng = [points[0].lat, points[0].lng];
     document.getElementById('btnStart').disabled = false;
   }
+  lastLatLng = [points[points.length - 1].lat, points[points.length - 1].lng];
 
   if (!hasCenteredOnStart) {
     hasCenteredOnStart = true;
-    map.setView(startLatLng, 18);
+    // RudyMap only covers Taiwan — a hiker actually outside it would otherwise render as
+    // a dark/blank map (view clamped to Taiwan bounds while trying to center elsewhere).
+    // Re-checked on every "first centering" — including after a hard refresh, since that
+    // re-runs this whole script from scratch and would otherwise default back to RudyMap.
+    if (currentMapLayer === 'rudy' && !RUDY_BOUNDS.contains(lastLatLng)) switchLayer('osm');
+    map.setView(lastLatLng, 18);
   } else {
     map.fitBounds(polyline.getBounds(), { padding: [30, 30] });
   }
@@ -613,9 +633,12 @@ document.getElementById('btnRefresh').addEventListener('click', () => {
   location.href = location.pathname + '?_=' + Date.now();
 });
 
+const MAP_LAYER_LABEL = { rudy: '魯地圖', osm: '線上地圖' };
+
 function switchLayer(layer) {
-  document.getElementById('btnRudy').classList.toggle('active', layer === 'rudy');
-  document.getElementById('btnOsm').classList.toggle('active', layer === 'osm');
+  currentMapLayer = layer;
+  const btn = document.getElementById('btnMapLayer');
+  btn.title = `目前：${MAP_LAYER_LABEL[layer]}（點擊切換至${MAP_LAYER_LABEL[layer === 'rudy' ? 'osm' : 'rudy']}）`;
   if (layer === 'osm') {
     map.removeLayer(rudyLayer);
     osmLayer.addTo(map);
@@ -630,10 +653,19 @@ function switchLayer(layer) {
   }
 }
 
-document.getElementById('btnRudy').addEventListener('click', () => switchLayer('rudy'));
-document.getElementById('btnOsm').addEventListener('click', () => switchLayer('osm'));
+document.getElementById('btnMapLayer').addEventListener('click', () => {
+  const next = currentMapLayer === 'rudy' ? 'osm' : 'rudy';
+  // 魯地圖 only has tiles for Taiwan — switching to it while the hiker's last known
+  // position is elsewhere would just show a dark/blank map, so refuse with an explanation
+  // instead of silently loading nothing.
+  if (next === 'rudy' && lastLatLng && !RUDY_BOUNDS.contains(lastLatLng)) {
+    alert('該位置不在魯地圖範圍，地圖不載入，請切回線上地圖');
+    return;
+  }
+  switchLayer(next);
+});
 document.getElementById('btnStart').addEventListener('click', () => {
-  if (startLatLng) map.setView(startLatLng, 18);
+  if (lastLatLng) map.setView(lastLatLng, 18);
 });
 
 // render()'s "points.length === lastPointCount → nothing new" guard never runs
