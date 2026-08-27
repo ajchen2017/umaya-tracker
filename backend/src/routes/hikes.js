@@ -25,6 +25,19 @@ router.patch('/:id/end', requireAuth, async (req, res) => {
   res.json(rows[0]);
 });
 
+// Resumes a hike that had already been ended (接續舊行程 can target any past hike,
+// not just one still active server-side — e.g. the app was reinstalled, or the
+// hiker set back out after "ending" by mistake). No-op if it's already active.
+router.patch('/:id/reactivate', requireAuth, async (req, res) => {
+  const { rows } = await pool.query(
+    `UPDATE hikes SET status = 'active', ended_at = NULL, paused = false
+     WHERE id = $1 AND user_id = $2 RETURNING *`,
+    [req.params.id, req.userId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'Hike not found' });
+  res.json(rows[0]);
+});
+
 // Best-effort: reflects GPS-pause state on the family web page. If the phone is
 // offline when this fires, the call just fails silently — the web page keeps
 // showing whatever the last successfully-delivered status was, same as every

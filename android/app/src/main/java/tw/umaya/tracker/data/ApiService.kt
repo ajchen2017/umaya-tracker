@@ -66,6 +66,12 @@ interface ApiService {
         @Path("id") hikeId: Long,
     ): Response<HikeDto>
 
+    @PATCH("hikes/{id}/reactivate")
+    suspend fun reactivateHike(
+        @Header("Authorization") bearer: String,
+        @Path("id") hikeId: Long,
+    ): Response<HikeDto>
+
     @POST("hikes/{id}/points")
     suspend fun uploadPoints(
         @Header("Authorization") bearer: String,

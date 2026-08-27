@@ -357,6 +357,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     // null = choosing 開始新行程/接續舊行程; "new"/"continue" = filling in the form for that choice.
     var startMode by remember { mutableStateOf<String?>(null) }
     var continuingHikeId by remember { mutableStateOf<Long?>(null) }
+    var continuingNeedsReactivation by remember { mutableStateOf(false) }
     var intervalSeconds by remember { mutableStateOf(prefs.intervalSeconds) }
     var menuExpanded by remember { mutableStateOf(false) }
     var showIntervalDialog by remember { mutableStateOf(false) }
@@ -557,15 +558,18 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                 val token = prefs.authToken!!
                                 val res = ApiClient.service.listHikes("Bearer $token")
                                 if (!res.isSuccessful) throw Exception("讀取行程列表失敗")
-                                // At most one should genuinely be active at a time — the app
-                                // enforces that — but take the most recent if more ever exist.
-                                val active = res.body()?.firstOrNull { it.status == "active" }
-                                if (active == null) {
+                                // Most recent hike regardless of status — 接續舊行程 should be
+                                // able to pick back up an already-ended one too (e.g. the app
+                                // was reinstalled, or 結束行程 was pressed by mistake), not just
+                                // one still stuck active server-side.
+                                val hike = res.body()?.firstOrNull()
+                                if (hike == null) {
                                     error = "沒有可接續的舊行程"
                                 } else {
-                                    continuingHikeId = active.id
-                                    nickname = active.nickname ?: ""
-                                    hikeName = active.name
+                                    continuingHikeId = hike.id
+                                    continuingNeedsReactivation = hike.status != "active"
+                                    nickname = hike.nickname ?: ""
+                                    hikeName = hike.name
                                     startMode = "continue"
                                 }
                             } catch (e: Exception) {
@@ -579,6 +583,14 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 ) { Text("接續舊行程") }
             } else {
                 val isContinue = startMode == "continue"
+                if (isContinue && continuingNeedsReactivation) {
+                    Text(
+                        "這個行程先前已標記為結束，按確定後會重新標記為進行中並繼續記錄。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
                 OutlinedTextField(
                     value = nickname, onValueChange = { nickname = it },
                     label = { Text("暱稱（顯示給留守人看）") },
@@ -614,6 +626,11 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                             scope.launch {
                                 try {
                                     if (isContinue) {
+                                        if (continuingNeedsReactivation) {
+                                            val token = prefs.authToken!!
+                                            val res = ApiClient.service.reactivateHike("Bearer $token", continuingHikeId!!)
+                                            if (!res.isSuccessful) throw Exception("重新啟用行程失敗")
+                                        }
                                         prefs.activeHikeId = continuingHikeId!!
                                         prefs.isPaused = false
                                     } else {
