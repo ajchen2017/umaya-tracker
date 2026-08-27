@@ -19,7 +19,7 @@ fun intervalLabel(seconds: Int): String =
     INTERVAL_PRESETS.firstOrNull { it.first == seconds }?.second ?: "$seconds 秒"
 
 /** Display labels for the non-routine track_points.marker_type values. */
-val MARKER_LABELS = mapOf("sos" to "SOS", "safe" to "我很好", "camping" to "紮營中")
+val MARKER_LABELS = mapOf("sos" to "SOS", "safe" to "我很好", "camping" to "停駐中")
 
 /** Local device state: auth token, the hike currently being recorded, and user settings. */
 class Prefs(context: Context) {

@@ -3,6 +3,7 @@ package tw.umaya.tracker.data
 import okhttp3.RequestBody
 import retrofit2.Response
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.Header
 import retrofit2.http.PATCH
 import retrofit2.http.POST
@@ -73,5 +74,11 @@ interface ApiService {
         @Header("Authorization") bearer: String,
         @Path("id") hikeId: Long,
         @Body body: PauseStateRequest,
+    ): Response<Unit>
+
+    @DELETE("hikes/{id}/route")
+    suspend fun deleteRoute(
+        @Header("Authorization") bearer: String,
+        @Path("id") hikeId: Long,
     ): Response<Unit>
 }

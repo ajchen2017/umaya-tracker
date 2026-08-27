@@ -57,6 +57,16 @@ router.put('/:id/route', requireAuth, express.text({ type: '*/*', limit: '5mb' }
   res.json({ ok: true });
 });
 
+// Removes the planned route without replacing it (e.g. the hiker changed plans).
+router.delete('/:id/route', requireAuth, async (req, res) => {
+  const { rows } = await pool.query(
+    'UPDATE hikes SET planned_route = NULL WHERE id = $1 AND user_id = $2 RETURNING id',
+    [req.params.id, req.userId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'Hike not found' });
+  res.json({ ok: true });
+});
+
 router.get('/', requireAuth, async (req, res) => {
   const { rows } = await pool.query(
     'SELECT * FROM hikes WHERE user_id = $1 ORDER BY started_at DESC',

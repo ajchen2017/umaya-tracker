@@ -54,6 +54,7 @@ let trackColor = localStorage.getItem('trackColor') || TRACK_COLORS[0];
 const polyline = L.polyline([], { color: trackColor, weight: 4 }).addTo(map);
 let lastMarker = null;
 let sosLayer = L.layerGroup().addTo(map);
+let markerEventLayer = L.layerGroup().addTo(map); // "我很好" / "停駐中" icons — otherwise indistinguishable from normal points
 let pointsLayer = L.layerGroup().addTo(map);
 let plannedLayer = L.layerGroup().addTo(map);
 let lastPointCount = 0;
@@ -169,24 +170,41 @@ function renderPlannedRoute(routeText) {
   else parseGpxRoute(xml);
 }
 
+// Non-routine marker types get their own icon on the map — otherwise "我很好"
+// and "停駐中" points look exactly like ordinary background pings.
+const MARKER_EVENT_ICONS = { safe: '✅', camping: '⛺' };
+const MARKER_EVENT_LABELS = { safe: '我很好', camping: '停駐中' };
+
 function drawTrack(points) {
   const latlngs = points.map((p) => [p.lat, p.lng]);
   const last = points[points.length - 1];
   const sosPoints = points.filter((p) => p.marker_type === 'sos');
+  const eventPoints = points.filter((p) => p.marker_type === 'safe' || p.marker_type === 'camping');
 
   polyline.setStyle({ color: trackColor });
   polyline.setLatLngs(latlngs);
 
   pointsLayer.clearLayers();
   points.forEach((p) => {
+    const label = MARKER_EVENT_LABELS[p.marker_type];
     L.circleMarker([p.lat, p.lng], {
       radius: 4, color: trackColor, fillColor: '#fff', fillOpacity: 1, weight: 2,
     })
       .bindPopup(
         `${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}<br>${fmtDateTime(p.recorded_at)}` +
+          (label ? `<br>${MARKER_EVENT_ICONS[p.marker_type]} ${label}` : '') +
           (p.battery_pct != null ? `<br>🔋 ${p.battery_pct}%` : '')
       )
       .addTo(pointsLayer);
+  });
+
+  markerEventLayer.clearLayers();
+  eventPoints.forEach((p) => {
+    L.marker([p.lat, p.lng], {
+      icon: L.divIcon({ html: MARKER_EVENT_ICONS[p.marker_type], className: '', iconSize: [22, 22] }),
+    })
+      .bindPopup(`${MARKER_EVENT_LABELS[p.marker_type]}<br>${fmtDateTime(p.recorded_at)}`)
+      .addTo(markerEventLayer);
   });
 
   // Endpoint marker (current position) always stays blue, regardless of track color.
@@ -249,8 +267,8 @@ function updateAlertBanner(alert) {
   lastRenderedAlertConfig = cfg;
 
   document.getElementById('alertInfoTooltip').innerHTML = `
-    🟢 綠：${cfg.greenHours} 小時內有回報，或已標記「紮營中」<br>
-    🟡 黃：夜間（${cfg.nightStart}–${cfg.nightEnd}）斷訊，或斷訊超過 ${cfg.campingSilenceHours} 小時但判斷為紮營<br>
+    🟢 綠：${cfg.greenHours} 小時內有回報，或已標記「停駐中」<br>
+    🟡 黃：夜間（${cfg.nightStart}–${cfg.nightEnd}）斷訊，或斷訊超過 ${cfg.campingSilenceHours} 小時但判斷為停駐<br>
     🟠 橘：白天斷訊 ${cfg.dayOrangeStart}–${cfg.dayOrangeEnd} 小時<br>
     🔴 紅：SOS，或白天斷訊超過 ${cfg.redDayHours} 小時
   `;

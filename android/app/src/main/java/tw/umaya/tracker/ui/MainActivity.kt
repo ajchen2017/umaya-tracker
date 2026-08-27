@@ -21,10 +21,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
 import tw.umaya.tracker.data.ApiClient
@@ -35,6 +37,7 @@ import tw.umaya.tracker.data.Prefs
 import tw.umaya.tracker.data.RegisterRequest
 import tw.umaya.tracker.data.intervalLabel
 import tw.umaya.tracker.location.LocationForegroundService
+import tw.umaya.tracker.sync.HikeActionWorker
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
@@ -199,6 +202,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var intervalSeconds by remember { mutableStateOf(prefs.intervalSeconds) }
     var menuExpanded by remember { mutableStateOf(false) }
     var showIntervalDialog by remember { mutableStateOf(false) }
+    var showClearRouteDialog by remember { mutableStateOf(false) }
     var isPaused by remember { mutableStateOf(prefs.isPaused) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
@@ -214,11 +218,35 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 val body = text.toRequestBody("application/xml".toMediaTypeOrNull())
                 val res = ApiClient.service.uploadRoute("Bearer $token", prefs.activeHikeId, body)
                 if (!res.isSuccessful) throw Exception("上傳失敗")
-                Toast.makeText(context, "規劃路線上傳成功", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "✅ 規劃路線已上傳", Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
                 Toast.makeText(context, friendlyErrorMessage(e), Toast.LENGTH_LONG).show()
             }
         }
+    }
+
+    if (showClearRouteDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearRouteDialog = false },
+            title = { Text("清除規劃路線") },
+            text = { Text("確定要清除已上傳到伺服器的規劃路線嗎？留守人網頁上的規劃路線會跟著消失。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showClearRouteDialog = false
+                    scope.launch {
+                        try {
+                            val token = prefs.authToken!!
+                            val res = ApiClient.service.deleteRoute("Bearer $token", prefs.activeHikeId)
+                            if (!res.isSuccessful) throw Exception("清除失敗")
+                            Toast.makeText(context, "✅ 規劃路線已清除", Toast.LENGTH_LONG).show()
+                        } catch (e: Exception) {
+                            Toast.makeText(context, friendlyErrorMessage(e), Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }) { Text("清除") }
+            },
+            dismissButton = { TextButton(onClick = { showClearRouteDialog = false }) { Text("取消") } },
+        )
     }
 
     if (showIntervalDialog) {
@@ -245,7 +273,15 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("登山健行定位追蹤") },
+                title = {
+                    Text(
+                        "⛰️ 登山健行定位追蹤",
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp,
+                        ),
+                    )
+                },
                 actions = {
                     Box {
                         TextButton(onClick = { menuExpanded = true }) {
@@ -258,8 +294,12 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                     onClick = { menuExpanded = false; showIntervalDialog = true },
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("上傳規劃路線（GPX/KML）") },
+                                    text = { Text("上傳／更新規劃路線（GPX/KML）") },
                                     onClick = { menuExpanded = false; routePickerLauncher.launch("*/*") },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("清除已上傳的規劃路線") },
+                                    onClick = { menuExpanded = false; showClearRouteDialog = true },
                                 )
                             }
                             DropdownMenuItem(
@@ -406,7 +446,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                 .setAction(LocationForegroundService.ACTION_MARK_CAMPING)
                         )
                     },
-                ) { Text("⛺ 紮營中", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                ) { Text("⛺ 停駐中", maxLines = 1, overflow = TextOverflow.Ellipsis) }
             }
 
             Spacer(Modifier.height(24.dp))
@@ -429,31 +469,19 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     modifier = Modifier.weight(1f),
                     onClick = {
                         loading = true
-                        scope.launch {
-                            try {
-                                val token = prefs.authToken!!
-                                val res = ApiClient.service.endHike("Bearer $token", prefs.activeHikeId)
-                                if (!res.isSuccessful) throw Exception("結束行程失敗")
-                            } catch (e: Exception) {
-                                // Server-side end can fail (e.g. timeout) while local stop must still
-                                // proceed either way — but the hike then stays "active" server-side
-                                // forever with no retry, so at least tell the hiker it happened.
-                                Toast.makeText(
-                                    context,
-                                    "結束行程時連線失敗，伺服器端可能還是顯示進行中：${friendlyErrorMessage(e)}",
-                                    Toast.LENGTH_LONG,
-                                ).show()
-                            } finally {
-                                context.startService(
-                                    Intent(context, LocationForegroundService::class.java)
-                                        .setAction(LocationForegroundService.ACTION_STOP)
-                                )
-                                prefs.clearActiveHike()
-                                hasActiveHike = false
-                                isPaused = false
-                                loading = false
-                            }
-                        }
+                        // Local stop always proceeds immediately; the server-side end is handed to
+                        // HikeActionWorker, which retries until delivered (or permanently rejected)
+                        // and toasts the outcome — same contract as SOS/safe/camping, so a timeout
+                        // here can no longer orphan the hike as "active" forever.
+                        HikeActionWorker.enqueue(context, prefs.activeHikeId, HikeActionWorker.ACTION_END)
+                        context.startService(
+                            Intent(context, LocationForegroundService::class.java)
+                                .setAction(LocationForegroundService.ACTION_STOP)
+                        )
+                        prefs.clearActiveHike()
+                        hasActiveHike = false
+                        isPaused = false
+                        loading = false
                     },
                 ) { Text("結束行程") }
             }

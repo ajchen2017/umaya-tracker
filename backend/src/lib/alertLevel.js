@@ -102,9 +102,9 @@ function computeAlertLevel(points, now = new Date(), userConfig = null) {
 
   if (isCamping) {
     if (hoursSince < cfg.campingSilenceHours) {
-      return { level: 'green', reason: 'camping', message: '登山者已標記紮營中', config: cfg };
+      return { level: 'green', reason: 'camping', message: '登山者已標記停駐中', config: cfg };
     }
-    return { level: 'yellow', reason: 'extended_camping_silence', message: `已 ${hrs} 小時沒有回報（判斷為紮營中）`, config: cfg };
+    return { level: 'yellow', reason: 'extended_camping_silence', message: `已 ${hrs} 小時沒有回報（判斷為停駐中）`, config: cfg };
   }
 
   if (night) {
