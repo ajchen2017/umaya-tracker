@@ -6,6 +6,8 @@ import androidx.security.crypto.MasterKey
 
 /** Fixed set of selectable GPS-fix intervals: seconds value paired with its display label. */
 val INTERVAL_PRESETS = listOf(
+    10 to "10 秒",
+    20 to "20 秒",
     30 to "0.5 分鐘",
     60 to "1 分鐘",
     120 to "2 分鐘",
@@ -54,7 +56,7 @@ class Prefs(context: Context) {
      * [tw.umaya.tracker.ui.INTERVAL_PRESETS]); smaller = better tracking, worse battery.
      */
     var intervalSeconds: Int
-        get() = prefs.getInt("interval_seconds", 60)
+        get() = prefs.getInt("interval_seconds", 20)
         set(value) = prefs.edit().putInt("interval_seconds", value).apply()
 
     /** Remembers the last-entered per-hike nickname as the default for the next hike. */
