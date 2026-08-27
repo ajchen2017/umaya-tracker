@@ -423,6 +423,9 @@ function drawElevationChart() {
     labelsSvg += `<text class="event-label edge" x="${lastX}" y="${padTop - 5}">暫停</text>`;
   }
 
+  // Labels sit outside the frame (left of its left edge / below its bottom edge),
+  // not crowding the plotted data.
+  const frameSvg = `<rect class="chart-frame" x="${padLeft}" y="${padTop}" width="${totalW - padLeft - padRight}" height="${plotH}" />`;
   const yLabelX = padLeft - 12;
   const yLabelY = padTop + plotH / 2;
   const axesSvg = `
@@ -430,7 +433,7 @@ function drawElevationChart() {
     <text class="axis-label" x="${padLeft + (totalW - padLeft - padRight) / 2}" y="${H - 4}" text-anchor="middle">時間（定位頻率）</text>
   `;
 
-  scrollEl.innerHTML = `<svg width="${totalW}" height="${H}" viewBox="0 0 ${totalW} ${H}">${axesSvg}${gridSvg}<path class="elevation-line" d="${pathD}" />${dotsSvg}${labelsSvg}</svg>`;
+  scrollEl.innerHTML = `<svg width="${totalW}" height="${H}" viewBox="0 0 ${totalW} ${H}">${axesSvg}${frameSvg}${gridSvg}<path class="elevation-line" d="${pathD}" />${dotsSvg}${labelsSvg}</svg>`;
   el.classList.add('show');
   el.dataset.frozen = elevationFrozen ? '1' : '0';
 
