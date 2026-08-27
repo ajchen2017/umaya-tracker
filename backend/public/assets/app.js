@@ -171,9 +171,23 @@ window.addEventListener('resize', updateTopbarHeight);
 new ResizeObserver(updateTopbarHeight).observe(document.getElementById('topbar'));
 updateTopbarHeight();
 
-function fmtDateTime(iso) {
+// 'guardian' (default): plain browser-local getters — whatever timezone the guardian's own
+// device is set to. 'hiker': shift by the recorded point's own longitude (~15°/hour, the
+// same simple sundial-style estimate used for the astronomical day/night check server-side
+// — not real timezone-boundary data, but consistent with the rest of the app never needing
+// an external timezone lookup) so a guardian in Taiwan can see what the hiker's own local
+// clock read, not just their own.
+let timeDisplayMode = localStorage.getItem('timeDisplayMode') || 'guardian';
+window.addEventListener('storage', (e) => { if (e.key === 'timeDisplayMode') timeDisplayMode = e.newValue || 'guardian'; });
+
+function fmtDateTime(iso, lng) {
   const d = new Date(iso);
   const pad = (n) => String(n).padStart(2, '0');
+  if (timeDisplayMode === 'hiker' && typeof lng === 'number') {
+    const offsetH = Math.round(lng / 15);
+    const shifted = new Date(d.getTime() + offsetH * 3_600_000);
+    return `${shifted.getUTCFullYear()}${pad(shifted.getUTCMonth() + 1)}${pad(shifted.getUTCDate())}:${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}`;
+  }
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}:${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
@@ -267,7 +281,7 @@ function drawTrack(points) {
       radius: 4, color: trackColor, fillColor: '#fff', fillOpacity: 1, weight: 2,
     })
       .bindPopup(
-        `${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}<br>${fmtDateTime(p.recorded_at)}` +
+        `${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}<br>${fmtDateTime(p.recorded_at, p.lng)}` +
           (label ? `<br>${MARKER_EVENT_ICONS[p.marker_type]} ${label}` : '') +
           (p.battery_pct != null ? `<br>🔋 ${p.battery_pct}%` : '')
       )
@@ -280,7 +294,7 @@ function drawTrack(points) {
       icon: L.divIcon({ html: MARKER_EVENT_ICONS[p.marker_type], className: '', iconSize: [22, 22] }),
     })
       .bindTooltip(MARKER_EVENT_LABELS[p.marker_type], { permanent: true, direction: 'right', offset: [10, 0], className: 'waypoint-label' })
-      .bindPopup(`${MARKER_EVENT_LABELS[p.marker_type]}<br>${fmtDateTime(p.recorded_at)}`)
+      .bindPopup(`${MARKER_EVENT_LABELS[p.marker_type]}<br>${fmtDateTime(p.recorded_at, p.lng)}`)
       .addTo(markerEventLayer);
   });
 
@@ -299,7 +313,7 @@ function drawTrack(points) {
       icon: L.divIcon({ html: '🆘', className: '', iconSize: [24, 24] }),
     })
       .bindTooltip('SOS', { permanent: true, direction: 'right', offset: [12, 0], className: 'waypoint-label' })
-      .bindPopup(`SOS<br>${fmtDateTime(p.recorded_at)}`)
+      .bindPopup(`SOS<br>${fmtDateTime(p.recorded_at, p.lng)}`)
       .addTo(sosLayer);
   });
 
@@ -425,7 +439,7 @@ document.getElementById('sosBanner').addEventListener('click', () => {
 function updateHikeStatus(hike) {
   const el = document.getElementById('hikeStatus');
   if (hike.status === 'ended') {
-    el.textContent = hike.ended_at ? `已結束（${fmtDateTime(hike.ended_at)}）` : '已結束';
+    el.textContent = hike.ended_at ? `已結束（${fmtDateTime(hike.ended_at, lastLatLng && lastLatLng[1])}）` : '已結束';
   } else if (hike.paused) {
     el.textContent = '進行中（定位已暫停）';
   } else {

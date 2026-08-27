@@ -122,6 +122,19 @@ modeHikingBtn.addEventListener('click', () => { travelMode = 'hiking'; localStor
 modeCyclingBtn.addEventListener('click', () => { travelMode = 'cycling'; localStorage.setItem('travelMode', travelMode); refreshTravelMode(); });
 refreshTravelMode();
 
+// --- Time display mode (map timestamps: guardian's own local time vs the hiker's, by longitude) ---
+let timeDisplayMode = localStorage.getItem('timeDisplayMode') || 'guardian';
+const modeGuardianTimeBtn = document.getElementById('modeGuardianTime');
+const modeHikerTimeBtn = document.getElementById('modeHikerTime');
+
+function refreshTimeMode() {
+  modeGuardianTimeBtn.classList.toggle('selected', timeDisplayMode === 'guardian');
+  modeHikerTimeBtn.classList.toggle('selected', timeDisplayMode === 'hiker');
+}
+modeGuardianTimeBtn.addEventListener('click', () => { timeDisplayMode = 'guardian'; localStorage.setItem('timeDisplayMode', timeDisplayMode); refreshTimeMode(); });
+modeHikerTimeBtn.addEventListener('click', () => { timeDisplayMode = 'hiker'; localStorage.setItem('timeDisplayMode', timeDisplayMode); refreshTimeMode(); });
+refreshTimeMode();
+
 // --- Track color ---
 const colorGrid = document.getElementById('colorGrid');
 let trackColor = localStorage.getItem('trackColor') || TRACK_COLORS[0];
