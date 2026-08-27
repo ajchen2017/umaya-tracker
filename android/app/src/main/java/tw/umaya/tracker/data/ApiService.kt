@@ -21,6 +21,9 @@ data class RegisterRequest(val email: String, val password: String, val displayN
 
 data class CreateHikeRequest(val name: String, val nickname: String?)
 data class HikeDto(val id: Long, val name: String, val status: String)
+data class HikeListItemDto(val id: Long, val name: String, val nickname: String?, val status: String)
+
+data class ForgotPasswordRequest(val email: String)
 
 data class UploadPointDto(
     val clientId: String,
@@ -44,6 +47,12 @@ interface ApiService {
 
     @POST("auth/login")
     suspend fun login(@Body body: LoginRequest): Response<LoginResponse>
+
+    @POST("auth/forgot-password")
+    suspend fun forgotPassword(@Body body: ForgotPasswordRequest): Response<Unit>
+
+    @GET("hikes")
+    suspend fun listHikes(@Header("Authorization") bearer: String): Response<List<HikeListItemDto>>
 
     @POST("hikes")
     suspend fun createHike(

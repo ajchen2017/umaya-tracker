@@ -19,6 +19,7 @@
     "express": "^4.19.2",
     "fast-xml-parser": "^5.11.0",
     "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^6.9.14",
     "pg": "^8.12.0"
   }
 }

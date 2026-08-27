@@ -15,6 +15,11 @@ UPDATE users SET share_token = substr(md5(random()::text || clock_timestamp()::t
   WHERE share_token IS NULL;
 ALTER TABLE users ALTER COLUMN share_token SET NOT NULL;
 
+-- Forgot-password flow: a short-lived random token emailed as a reset link.
+-- Cleared after use or once expired (checked at verify time, no cron needed).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS hikes (
   id               SERIAL PRIMARY KEY,
   user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

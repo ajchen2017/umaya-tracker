@@ -56,6 +56,12 @@ class LocationForegroundService : Service() {
         const val ACTION_RESUME = "tw.umaya.tracker.action.RESUME"
         private const val CHANNEL_ID = "tracking"
         private const val NOTIFICATION_ID = 1001
+
+        // A weak-signal or multipath-reflected fix (common near buildings/dense campus
+        // structures) looks the same on the map either way: the track snaps out to a
+        // wrong point and back, over and over. Reject both rather than plotting them.
+        private const val MAX_ACCEPTABLE_ACCURACY_M = 50f
+        private const val MAX_PLAUSIBLE_SPEED_MPS = 15f // ~54 km/h — generous for a hiker, rejects GPS teleports
     }
 
     private lateinit var fusedClient: FusedLocationProviderClient
@@ -64,13 +70,26 @@ class LocationForegroundService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var lastLocation: Location? = null
+    private var lastAcceptedLocation: Location? = null
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
             val location = result.lastLocation ?: return
-            lastLocation = location
-            recordPoint(location, "normal")
+            lastLocation = location // kept unfiltered — SOS/markers favor recency over precision
+            if (isPlausibleFix(location)) {
+                lastAcceptedLocation = location
+                recordPoint(location, "normal")
+            }
         }
+    }
+
+    private fun isPlausibleFix(location: Location): Boolean {
+        if (location.hasAccuracy() && location.accuracy > MAX_ACCEPTABLE_ACCURACY_M) return false
+        val prev = lastAcceptedLocation ?: return true
+        val elapsedSec = (location.time - prev.time) / 1000.0
+        if (elapsedSec <= 0) return true
+        val impliedSpeedMps = prev.distanceTo(location) / elapsedSec
+        return impliedSpeedMps <= MAX_PLAUSIBLE_SPEED_MPS
     }
 
     override fun onCreate() {

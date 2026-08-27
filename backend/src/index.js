@@ -30,5 +30,10 @@ app.get('/t/:shareToken', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
+// Forgot-password link lands here (?token=... in the URL, read client-side).
+app.get('/reset-password', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'reset-password.html'));
+});
+
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`tracker-backend listening on :${port}`));

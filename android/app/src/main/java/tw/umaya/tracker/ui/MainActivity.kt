@@ -42,6 +42,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import tw.umaya.tracker.data.ApiClient
 import tw.umaya.tracker.data.CreateHikeRequest
+import tw.umaya.tracker.data.ForgotPasswordRequest
+import tw.umaya.tracker.data.HikeListItemDto
 import tw.umaya.tracker.data.INTERVAL_PRESETS
 import tw.umaya.tracker.data.LoginRequest
 import tw.umaya.tracker.data.Prefs
@@ -210,11 +212,48 @@ class MainActivity : ComponentActivity() {
 fun LoginScreen(prefs: Prefs, onLoggedIn: () -> Unit) {
     val scope = rememberCoroutineScope()
     var isRegisterMode by remember { mutableStateOf(false) }
-    var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf(prefs.lastEmail ?: "") }
+    var password by remember { mutableStateOf(prefs.lastPassword ?: "") }
     var displayName by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
+    var showForgotPasswordDialog by remember { mutableStateOf(false) }
+    var forgotPasswordEmail by remember { mutableStateOf(prefs.lastEmail ?: "") }
+
+    if (showForgotPasswordDialog) {
+        val context = LocalContext.current
+        AlertDialog(
+            onDismissRequest = { showForgotPasswordDialog = false },
+            title = { Text("忘記密碼") },
+            text = {
+                Column {
+                    Text("輸入帳號 Email，我們會寄送重設密碼連結過去。", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = forgotPasswordEmail, onValueChange = { forgotPasswordEmail = it },
+                        label = { Text("Email") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showForgotPasswordDialog = false
+                    val targetEmail = forgotPasswordEmail
+                    scope.launch {
+                        try {
+                            ApiClient.service.forgotPassword(ForgotPasswordRequest(targetEmail))
+                            Toast.makeText(context, "如果這個帳號存在，重設密碼信件已寄出，請至信箱查看", Toast.LENGTH_LONG).show()
+                        } catch (e: Exception) {
+                            Toast.makeText(context, friendlyErrorMessage(e), Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }) { Text("寄送") }
+            },
+            dismissButton = { TextButton(onClick = { showForgotPasswordDialog = false }) { Text("取消") } },
+        )
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
@@ -270,6 +309,8 @@ fun LoginScreen(prefs: Prefs, onLoggedIn: () -> Unit) {
                             val body = res.body()!!
                             prefs.authToken = body.token
                             prefs.shareToken = body.user.shareToken
+                            prefs.lastEmail = email
+                            prefs.lastPassword = password
                             onLoggedIn()
                         }
                     } catch (e: Exception) {
@@ -285,6 +326,13 @@ fun LoginScreen(prefs: Prefs, onLoggedIn: () -> Unit) {
         TextButton(onClick = { isRegisterMode = !isRegisterMode; error = null }) {
             Text(if (isRegisterMode) "已經有帳號？改為登入" else "還沒有帳號？註冊一個")
         }
+
+        if (!isRegisterMode) {
+            TextButton(onClick = {
+                forgotPasswordEmail = email.ifBlank { prefs.lastEmail ?: "" }
+                showForgotPasswordDialog = true
+            }) { Text("忘記密碼？") }
+        }
     }
 }
 
@@ -297,6 +345,9 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     val shareToken = prefs.shareToken // persistent per account, set at login — same link across every hike
     var hikeName by remember { mutableStateOf("") }
     var nickname by remember { mutableStateOf(prefs.lastNickname) }
+    // null = choosing 開始新行程/接續舊行程; "new"/"continue" = filling in the form for that choice.
+    var startMode by remember { mutableStateOf<String?>(null) }
+    var continuingHikeId by remember { mutableStateOf<Long?>(null) }
     var intervalSeconds by remember { mutableStateOf(prefs.intervalSeconds) }
     var menuExpanded by remember { mutableStateOf(false) }
     var showIntervalDialog by remember { mutableStateOf(false) }
@@ -473,56 +524,117 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         modifier = Modifier.fillMaxSize().padding(paddingValues).padding(24.dp).verticalScroll(rememberScrollState()),
     ) {
         if (!hasActiveHike) {
-            OutlinedTextField(
-                value = nickname, onValueChange = { nickname = it },
-                label = { Text("暱稱（顯示給留守人看）") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(12.dp))
+            if (startMode == null) {
+                Button(
+                    onClick = {
+                        error = null
+                        continuingHikeId = null
+                        nickname = prefs.lastNickname
+                        hikeName = ""
+                        startMode = "new"
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("開始新行程") }
 
-            OutlinedTextField(
-                value = hikeName, onValueChange = { hikeName = it },
-                label = { Text("行程名稱（例如：北大武）") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(12.dp))
 
-            IntervalSlider(intervalSeconds, onSecondsChange = { intervalSeconds = it })
-
-            Spacer(Modifier.height(16.dp))
-            Button(
-                enabled = !loading && hikeName.isNotBlank(),
-                onClick = {
-                    error = null
-                    loading = true
-                    prefs.intervalSeconds = intervalSeconds
-                    prefs.lastNickname = nickname
-                    scope.launch {
-                        try {
-                            val token = prefs.authToken!!
-                            val res = ApiClient.service.createHike(
-                                "Bearer $token",
-                                CreateHikeRequest(hikeName, nickname.ifBlank { null }),
-                            )
-                            if (!res.isSuccessful) throw Exception("建立行程失敗")
-                            val hike = res.body()!!
-                            prefs.activeHikeId = hike.id
-                            context.startForegroundService(
-                                Intent(context, LocationForegroundService::class.java)
-                                    .setAction(LocationForegroundService.ACTION_START)
-                            )
-                            hasActiveHike = true
-                            TrackerWidgetProvider.updateAllWidgets(context)
-                            if (prefs.backgroundExecutionEnabled) requestBackgroundExecutionExemption(context)
-                        } catch (e: Exception) {
-                            error = friendlyErrorMessage(e)
-                        } finally {
-                            loading = false
+                OutlinedButton(
+                    enabled = !loading,
+                    onClick = {
+                        error = null
+                        loading = true
+                        scope.launch {
+                            try {
+                                val token = prefs.authToken!!
+                                val res = ApiClient.service.listHikes("Bearer $token")
+                                if (!res.isSuccessful) throw Exception("讀取行程列表失敗")
+                                // At most one should genuinely be active at a time — the app
+                                // enforces that — but take the most recent if more ever exist.
+                                val active = res.body()?.firstOrNull { it.status == "active" }
+                                if (active == null) {
+                                    error = "沒有可接續的舊行程"
+                                } else {
+                                    continuingHikeId = active.id
+                                    nickname = active.nickname ?: ""
+                                    hikeName = active.name
+                                    startMode = "continue"
+                                }
+                            } catch (e: Exception) {
+                                error = friendlyErrorMessage(e)
+                            } finally {
+                                loading = false
+                            }
                         }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("開始行程") }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("接續舊行程") }
+            } else {
+                val isContinue = startMode == "continue"
+                OutlinedTextField(
+                    value = nickname, onValueChange = { nickname = it },
+                    label = { Text("暱稱（顯示給留守人看）") },
+                    enabled = !isContinue,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = hikeName, onValueChange = { hikeName = it },
+                    label = { Text("行程名稱（例如：北大武）") },
+                    enabled = !isContinue,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+
+                IntervalSlider(intervalSeconds, onSecondsChange = { intervalSeconds = it })
+
+                Spacer(Modifier.height(16.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(
+                        onClick = { startMode = null; error = null },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("返回") }
+
+                    Button(
+                        enabled = !loading && (isContinue || hikeName.isNotBlank()),
+                        onClick = {
+                            error = null
+                            loading = true
+                            prefs.intervalSeconds = intervalSeconds
+                            if (!isContinue) prefs.lastNickname = nickname
+                            scope.launch {
+                                try {
+                                    if (isContinue) {
+                                        prefs.activeHikeId = continuingHikeId!!
+                                        prefs.isPaused = false
+                                    } else {
+                                        val token = prefs.authToken!!
+                                        val res = ApiClient.service.createHike(
+                                            "Bearer $token",
+                                            CreateHikeRequest(hikeName, nickname.ifBlank { null }),
+                                        )
+                                        if (!res.isSuccessful) throw Exception("建立行程失敗")
+                                        prefs.activeHikeId = res.body()!!.id
+                                    }
+                                    context.startForegroundService(
+                                        Intent(context, LocationForegroundService::class.java)
+                                            .setAction(LocationForegroundService.ACTION_START)
+                                    )
+                                    hasActiveHike = true
+                                    startMode = null
+                                    TrackerWidgetProvider.updateAllWidgets(context)
+                                    if (prefs.backgroundExecutionEnabled) requestBackgroundExecutionExemption(context)
+                                } catch (e: Exception) {
+                                    error = friendlyErrorMessage(e)
+                                } finally {
+                                    loading = false
+                                }
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("確定") }
+                }
+            }
         } else {
             val shareUrl = "https://tracker.umaya.tw/t/$shareToken"
 

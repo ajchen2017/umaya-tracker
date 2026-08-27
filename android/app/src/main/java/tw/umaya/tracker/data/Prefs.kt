@@ -72,6 +72,16 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean("background_execution_enabled", true)
         set(value) = prefs.edit().putBoolean("background_execution_enabled", value).apply()
 
+    /** Remembered credentials from the last successful login, prefilled on the login
+     *  screen. Stored in EncryptedSharedPreferences (Keystore-backed), same as authToken. */
+    var lastEmail: String?
+        get() = prefs.getString("last_email", null)
+        set(value) = prefs.edit().putString("last_email", value).apply()
+
+    var lastPassword: String?
+        get() = prefs.getString("last_password", null)
+        set(value) = prefs.edit().putString("last_password", value).apply()
+
     val isLoggedIn: Boolean get() = authToken != null
     val hasActiveHike: Boolean get() = activeHikeId != -1L
 
