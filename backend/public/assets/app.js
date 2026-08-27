@@ -328,9 +328,9 @@ function drawTrack(points) {
     if (idx === 0) return [p.lat, p.lng];
     const basePoint = map.latLngToLayerPoint([p.lat, p.lng]);
     const angle = idx * 137.5 * (Math.PI / 180); // golden-angle spiral — spreads evenly, never re-aligns
-    // SOS is the largest icon in play (72px, 36px radius) — the gap has to clear that even
+    // SOS is the largest icon in play (48px, 24px radius) — the gap has to clear that even
     // when it's SOS-vs-SOS overlapping, not just SOS-vs-small-event-icon.
-    const radius = 80 * Math.sqrt(idx);
+    const radius = 55 * Math.sqrt(idx);
     const offsetLatLng = map.layerPointToLatLng(
       L.point(basePoint.x + radius * Math.cos(angle), basePoint.y + radius * Math.sin(angle))
     );
@@ -342,12 +342,12 @@ function drawTrack(points) {
   // what gets fanned out around it, never the other way round.
   sosLayer.clearLayers();
   sosPoints.forEach((p) => {
-    // Red dot with "SOS" written inside, at 3x the size of an ordinary marker —
+    // Red dot with "SOS" written inside, at 2x the size of an ordinary marker —
     // this is the one thing on the map that must never be missed. No separate
     // text tooltip: the circle already says "SOS", a second label next to it
     // just reads as a duplicate.
     L.marker(clusterCoord(p), {
-      icon: L.divIcon({ html: '<div class="sos-dot">SOS</div>', className: '', iconSize: [72, 72] }),
+      icon: L.divIcon({ html: '<div class="sos-dot">SOS</div>', className: '', iconSize: [48, 48] }),
     })
       .bindPopup(`SOS<br>${fmtDateTime(p.recorded_at, p.lng)}`)
       .addTo(sosLayer);
