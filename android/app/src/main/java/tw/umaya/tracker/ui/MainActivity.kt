@@ -15,7 +15,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -112,25 +113,33 @@ private fun SosHoldButton(onTriggered: () -> Unit) {
             modifier = Modifier
                 .size(100.dp)
                 .pointerInput(Unit) {
-                    detectTapGestures(
-                        onPress = {
-                            val job = scope.launch {
-                                val start = System.currentTimeMillis()
-                                while (isActive) {
-                                    val elapsed = System.currentTimeMillis() - start
-                                    progress = (elapsed.toFloat() / holdMs).coerceIn(0f, 1f)
-                                    if (elapsed >= holdMs) {
-                                        onTriggered()
-                                        break
-                                    }
-                                    delay(16)
+                    // Not detectTapGestures: this sits inside a verticalScroll Column, and a
+                    // plain onPress there gets its gesture stolen by the ancestor scroll on any
+                    // natural finger tremor during a deliberate 3-second hold — tryAwaitRelease()
+                    // returns early, the timer job gets cancelled, and the hold silently never
+                    // fires. Manually draining and consuming every pointer event for the whole
+                    // gesture keeps the scroll container from ever claiming it.
+                    awaitEachGesture {
+                        awaitFirstDown().consume()
+                        val job = scope.launch {
+                            val start = System.currentTimeMillis()
+                            while (isActive) {
+                                val elapsed = System.currentTimeMillis() - start
+                                progress = (elapsed.toFloat() / holdMs).coerceIn(0f, 1f)
+                                if (elapsed >= holdMs) {
+                                    onTriggered()
+                                    break
                                 }
+                                delay(16)
                             }
-                            tryAwaitRelease()
-                            job.cancel()
-                            progress = 0f
-                        },
-                    )
+                        }
+                        do {
+                            val event = awaitPointerEvent()
+                            event.changes.forEach { it.consume() }
+                        } while (event.changes.any { it.pressed })
+                        job.cancel()
+                        progress = 0f
+                    }
                 },
             contentAlignment = Alignment.Center,
         ) {
