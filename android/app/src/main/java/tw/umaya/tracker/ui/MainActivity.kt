@@ -102,13 +102,38 @@ private fun requestBackgroundExecutionExemption(context: android.content.Context
 private fun IntervalSlider(seconds: Int, onSecondsChange: (Int) -> Unit, onChangeFinished: () -> Unit = {}) {
     val index = INTERVAL_PRESETS.indexOfFirst { it.first == seconds }.let { if (it < 0) 1 else it }
     Text("定位頻率：每 ${intervalLabel(seconds)} 一筆", style = MaterialTheme.typography.bodyMedium)
-    Slider(
-        value = index.toFloat(),
-        onValueChange = { onSecondsChange(INTERVAL_PRESETS[it.toInt()].first) },
-        onValueChangeFinished = onChangeFinished,
-        valueRange = 0f..(INTERVAL_PRESETS.size - 1).toFloat(),
-        steps = INTERVAL_PRESETS.size - 2,
-    )
+    // Dragging a thumb to land exactly on one of 8 closely-spaced stops is fiddly on a
+    // narrow dialog — a fat-finger drag can overshoot past a step and never quite settle
+    // there. Step buttons guarantee every preset is reachable regardless of touch precision;
+    // the slider stays for quick coarse jumps.
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        IconButton(
+            onClick = {
+                if (index > 0) {
+                    onSecondsChange(INTERVAL_PRESETS[index - 1].first)
+                    onChangeFinished()
+                }
+            },
+            enabled = index > 0,
+        ) { Text("－") }
+        Slider(
+            modifier = Modifier.weight(1f),
+            value = index.toFloat(),
+            onValueChange = { onSecondsChange(INTERVAL_PRESETS[it.toInt()].first) },
+            onValueChangeFinished = onChangeFinished,
+            valueRange = 0f..(INTERVAL_PRESETS.size - 1).toFloat(),
+            steps = INTERVAL_PRESETS.size - 2,
+        )
+        IconButton(
+            onClick = {
+                if (index < INTERVAL_PRESETS.size - 1) {
+                    onSecondsChange(INTERVAL_PRESETS[index + 1].first)
+                    onChangeFinished()
+                }
+            },
+            enabled = index < INTERVAL_PRESETS.size - 1,
+        ) { Text("＋") }
+    }
 }
 
 /**
