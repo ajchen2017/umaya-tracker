@@ -331,6 +331,76 @@ function updateHikeStatus(hike) {
   }
 }
 
+// --- Live elevation-vs-time strip chart ---
+const ELEVATION_WINDOW = 30; // most recent points shown — older ones "scroll" off the left
+const ELEVATION_EVENT_LABELS = { sos: 'SOS', safe: '我很好', camping: '停駐中' };
+let elevationHikeId = null;
+let elevationFrozen = false;
+
+function updateElevationChart(hike, points) {
+  const el = document.getElementById('elevationChart');
+
+  if (hike.id !== elevationHikeId) {
+    elevationHikeId = hike.id; // new hike started — resume scrolling from scratch
+    elevationFrozen = false;
+  }
+  // 結束行程 freezes the chart where it was; a later hike (caught above) is what resumes it.
+  if (hike.status === 'ended') elevationFrozen = true;
+  if (elevationFrozen && el.dataset.frozen === '1') return;
+
+  const withAltitude = points.filter((p) => p.altitude != null);
+  if (withAltitude.length < 2) {
+    el.classList.remove('show');
+    el.innerHTML = '';
+    return;
+  }
+
+  const pointsWindow = withAltitude.slice(-ELEVATION_WINDOW);
+  const alts = pointsWindow.map((p) => p.altitude);
+  const minAlt = Math.min(...alts);
+  const altRange = Math.max(1, Math.max(...alts) - minAlt); // avoid divide-by-zero on flat ground
+
+  const W = 300, H = 90, padTop = 14, padBottom = 6, padX = 4;
+  const plotH = H - padTop - padBottom;
+  const stepX = pointsWindow.length > 1 ? (W - padX * 2) / (pointsWindow.length - 1) : 0;
+  const xAt = (i) => padX + i * stepX;
+  const yAt = (alt) => padTop + plotH - ((alt - minAlt) / altRange) * plotH;
+
+  let gridSvg = '';
+  for (let g = 0; g <= 2; g++) {
+    const y = (padTop + (plotH / 2) * g).toFixed(1);
+    gridSvg += `<line class="axis-line" x1="${padX}" y1="${y}" x2="${W - padX}" y2="${y}" />`;
+  }
+  // Vertical ticks every 5 points — time-based-by-interval, since each point is
+  // recorded one interval apart (the actual interval value lives on the phone).
+  pointsWindow.forEach((p, i) => {
+    if (i % 5 === 0) {
+      const x = xAt(i).toFixed(1);
+      gridSvg += `<line class="axis-line" x1="${x}" y1="${padTop}" x2="${x}" y2="${H - padBottom}" />`;
+    }
+  });
+
+  const pathD = pointsWindow.map((p, i) => `${i === 0 ? 'M' : 'L'}${xAt(i).toFixed(1)},${yAt(p.altitude).toFixed(1)}`).join(' ');
+
+  let labelsSvg = '';
+  pointsWindow.forEach((p, i) => {
+    const label = ELEVATION_EVENT_LABELS[p.marker_type];
+    if (!label) return;
+    const cls = p.marker_type === 'sos' ? 'event-label sos' : 'event-label';
+    labelsSvg += `<text class="${cls}" x="${xAt(i).toFixed(1)}" y="${(yAt(p.altitude) - 5).toFixed(1)}">${label}</text>`;
+  });
+  const lastX = xAt(pointsWindow.length - 1).toFixed(1);
+  if (hike.status === 'ended') {
+    labelsSvg += `<text class="event-label" x="${lastX}" y="${padTop - 4}">結束行程</text>`;
+  } else if (hike.paused) {
+    labelsSvg += `<text class="event-label" x="${lastX}" y="${padTop - 4}">暫停</text>`;
+  }
+
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}">${gridSvg}<path class="elevation-line" d="${pathD}" />${labelsSvg}</svg>`;
+  el.classList.add('show');
+  el.dataset.frozen = elevationFrozen ? '1' : '0';
+}
+
 function render(data) {
   const { hike, points, alert } = data;
   currentNickname = hike.nickname || hike.hiker_name;
@@ -338,6 +408,7 @@ function render(data) {
   updateAlertBanner(alert); // time-based, so must update even when no new points arrived
   updateSosAlert(alert);
   updateHikeStatus(hike);
+  updateElevationChart(hike, points);
 
   // Re-check every poll, not just once: the planned route can be replaced or
   // cleared from the phone/settings page mid-hike, and the map needs to follow.
@@ -410,6 +481,7 @@ function clearMapVisuals() {
   polyline.setLatLngs([]);
   pointsLayer.clearLayers();
   sosLayer.clearLayers();
+  markerEventLayer.clearLayers();
   if (lastMarker) { map.removeLayer(lastMarker); lastMarker = null; }
   lastPointRecordedAt = null;
   lastPointCount = 0;
@@ -423,6 +495,12 @@ function clearMapVisuals() {
   batteryEl.textContent = '—';
   batteryEl.style.color = '';
   batteryEl.style.fontWeight = '';
+
+  elevationFrozen = false;
+  const chartEl = document.getElementById('elevationChart');
+  chartEl.classList.remove('show');
+  chartEl.innerHTML = '';
+  delete chartEl.dataset.frozen;
 }
 
 document.getElementById('btnClearTrack').addEventListener('click', async () => {

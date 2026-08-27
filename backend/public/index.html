@@ -48,9 +48,23 @@
     background: rgba(255,255,255,.95); padding: 10px 14px;
     box-shadow: 0 -2px 8px rgba(0,0,0,.15);
     font-size: 13px; color: #222;
+    display: flex; align-items: stretch; gap: 10px;
   }
+  #statusbarInfo { flex: 1 1 auto; min-width: 0; }
   #statusbar .row { display: flex; gap: 8px; margin-top: 2px; }
   #statusbar .label { color: #777; }
+
+  /* Live elevation-vs-time strip chart — only takes space once there's
+     something to plot, so it doesn't eat room on the initial "no data" view. */
+  #elevationChart { display: none; flex: 1 1 45%; min-width: 130px; max-width: 220px; }
+  #elevationChart.show { display: block; }
+  #elevationChart svg { width: 100%; height: 100%; display: block; overflow: visible; }
+  #elevationChart .axis-line { stroke: #ddd; stroke-width: 1; }
+  #elevationChart .elevation-line { stroke: #2d7dd2; stroke-width: 2; fill: none; }
+  #elevationChart .event-label {
+    font-size: 8px; font-weight: 700; fill: #444; text-anchor: middle;
+  }
+  #elevationChart .event-label.sos { fill: #d92b2b; }
 
   #signalLegend {
     display: none; flex-wrap: wrap; gap: 4px 12px; padding-bottom: 8px; margin-bottom: 6px;
@@ -172,18 +186,21 @@
 <button id="btnClearTrack" title="清除軌跡">🗑️</button>
 
 <div id="statusbar">
-  <div class="row" style="align-items:center;">
-    <span class="label">警戒狀態</span>
-    <span id="alertInfo" tabindex="0">ℹ️
-      <span class="tooltip" id="alertInfoTooltip"><!-- filled in dynamically from the hike's actual thresholds --></span>
-    </span>
+  <div id="statusbarInfo">
+    <div class="row" style="align-items:center;">
+      <span class="label">警戒狀態</span>
+      <span id="alertInfo" tabindex="0">ℹ️
+        <span class="tooltip" id="alertInfoTooltip"><!-- filled in dynamically from the hike's actual thresholds --></span>
+      </span>
+    </div>
+    <div id="alertBanner"></div>
+    <div id="signalLegend"></div>
+    <div class="row"><span class="label">行程狀態</span><span id="hikeStatus">—</span></div>
+    <div class="row"><span class="label">最後更新</span><span id="lastUpdate">—</span></div>
+    <div class="row"><span class="label">目前位置</span><span id="lastPos">—</span></div>
+    <div class="row"><span class="label">手機電量</span><span id="lastBattery">—</span></div>
   </div>
-  <div id="alertBanner"></div>
-  <div id="signalLegend"></div>
-  <div class="row"><span class="label">行程狀態</span><span id="hikeStatus">—</span></div>
-  <div class="row"><span class="label">最後更新</span><span id="lastUpdate">—</span></div>
-  <div class="row"><span class="label">目前位置</span><span id="lastPos">—</span></div>
-  <div class="row"><span class="label">手機電量</span><span id="lastBattery">—</span></div>
+  <div id="elevationChart"></div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
