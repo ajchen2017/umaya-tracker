@@ -48,23 +48,37 @@
     background: rgba(255,255,255,.95); padding: 10px 14px;
     box-shadow: 0 -2px 8px rgba(0,0,0,.15);
     font-size: 13px; color: #222;
-    display: flex; align-items: stretch; gap: 10px;
+    display: flex; align-items: stretch; gap: 4px;
   }
-  #statusbarInfo { flex: 1 1 auto; min-width: 0; }
+  /* flex:0 0 auto (not 1) so this only takes its own content width — the chart
+     then sits immediately next to it instead of being pushed to the far edge. */
+  #statusbarInfo { flex: 0 0 auto; min-width: 0; }
   #statusbar .row { display: flex; gap: 8px; margin-top: 2px; }
   #statusbar .label { color: #777; }
 
   /* Live elevation-vs-time strip chart — only takes space once there's
-     something to plot, so it doesn't eat room on the initial "no data" view. */
-  #elevationChart { display: none; flex: 1 1 45%; min-width: 130px; max-width: 220px; }
+     something to plot, so it doesn't eat room on the initial "no data" view.
+     Horizontally scrollable (native scrollbar = the "drag back through history"
+     ask) with separate zoom controls, fixed height so width can scroll freely. */
+  #elevationChart { display: none; flex: 1 1 auto; min-width: 150px; max-width: 260px; height: 96px; position: relative; }
   #elevationChart.show { display: block; }
-  #elevationChart svg { width: 100%; height: 100%; display: block; overflow: visible; }
+  #elevationScroll { width: 100%; height: 100%; overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+  #elevationScroll svg { display: block; height: 100%; }
+  #elevationZoomControls { position: absolute; top: 0; right: 0; display: flex; gap: 2px; z-index: 1; }
+  #elevationZoomControls button {
+    width: 16px; height: 16px; font-size: 12px; line-height: 1; padding: 0;
+    border: 1px solid #ccc; border-radius: 3px; background: rgba(255,255,255,.9); cursor: pointer;
+  }
   #elevationChart .axis-line { stroke: #ddd; stroke-width: 1; }
+  #elevationChart .axis-label { font-size: 9px; fill: #888; }
   #elevationChart .elevation-line { stroke: #2d7dd2; stroke-width: 2; fill: none; }
+  #elevationChart .elev-point { fill: #2d7dd2; cursor: pointer; }
+  #elevationChart .elev-point:hover { fill: #16406e; }
   #elevationChart .event-label {
-    font-size: 8px; font-weight: 700; fill: #444; text-anchor: middle;
+    font-size: 11px; font-weight: 700; fill: #444; text-anchor: middle;
   }
   #elevationChart .event-label.sos { fill: #d92b2b; }
+  #elevationChart .event-label.edge { text-anchor: end; } /* right-edge labels grow leftward, not off-canvas */
 
   #signalLegend {
     display: none; flex-wrap: wrap; gap: 4px 12px; padding-bottom: 8px; margin-bottom: 6px;
@@ -83,7 +97,8 @@
   #alertBanner.red { background: #fdd; color: #a30000; }
   #alertBanner .info { margin-left: auto; cursor: default; opacity: .7; }
 
-  #alertInfo { position: relative; display: inline-flex; cursor: default; opacity: .6; }
+  #alertInfo { position: relative; display: inline-flex; align-items: center; cursor: default; }
+  #alertIcon { font-size: 15px; }
   #alertInfo .tooltip {
     display: none; position: absolute; bottom: 20px; left: 0; z-index: 1001;
     background: #fff; color: #222; border-radius: 8px; padding: 10px 12px;
@@ -149,8 +164,17 @@
     font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center;
   }
 
+  #btnRefresh {
+    position: absolute; right: 12px; top: 216px; z-index: 1000;
+    width: 44px; height: 44px; border-radius: 50%; border: none;
+    background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+    font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  }
+  #btnRefresh.spinning { animation: spin .6s linear; }
+  @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+
   #colorPicker {
-    display: none; position: absolute; right: 12px; top: 216px; z-index: 1000;
+    display: none; position: absolute; right: 12px; top: 268px; z-index: 1000;
     background: #fff; border-radius: 12px; padding: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.3);
     grid-template-columns: repeat(4, 1fr); gap: 6px;
   }
@@ -185,11 +209,14 @@
 
 <button id="btnClearTrack" title="清除軌跡">🗑️</button>
 
+<button id="btnRefresh" title="立即重新整理資料">🔄</button>
+
 <div id="statusbar">
   <div id="statusbarInfo">
     <div class="row" style="align-items:center;">
       <span class="label">警戒狀態</span>
-      <span id="alertInfo" tabindex="0">ℹ️
+      <span id="alertInfo" tabindex="0" title="滑鼠移入／點按查看各等級門檻">
+        <span id="alertIcon">🟢</span>
         <span class="tooltip" id="alertInfoTooltip"><!-- filled in dynamically from the hike's actual thresholds --></span>
       </span>
     </div>
@@ -200,7 +227,13 @@
     <div class="row"><span class="label">目前位置</span><span id="lastPos">—</span></div>
     <div class="row"><span class="label">手機電量</span><span id="lastBattery">—</span></div>
   </div>
-  <div id="elevationChart"></div>
+  <div id="elevationChart">
+    <div id="elevationZoomControls">
+      <button id="btnElevZoomOut" title="縮小（點間距變窄，看更多歷史）">－</button>
+      <button id="btnElevZoomIn" title="放大（點間距變寬）">＋</button>
+    </div>
+    <div id="elevationScroll"></div>
+  </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

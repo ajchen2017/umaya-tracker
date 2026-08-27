@@ -77,9 +77,15 @@ function fmtRelativeTime(iso) {
 // Live label anchored to the hiker's current-position marker: nickname (falls
 // back to the account's display_name for hikes created before this field
 // existed) plus a relative-time readout that keeps ticking between polls.
+// 暫停/結束行程 ride along here too, since neither has its own track point to
+// anchor a separate map label to.
+let currentHikeState = { paused: false, status: 'active' };
 function buildMarkerLabel() {
-  if (!lastPointRecordedAt) return currentNickname;
-  return `${currentNickname} · ${fmtRelativeTime(lastPointRecordedAt)}`;
+  const parts = [currentNickname];
+  if (lastPointRecordedAt) parts.push(fmtRelativeTime(lastPointRecordedAt));
+  if (currentHikeState.status === 'ended') parts.push('🏁 結束行程');
+  else if (currentHikeState.paused) parts.push('⏸ 暫停');
+  return parts.join(' · ');
 }
 setInterval(() => {
   if (lastMarker && lastPointRecordedAt) lastMarker.setTooltipContent(buildMarkerLabel());
@@ -203,6 +209,7 @@ function drawTrack(points) {
     L.marker([p.lat, p.lng], {
       icon: L.divIcon({ html: MARKER_EVENT_ICONS[p.marker_type], className: '', iconSize: [22, 22] }),
     })
+      .bindTooltip(MARKER_EVENT_LABELS[p.marker_type], { permanent: true, direction: 'right', offset: [10, 0], className: 'waypoint-label' })
       .bindPopup(`${MARKER_EVENT_LABELS[p.marker_type]}<br>${fmtDateTime(p.recorded_at)}`)
       .addTo(markerEventLayer);
   });
@@ -220,7 +227,10 @@ function drawTrack(points) {
   sosPoints.forEach((p) => {
     L.marker([p.lat, p.lng], {
       icon: L.divIcon({ html: '🆘', className: '', iconSize: [24, 24] }),
-    }).addTo(sosLayer);
+    })
+      .bindTooltip('SOS', { permanent: true, direction: 'right', offset: [12, 0], className: 'waypoint-label' })
+      .bindPopup(`SOS<br>${fmtDateTime(p.recorded_at)}`)
+      .addTo(sosLayer);
   });
 
   document.getElementById('lastUpdate').textContent = fmtRelativeTime(last.recorded_at);
@@ -250,12 +260,15 @@ function setTrackColor(color) {
 
 let lastRenderedAlertConfig = null;
 
+const ALERT_LEVEL_ICONS = { green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴' };
+
 function updateAlertBanner(alert) {
   const el = document.getElementById('alertBanner');
+  document.getElementById('alertIcon').textContent = ALERT_LEVEL_ICONS[alert && alert.level] || '🟢';
   if (!alert || alert.level === 'green' || !alert.message) {
     el.classList.remove('show', 'yellow', 'orange', 'red');
   } else {
-    const icon = { yellow: '🟡', orange: '🟠', red: '🔴' }[alert.level] || '';
+    const icon = ALERT_LEVEL_ICONS[alert.level] || '';
     el.textContent = `${icon} ${alert.message}`;
     el.className = `show ${alert.level}`;
   }
@@ -332,79 +345,139 @@ function updateHikeStatus(hike) {
 }
 
 // --- Live elevation-vs-time strip chart ---
-const ELEVATION_WINDOW = 30; // most recent points shown — older ones "scroll" off the left
+// Horizontally scrollable (native scrollbar) so the guardian can drag back
+// through the whole hike's history, not just a fixed recent window; zoom
+// buttons adjust px-per-point. Auto-follows the live edge only while already
+// scrolled near it, so browsing history doesn't get yanked back on the next poll.
+const ELEVATION_MAX_POINTS = 2000; // sanity cap for very long hikes, not a "recent window"
+const ELEVATION_PX_MIN = 3, ELEVATION_PX_MAX = 24;
 const ELEVATION_EVENT_LABELS = { sos: 'SOS', safe: '我很好', camping: '停駐中' };
 let elevationHikeId = null;
 let elevationFrozen = false;
+let elevationPxPerPoint = 8;
+let lastElevationHike = null;
+let lastElevationPoints = null;
 
-function updateElevationChart(hike, points) {
+function drawElevationChart() {
+  const hike = lastElevationHike, points = lastElevationPoints;
+  if (!hike || !points) return;
   const el = document.getElementById('elevationChart');
+  const scrollEl = document.getElementById('elevationScroll');
 
-  if (hike.id !== elevationHikeId) {
-    elevationHikeId = hike.id; // new hike started — resume scrolling from scratch
-    elevationFrozen = false;
-  }
-  // 結束行程 freezes the chart where it was; a later hike (caught above) is what resumes it.
-  if (hike.status === 'ended') elevationFrozen = true;
-  if (elevationFrozen && el.dataset.frozen === '1') return;
-
-  const withAltitude = points.filter((p) => p.altitude != null);
+  const withAltitude = points.filter((p) => p.altitude != null).slice(-ELEVATION_MAX_POINTS);
   if (withAltitude.length < 2) {
     el.classList.remove('show');
-    el.innerHTML = '';
+    scrollEl.innerHTML = '';
     return;
   }
 
-  const pointsWindow = withAltitude.slice(-ELEVATION_WINDOW);
-  const alts = pointsWindow.map((p) => p.altitude);
+  const wasNearRightEdge = scrollEl.scrollWidth - scrollEl.scrollLeft - scrollEl.clientWidth < 40;
+
+  const alts = withAltitude.map((p) => p.altitude);
   const minAlt = Math.min(...alts);
   const altRange = Math.max(1, Math.max(...alts) - minAlt); // avoid divide-by-zero on flat ground
 
-  const W = 300, H = 90, padTop = 14, padBottom = 6, padX = 4;
+  // Fixed pixel dimensions (not a responsive viewBox) — width grows with the
+  // point count so the scroll container actually has something to scroll.
+  const H = 96;
+  const padLeft = 20, padRight = 10, padTop = 18, padBottom = 22;
   const plotH = H - padTop - padBottom;
-  const stepX = pointsWindow.length > 1 ? (W - padX * 2) / (pointsWindow.length - 1) : 0;
-  const xAt = (i) => padX + i * stepX;
+  const totalW = padLeft + padRight + (withAltitude.length - 1) * elevationPxPerPoint;
+  const xAt = (i) => padLeft + i * elevationPxPerPoint;
   const yAt = (alt) => padTop + plotH - ((alt - minAlt) / altRange) * plotH;
 
   let gridSvg = '';
   for (let g = 0; g <= 2; g++) {
     const y = (padTop + (plotH / 2) * g).toFixed(1);
-    gridSvg += `<line class="axis-line" x1="${padX}" y1="${y}" x2="${W - padX}" y2="${y}" />`;
+    gridSvg += `<line class="axis-line" x1="${padLeft}" y1="${y}" x2="${totalW - padRight}" y2="${y}" />`;
   }
   // Vertical ticks every 5 points — time-based-by-interval, since each point is
   // recorded one interval apart (the actual interval value lives on the phone).
-  pointsWindow.forEach((p, i) => {
+  withAltitude.forEach((p, i) => {
     if (i % 5 === 0) {
       const x = xAt(i).toFixed(1);
       gridSvg += `<line class="axis-line" x1="${x}" y1="${padTop}" x2="${x}" y2="${H - padBottom}" />`;
     }
   });
 
-  const pathD = pointsWindow.map((p, i) => `${i === 0 ? 'M' : 'L'}${xAt(i).toFixed(1)},${yAt(p.altitude).toFixed(1)}`).join(' ');
+  const pathD = withAltitude.map((p, i) => `${i === 0 ? 'M' : 'L'}${xAt(i).toFixed(1)},${yAt(p.altitude).toFixed(1)}`).join(' ');
+
+  // Clickable dots — recentering the map on a past point is how the guardian
+  // cross-references "where was he when the elevation did this".
+  let dotsSvg = '';
+  withAltitude.forEach((p, i) => {
+    dotsSvg += `<circle class="elev-point" cx="${xAt(i).toFixed(1)}" cy="${yAt(p.altitude).toFixed(1)}" r="2.5" data-lat="${p.lat}" data-lng="${p.lng}" />`;
+  });
 
   let labelsSvg = '';
-  pointsWindow.forEach((p, i) => {
+  withAltitude.forEach((p, i) => {
     const label = ELEVATION_EVENT_LABELS[p.marker_type];
     if (!label) return;
     const cls = p.marker_type === 'sos' ? 'event-label sos' : 'event-label';
-    labelsSvg += `<text class="${cls}" x="${xAt(i).toFixed(1)}" y="${(yAt(p.altitude) - 5).toFixed(1)}">${label}</text>`;
+    labelsSvg += `<text class="${cls}" x="${xAt(i).toFixed(1)}" y="${(yAt(p.altitude) - 6).toFixed(1)}">${label}</text>`;
   });
-  const lastX = xAt(pointsWindow.length - 1).toFixed(1);
+  const lastX = xAt(withAltitude.length - 1).toFixed(1);
   if (hike.status === 'ended') {
-    labelsSvg += `<text class="event-label" x="${lastX}" y="${padTop - 4}">結束行程</text>`;
+    labelsSvg += `<text class="event-label edge" x="${lastX}" y="${padTop - 5}">結束行程</text>`;
   } else if (hike.paused) {
-    labelsSvg += `<text class="event-label" x="${lastX}" y="${padTop - 4}">暫停</text>`;
+    labelsSvg += `<text class="event-label edge" x="${lastX}" y="${padTop - 5}">暫停</text>`;
   }
 
-  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}">${gridSvg}<path class="elevation-line" d="${pathD}" />${labelsSvg}</svg>`;
+  const yLabelX = padLeft - 12;
+  const yLabelY = padTop + plotH / 2;
+  const axesSvg = `
+    <text class="axis-label" x="${yLabelX}" y="${yLabelY}" text-anchor="middle" transform="rotate(-90, ${yLabelX}, ${yLabelY})">高度(M)</text>
+    <text class="axis-label" x="${padLeft + (totalW - padLeft - padRight) / 2}" y="${H - 4}" text-anchor="middle">時間（定位頻率）</text>
+  `;
+
+  scrollEl.innerHTML = `<svg width="${totalW}" height="${H}" viewBox="0 0 ${totalW} ${H}">${axesSvg}${gridSvg}<path class="elevation-line" d="${pathD}" />${dotsSvg}${labelsSvg}</svg>`;
   el.classList.add('show');
   el.dataset.frozen = elevationFrozen ? '1' : '0';
+
+  if (wasNearRightEdge) requestAnimationFrame(() => { scrollEl.scrollLeft = scrollEl.scrollWidth; });
+}
+
+document.getElementById('btnElevZoomIn').addEventListener('click', () => {
+  elevationPxPerPoint = Math.min(ELEVATION_PX_MAX, elevationPxPerPoint + 3);
+  drawElevationChart();
+});
+document.getElementById('btnElevZoomOut').addEventListener('click', () => {
+  elevationPxPerPoint = Math.max(ELEVATION_PX_MIN, elevationPxPerPoint - 3);
+  drawElevationChart();
+});
+
+// Delegated on the scroll container (not per-dot) since scrollEl.innerHTML is
+// fully replaced on every redraw — per-element listeners would leak/vanish.
+document.getElementById('elevationScroll').addEventListener('click', (e) => {
+  const dot = e.target.closest('.elev-point');
+  if (!dot) return;
+  const lat = parseFloat(dot.dataset.lat);
+  const lng = parseFloat(dot.dataset.lng);
+  if (!isNaN(lat) && !isNaN(lng)) map.setView([lat, lng], Math.max(map.getZoom(), 16));
+});
+
+function updateElevationChart(hike, points) {
+  if (hike.id !== elevationHikeId) {
+    elevationHikeId = hike.id; // new hike started — resume scrolling from scratch
+    elevationFrozen = false;
+  }
+  // 結束行程 freezes the chart where it was; a later hike (caught above) is what resumes it.
+  if (hike.status === 'ended') elevationFrozen = true;
+  const el = document.getElementById('elevationChart');
+  if (elevationFrozen && el.dataset.frozen === '1') return;
+
+  lastElevationHike = hike;
+  lastElevationPoints = points;
+  drawElevationChart();
 }
 
 function render(data) {
   const { hike, points, alert } = data;
   currentNickname = hike.nickname || hike.hiker_name;
   document.getElementById('hikeName').textContent = `${currentNickname} · ${hike.name}`;
+  const hikeStateChanged = currentHikeState.paused !== !!hike.paused || currentHikeState.status !== hike.status;
+  currentHikeState = { paused: !!hike.paused, status: hike.status };
+  if (hikeStateChanged && lastMarker) lastMarker.setTooltipContent(buildMarkerLabel());
   updateAlertBanner(alert); // time-based, so must update even when no new points arrived
   updateSosAlert(alert);
   updateHikeStatus(hike);
@@ -450,6 +523,13 @@ async function refresh() {
     document.getElementById('hikeName').textContent = '找不到這個行程';
   }
 }
+
+document.getElementById('btnRefresh').addEventListener('click', (e) => {
+  refresh();
+  e.currentTarget.classList.remove('spinning');
+  void e.currentTarget.offsetWidth; // restart the CSS animation even on rapid re-clicks
+  e.currentTarget.classList.add('spinning');
+});
 
 function switchLayer(layer) {
   document.getElementById('btnRudy').classList.toggle('active', layer === 'rudy');
