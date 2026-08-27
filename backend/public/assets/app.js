@@ -581,11 +581,11 @@ async function refresh() {
   }
 }
 
-document.getElementById('btnRefresh').addEventListener('click', (e) => {
-  refresh();
-  e.currentTarget.classList.remove('spinning');
-  void e.currentTarget.offsetWidth; // restart the CSS animation even on rapid re-clicks
-  e.currentTarget.classList.add('spinning');
+// A full hard reload (like Ctrl+Shift+R), not just an AJAX re-fetch — this page
+// has bitten guardians before with a stale-cached HTML/JS build showing nothing
+// changing no matter how long they waited on a plain data refresh.
+document.getElementById('btnRefresh').addEventListener('click', () => {
+  location.href = location.pathname + '?_=' + Date.now();
 });
 
 function switchLayer(layer) {

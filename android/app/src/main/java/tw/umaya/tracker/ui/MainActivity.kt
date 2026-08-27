@@ -7,28 +7,38 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import tw.umaya.tracker.data.ApiClient
 import tw.umaya.tracker.data.CreateHikeRequest
@@ -39,6 +49,7 @@ import tw.umaya.tracker.data.RegisterRequest
 import tw.umaya.tracker.data.intervalLabel
 import tw.umaya.tracker.location.LocationForegroundService
 import tw.umaya.tracker.sync.HikeActionWorker
+import tw.umaya.tracker.widget.TrackerWidgetProvider
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
@@ -53,6 +64,23 @@ private fun friendlyErrorMessage(e: Exception): String = when (e) {
     else -> e.message ?: "發生未知錯誤"
 }
 
+/**
+ * Prompts the system dialog to exempt this app from battery optimization, so Android is
+ * less likely to kill the background GPS service mid-hike. No-op if already exempted or
+ * the device doesn't offer a matching activity (some OEM ROMs strip this).
+ */
+private fun requestBackgroundExecutionExemption(context: android.content.Context) {
+    val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as PowerManager
+    if (pm.isIgnoringBatteryOptimizations(context.packageName)) return
+    try {
+        context.startActivity(
+            Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}"))
+        )
+    } catch (_: ActivityNotFoundException) {
+        // OEM without this dialog — nothing more we can do from here.
+    }
+}
+
 /** Snaps to the fixed [INTERVAL_PRESETS] list rather than any continuous value. */
 @Composable
 private fun IntervalSlider(seconds: Int, onSecondsChange: (Int) -> Unit, onChangeFinished: () -> Unit = {}) {
@@ -65,6 +93,75 @@ private fun IntervalSlider(seconds: Int, onSecondsChange: (Int) -> Unit, onChang
         valueRange = 0f..(INTERVAL_PRESETS.size - 1).toFloat(),
         steps = INTERVAL_PRESETS.size - 2,
     )
+}
+
+/**
+ * Big red circle, not a tap — SOS is consequential enough that it shouldn't fire from a
+ * stray touch. Holding fills the ring over [HOLD_MS]; releasing early cancels with no effect.
+ */
+@Composable
+private fun SosHoldButton(onTriggered: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var progress by remember { mutableStateOf(0f) }
+    val holdMs = 3000L
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier
+                .size(100.dp)
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onPress = {
+                            val job = scope.launch {
+                                val start = System.currentTimeMillis()
+                                while (isActive) {
+                                    val elapsed = System.currentTimeMillis() - start
+                                    progress = (elapsed.toFloat() / holdMs).coerceIn(0f, 1f)
+                                    if (elapsed >= holdMs) {
+                                        onTriggered()
+                                        break
+                                    }
+                                    delay(16)
+                                }
+                            }
+                            tryAwaitRelease()
+                            job.cancel()
+                            progress = 0f
+                        },
+                    )
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.matchParentSize(),
+                color = Color.White,
+                trackColor = Color(0x33FFFFFF),
+                strokeWidth = 5.dp,
+            )
+            Box(
+                modifier = Modifier
+                    .size(84.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.error),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "🆘\nSOS",
+                    textAlign = TextAlign.Center,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "長按 3 秒發送 SOS 求救",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -204,6 +301,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var menuExpanded by remember { mutableStateOf(false) }
     var showIntervalDialog by remember { mutableStateOf(false) }
     var showClearRouteDialog by remember { mutableStateOf(false) }
+    var showBackgroundExecDialog by remember { mutableStateOf(false) }
+    var backgroundExecutionEnabled by remember { mutableStateOf(prefs.backgroundExecutionEnabled) }
     var isPaused by remember { mutableStateOf(prefs.isPaused) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
@@ -285,6 +384,40 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         )
     }
 
+    if (showBackgroundExecDialog) {
+        AlertDialog(
+            onDismissRequest = { showBackgroundExecDialog = false },
+            title = { Text("背景執行") },
+            text = {
+                Column {
+                    Text(
+                        "開始行程時請求系統排除電池優化限制，降低 Android 在背景把定位服務關掉的機率。" +
+                            "部分機型仍會另外跳出系統設定畫面，需要手動確認。",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("開始行程時自動請求", modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = backgroundExecutionEnabled,
+                            onCheckedChange = {
+                                backgroundExecutionEnabled = it
+                                prefs.backgroundExecutionEnabled = it
+                            },
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showBackgroundExecDialog = false
+                    requestBackgroundExecutionExemption(context)
+                }) { Text("立即請求") }
+            },
+            dismissButton = { TextButton(onClick = { showBackgroundExecDialog = false }) { Text("關閉") } },
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -317,6 +450,10 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                     onClick = { menuExpanded = false; showClearRouteDialog = true },
                                 )
                             }
+                            DropdownMenuItem(
+                                text = { Text("背景執行") },
+                                onClick = { menuExpanded = false; showBackgroundExecDialog = true },
+                            )
                             DropdownMenuItem(
                                 text = { Text("登出") },
                                 onClick = {
@@ -375,6 +512,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                     .setAction(LocationForegroundService.ACTION_START)
                             )
                             hasActiveHike = true
+                            TrackerWidgetProvider.updateAllWidgets(context)
+                            if (prefs.backgroundExecutionEnabled) requestBackgroundExecutionExemption(context)
                         } catch (e: Exception) {
                             error = friendlyErrorMessage(e)
                         } finally {
@@ -429,18 +568,6 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             Spacer(Modifier.height(24.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                    onClick = {
-                        context.startService(
-                            Intent(context, LocationForegroundService::class.java)
-                                .setAction(LocationForegroundService.ACTION_MARK_SOS)
-                        )
-                    },
-                ) { Text("🆘 SOS", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-
                 OutlinedButton(
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp),
@@ -462,6 +589,16 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         )
                     },
                 ) { Text("⛺ 停駐中", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                SosHoldButton {
+                    context.startService(
+                        Intent(context, LocationForegroundService::class.java)
+                            .setAction(LocationForegroundService.ACTION_MARK_SOS)
+                    )
+                }
             }
 
             Spacer(Modifier.height(24.dp))
@@ -497,6 +634,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         hasActiveHike = false
                         isPaused = false
                         loading = false
+                        TrackerWidgetProvider.updateAllWidgets(context)
                     },
                 ) { Text("結束行程") }
             }

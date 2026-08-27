@@ -38,6 +38,7 @@ import tw.umaya.tracker.data.TrackPoint
 import tw.umaya.tracker.data.intervalLabel
 import tw.umaya.tracker.sync.HikeActionWorker
 import tw.umaya.tracker.sync.SyncWorker
+import tw.umaya.tracker.widget.TrackerWidgetProvider
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
@@ -92,6 +93,7 @@ class LocationForegroundService : Service() {
                 stopLocationUpdates()
                 prefs.isPaused = true
                 updateNotification()
+                TrackerWidgetProvider.updateAllWidgets(applicationContext)
                 if (prefs.activeHikeId != -1L) {
                     HikeActionWorker.enqueue(applicationContext, prefs.activeHikeId, HikeActionWorker.ACTION_PAUSE)
                 }
@@ -100,6 +102,7 @@ class LocationForegroundService : Service() {
                 prefs.isPaused = false
                 if (hasLocationPermission()) startLocationUpdates()
                 updateNotification()
+                TrackerWidgetProvider.updateAllWidgets(applicationContext)
                 if (prefs.activeHikeId != -1L) {
                     HikeActionWorker.enqueue(applicationContext, prefs.activeHikeId, HikeActionWorker.ACTION_RESUME)
                 }

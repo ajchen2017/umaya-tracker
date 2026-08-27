@@ -66,6 +66,12 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean("is_paused", false)
         set(value) = prefs.edit().putBoolean("is_paused", value).apply()
 
+    /** Default on: whether starting a hike should prompt to exempt the app from battery
+     *  optimization, so Android is less likely to kill background GPS recording. */
+    var backgroundExecutionEnabled: Boolean
+        get() = prefs.getBoolean("background_execution_enabled", true)
+        set(value) = prefs.edit().putBoolean("background_execution_enabled", value).apply()
+
     val isLoggedIn: Boolean get() = authToken != null
     val hasActiveHike: Boolean get() = activeHikeId != -1L
 
