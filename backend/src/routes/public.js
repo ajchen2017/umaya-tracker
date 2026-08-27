@@ -36,7 +36,7 @@ router.get('/:shareToken', async (req, res) => {
     [hike.id]
   );
 
-  const alert = computeAlertLevel(pointsResult.rows, new Date(), hike.alert_config);
+  const alert = computeAlertLevel(pointsResult.rows, new Date(), hike.alert_config, hike.status === 'ended');
   res.json({ hike, points: pointsResult.rows, alert });
 });
 

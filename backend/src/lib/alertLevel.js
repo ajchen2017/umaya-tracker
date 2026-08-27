@@ -128,7 +128,7 @@ function isNight(now, lat, lng) {
   return true; // not inside any day window found — night (or genuine polar night)
 }
 
-function computeAlertLevel(points, now = new Date(), userConfig = null) {
+function computeAlertLevel(points, now = new Date(), userConfig = null, hikeEnded = false) {
   const cfg = resolveConfig(userConfig);
 
   if (points.length === 0) {
@@ -142,6 +142,12 @@ function computeAlertLevel(points, now = new Date(), userConfig = null) {
     if (points[i].marker_type === 'sos') {
       return { level: 'red', reason: 'sos', message: '已發出 SOS 求救訊號', config: cfg };
     }
+  }
+
+  // A hike the hiker already ended has nothing further to report — silence from
+  // here on is expected, not a warning sign. (An unresolved SOS above still wins.)
+  if (hikeEnded) {
+    return { level: 'green', reason: 'ended', message: null, config: cfg };
   }
 
   const last = points[points.length - 1];
