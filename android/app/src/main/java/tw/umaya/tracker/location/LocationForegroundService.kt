@@ -10,13 +10,16 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
+import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.speech.tts.TextToSpeech
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -71,6 +74,9 @@ class LocationForegroundService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var lastLocation: Location? = null
     private var lastAcceptedLocation: Location? = null
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+    private var pendingSpeech = false
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -87,7 +93,11 @@ class LocationForegroundService : Service() {
         if (location.hasAccuracy() && location.accuracy > MAX_ACCEPTABLE_ACCURACY_M) return false
         val prev = lastAcceptedLocation ?: return true
         val elapsedSec = (location.time - prev.time) / 1000.0
-        if (elapsedSec <= 0) return true
+        // A same-or-earlier fix time than the last accepted fix means this is a duplicate or
+        // out-of-order delivery (e.g. a burst of buffered network/passive fixes released at
+        // once after the OS throttled callbacks) — no speed can be computed, so reject instead
+        // of letting it through unchecked.
+        if (elapsedSec <= 0) return false
         val impliedSpeedMps = prev.distanceTo(location) / elapsedSec
         return impliedSpeedMps <= MAX_PLAUSIBLE_SPEED_MPS
     }
@@ -98,6 +108,29 @@ class LocationForegroundService : Service() {
         prefs = Prefs(this)
         db = AppDatabase.get(this)
         createNotificationChannel()
+        // speak() right after construction would silently no-op: the engine takes a moment to
+        // connect, and calls made before onInit fires are dropped rather than queued. Stash a
+        // pending request and flush it once the engine reports ready.
+        tts = TextToSpeech(this) { status ->
+            ttsReady = status == TextToSpeech.SUCCESS
+            if (ttsReady) {
+                tts?.language = Locale.US // the alert phrase is English regardless of device locale
+                if (pendingSpeech) speakSosNow()
+            }
+            pendingSpeech = false
+        }
+    }
+
+    private fun speakSosNow() {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        am.setStreamVolume(AudioManager.STREAM_MUSIC, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC), 0)
+        val params = Bundle().apply { putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f) }
+        tts?.speak("Help, Help", TextToSpeech.QUEUE_FLUSH, params, "sos_alert")
+    }
+
+    override fun onDestroy() {
+        tts?.shutdown()
+        super.onDestroy()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -126,12 +159,19 @@ class LocationForegroundService : Service() {
                     HikeActionWorker.enqueue(applicationContext, prefs.activeHikeId, HikeActionWorker.ACTION_RESUME)
                 }
             }
-            ACTION_MARK_SOS -> markPoint("sos")
+            ACTION_MARK_SOS -> {
+                if (ttsReady) speakSosNow() else pendingSpeech = true
+                markPoint("sos")
+            }
             ACTION_MARK_SAFE -> markPoint("safe")
             ACTION_MARK_CAMPING -> markPoint("camping")
             else -> {
+                // Also how the screen re-asserts the service is alive on reopen (ACTION_START
+                // falls through to here, since it doesn't match a case above) — a killed
+                // process would otherwise leave "行程進行中" showing with tracking silently
+                // stopped and nothing to restart it. Must not override an existing pause.
                 startForeground(NOTIFICATION_ID, buildNotification())
-                startLocationUpdates()
+                if (hasLocationPermission() && !prefs.isPaused) startLocationUpdates()
             }
         }
         return START_STICKY

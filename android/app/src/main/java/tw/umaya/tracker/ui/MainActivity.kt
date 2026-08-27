@@ -14,9 +14,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -27,14 +30,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -111,7 +120,7 @@ private fun SosHoldButton(onTriggered: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             modifier = Modifier
-                .size(100.dp)
+                .size(200.dp)
                 .pointerInput(Unit) {
                     // Not detectTapGestures: this sits inside a verticalScroll Column, and a
                     // plain onPress there gets its gesture stolen by the ancestor scroll on any
@@ -143,26 +152,46 @@ private fun SosHoldButton(onTriggered: () -> Unit) {
                 },
             contentAlignment = Alignment.Center,
         ) {
-            CircularProgressIndicator(
-                progress = { progress },
-                modifier = Modifier.matchParentSize(),
-                color = Color.White,
-                trackColor = Color(0x33FFFFFF),
-                strokeWidth = 5.dp,
-            )
+            // Custom-drawn arc, not CircularProgressIndicator: the stock indicator's default
+            // track/indicator colors were low-contrast against the red circle and gave no
+            // perceptible feedback during a hold — a hiker with a finger held down had no way
+            // to tell the press had registered at all.
+            Canvas(modifier = Modifier.matchParentSize()) {
+                val strokePx = 10.dp.toPx()
+                drawArc(
+                    color = Color(0x40FFFFFF),
+                    startAngle = -90f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                    topLeft = Offset(strokePx / 2f, strokePx / 2f),
+                    size = Size(size.width - strokePx, size.height - strokePx),
+                )
+                if (progress > 0f) {
+                    drawArc(
+                        color = Color.Yellow,
+                        startAngle = -90f,
+                        sweepAngle = 360f * progress,
+                        useCenter = false,
+                        style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                        topLeft = Offset(strokePx / 2f, strokePx / 2f),
+                        size = Size(size.width - strokePx, size.height - strokePx),
+                    )
+                }
+            }
             Box(
                 modifier = Modifier
-                    .size(84.dp)
+                    .size(168.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.error),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    "🆘\nSOS",
+                    "SOS",
                     textAlign = TextAlign.Center,
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.displaySmall,
                 )
             }
         }
@@ -173,6 +202,28 @@ private fun SosHoldButton(onTriggered: () -> Unit) {
             color = MaterialTheme.colorScheme.error,
         )
     }
+}
+
+/** Solid-color action button that visibly darkens while held — a hiker glancing at the screen
+ *  mid-tap needs to see the press land, not just infer it from the default ripple. */
+@Composable
+private fun ActionButton(
+    label: String,
+    baseColor: Color,
+    pressedColor: Color,
+    height: Dp,
+    textStyle: TextStyle,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    Button(
+        modifier = modifier.height(height),
+        interactionSource = interactionSource,
+        colors = ButtonDefaults.buttonColors(containerColor = if (isPressed) pressedColor else baseColor),
+        onClick = onClick,
+    ) { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = textStyle) }
 }
 
 class MainActivity : ComponentActivity() {
@@ -664,84 +715,166 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         } else {
             val shareUrl = "https://tracker.umaya.tw/t/$shareToken"
 
-            Text(if (isPaused) "行程進行中（定位已暫停）" else "行程進行中", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-            Text("分享連結：$shareUrl")
-            Spacer(Modifier.height(12.dp))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        try {
-                            context.startActivity(Intent(Intent.ACTION_SENDTO).apply {
-                                data = Uri.parse("mailto:")
-                                putExtra(Intent.EXTRA_SUBJECT, "登山健行定位追蹤 - $hikeName")
-                                putExtra(Intent.EXTRA_TEXT, "可以在這裡看到我的即時位置：\n$shareUrl")
-                            })
-                        } catch (_: ActivityNotFoundException) {
-                            Toast.makeText(context, "找不到可用的郵件 App", Toast.LENGTH_LONG).show()
-                        }
-                    },
-                ) { Text("✉️ 寄給留守人") }
-
-                OutlinedButton(
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        try {
-                            context.startActivity(Intent.createChooser(
-                                Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(Intent.EXTRA_TEXT, shareUrl)
-                                },
-                                "分享行程連結",
-                            ))
-                        } catch (_: ActivityNotFoundException) {
-                            Toast.makeText(context, "找不到可用的分享 App", Toast.LENGTH_LONG).show()
-                        }
-                    },
-                ) { Text("分享") }
+            LaunchedEffect(Unit) {
+                // Re-assert on every entry to this screen (app reopen, process restart) — if the
+                // service died (e.g. killed on package update) nothing else would restart it, and
+                // tracking would silently stay stopped forever with this screen still claiming
+                // "行程進行中". Safe to call when already running: pause state is preserved server-side.
+                context.startForegroundService(
+                    Intent(context, LocationForegroundService::class.java)
+                        .setAction(LocationForegroundService.ACTION_START)
+                )
             }
+
+            var serverOnline by remember { mutableStateOf<Boolean?>(null) }
+            LaunchedEffect(Unit) {
+                while (true) {
+                    serverOnline = try {
+                        ApiClient.service.listHikes("Bearer ${prefs.authToken}").isSuccessful
+                    } catch (_: Exception) {
+                        false
+                    }
+                    delay(15_000)
+                }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("伺服器狀態：")
+                Text(
+                    when (serverOnline) {
+                        true -> "正常"
+                        false -> "離線"
+                        null -> "檢查中"
+                    },
+                    fontWeight = FontWeight.Bold,
+                    color = if (serverOnline == false) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                )
+                if (serverOnline == false) {
+                    IconButton(
+                        modifier = Modifier.size(32.dp),
+                        onClick = {
+                            try {
+                                context.startActivity(Intent(Intent.ACTION_SENDTO).apply {
+                                    data = Uri.parse("mailto:")
+                                    putExtra(Intent.EXTRA_EMAIL, arrayOf("ajchen2017@gmail.com"))
+                                    putExtra(Intent.EXTRA_SUBJECT, "登山健行定位追蹤 - 系統異常回報")
+                                    putExtra(
+                                        Intent.EXTRA_TEXT,
+                                        "App 顯示伺服器狀態異常（離線），行程：$hikeName\n請盡快協助排除，謝謝。",
+                                    )
+                                })
+                            } catch (_: ActivityNotFoundException) {
+                                Toast.makeText(context, "找不到可用的郵件 App", Toast.LENGTH_LONG).show()
+                            }
+                        },
+                    ) { Text("✉️") }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("行程狀態：", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (isPaused) "進行中（定位已暫停）" else "進行中",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("分享連結：")
+                TooltipBox(
+                    positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                    tooltip = { PlainTooltip { Text("寄給留守人") } },
+                    state = rememberTooltipState(),
+                ) {
+                    IconButton(
+                        modifier = Modifier.size(32.dp),
+                        onClick = {
+                            try {
+                                context.startActivity(Intent(Intent.ACTION_SENDTO).apply {
+                                    data = Uri.parse("mailto:")
+                                    putExtra(Intent.EXTRA_SUBJECT, "登山健行定位追蹤 - $hikeName")
+                                    putExtra(Intent.EXTRA_TEXT, "可以在這裡看到我的即時位置：\n$shareUrl")
+                                })
+                            } catch (_: ActivityNotFoundException) {
+                                Toast.makeText(context, "找不到可用的郵件 App", Toast.LENGTH_LONG).show()
+                            }
+                        },
+                    ) { Text("✉️") }
+                }
+                TooltipBox(
+                    positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                    tooltip = { PlainTooltip { Text("分享") } },
+                    state = rememberTooltipState(),
+                ) {
+                    IconButton(
+                        modifier = Modifier.size(32.dp),
+                        onClick = {
+                            try {
+                                context.startActivity(Intent.createChooser(
+                                    Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, shareUrl)
+                                    },
+                                    "分享行程連結",
+                                ))
+                            } catch (_: ActivityNotFoundException) {
+                                Toast.makeText(context, "找不到可用的分享 App", Toast.LENGTH_LONG).show()
+                            }
+                        },
+                    ) { Text("📤") }
+                }
+            }
+            Text(shareUrl)
 
             Spacer(Modifier.height(24.dp))
 
+            val actionButtonHeight = 56.dp
+            val actionButtonTextStyle = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
+                ActionButton(
+                    label = "😊 我很好",
+                    baseColor = Color(0xFF2E7D32),
+                    pressedColor = Color(0xFF1B5E20),
+                    height = actionButtonHeight,
+                    textStyle = actionButtonTextStyle,
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp),
                     onClick = {
                         context.startService(
                             Intent(context, LocationForegroundService::class.java)
                                 .setAction(LocationForegroundService.ACTION_MARK_SAFE)
                         )
                     },
-                ) { Text("我很好", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                )
 
-                OutlinedButton(
+                ActionButton(
+                    label = "⛺ 停駐中",
+                    baseColor = Color(0xFFEF6C00),
+                    pressedColor = Color(0xFFBF360C),
+                    height = actionButtonHeight,
+                    textStyle = actionButtonTextStyle,
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp),
                     onClick = {
                         context.startService(
                             Intent(context, LocationForegroundService::class.java)
                                 .setAction(LocationForegroundService.ACTION_MARK_CAMPING)
                         )
                     },
-                ) { Text("⛺ 停駐中", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                )
             }
 
-            Spacer(Modifier.height(16.dp))
-            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                SosHoldButton {
-                    context.startService(
-                        Intent(context, LocationForegroundService::class.java)
-                            .setAction(LocationForegroundService.ACTION_MARK_SOS)
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(24.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ActionButton(
+                    label = if (isPaused) "▶️ 繼續" else "⏸ 暫停",
+                    baseColor = if (isPaused) Color(0xFF2E7D32) else Color(0xFFF9A825),
+                    pressedColor = if (isPaused) Color(0xFF1B5E20) else Color(0xFFF57F17),
+                    height = actionButtonHeight,
+                    textStyle = actionButtonTextStyle,
                     modifier = Modifier.weight(1f),
                     onClick = {
                         isPaused = !isPaused
@@ -753,9 +886,14 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                             )
                         )
                     },
-                ) { Text(if (isPaused) "▶️ 繼續" else "⏸ 暫停") }
+                )
 
-                OutlinedButton(
+                ActionButton(
+                    label = "🏁 結束行程",
+                    baseColor = Color(0xFFC62828),
+                    pressedColor = Color(0xFF8E0000),
+                    height = actionButtonHeight,
+                    textStyle = actionButtonTextStyle,
                     modifier = Modifier.weight(1f),
                     onClick = {
                         loading = true
@@ -774,7 +912,17 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         loading = false
                         TrackerWidgetProvider.updateAllWidgets(context)
                     },
-                ) { Text("結束行程") }
+                )
+            }
+
+            Spacer(Modifier.height(24.dp))
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                SosHoldButton {
+                    context.startService(
+                        Intent(context, LocationForegroundService::class.java)
+                            .setAction(LocationForegroundService.ACTION_MARK_SOS)
+                    )
+                }
             }
         }
 
