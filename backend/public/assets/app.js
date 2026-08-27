@@ -410,6 +410,9 @@ function drawElevationChart() {
     xAxisEl.textContent = '';
     return;
   }
+  // Toggle visibility before measuring scrollEl.clientWidth below — a hidden (display:none)
+  // element reports 0 width, which would undersize the pre-filled grid on the very first draw.
+  el.classList.toggle('show', elevationChartVisible);
 
   const wasNearRightEdge = scrollEl.scrollWidth - scrollEl.scrollLeft - scrollEl.clientWidth < 40;
 
@@ -425,7 +428,10 @@ function drawElevationChart() {
   const H = 96;
   const padX = 6, padTop = 18, padBottom = 6;
   const plotH = H - padTop - padBottom;
-  const totalW = padX * 2 + (withAltitude.length - 1) * elevationPxPerPoint;
+  const dataW = padX * 2 + (withAltitude.length - 1) * elevationPxPerPoint;
+  // Grid/frame always fill at least the visible panel — pre-drawn regardless of how much
+  // data exists yet, so only the line/dots/labels grow as new points arrive, not the canvas.
+  const totalW = Math.max(dataW, scrollEl.clientWidth || 0);
   const xAt = (i) => padX + i * elevationPxPerPoint;
   const yAt = (alt) => padTop + plotH - ((alt - minAlt) / altRange) * plotH;
 
@@ -434,15 +440,12 @@ function drawElevationChart() {
     const y = (padTop + (plotH / 2) * g).toFixed(1);
     gridSvg += `<line class="axis-line" x1="${padX}" y1="${y}" x2="${totalW - padX}" y2="${y}" />`;
   }
-  // Vertical ticks every 5 points — time-based-by-interval, since each grid
-  // represents a fixed number of recordings (see the X-axis caption for what
-  // that is in real time, computed from the actual gaps between points).
-  withAltitude.forEach((p, i) => {
-    if (i % 5 === 0) {
-      const x = xAt(i).toFixed(1);
-      gridSvg += `<line class="axis-line" x1="${x}" y1="${padTop}" x2="${x}" y2="${H - padBottom}" />`;
-    }
-  });
+  // Vertical ticks every 5-points-worth of pixel spacing, drawn across the full canvas
+  // (not stopped at the last real data point) — a fixed grid pattern, not data-driven.
+  const vTickStep = 5 * elevationPxPerPoint;
+  for (let x = padX; x <= totalW - padX; x += vTickStep) {
+    gridSvg += `<line class="axis-line" x1="${x.toFixed(1)}" y1="${padTop}" x2="${x.toFixed(1)}" y2="${H - padBottom}" />`;
+  }
 
   const pathD = withAltitude.map((p, i) => `${i === 0 ? 'M' : 'L'}${xAt(i).toFixed(1)},${yAt(p.altitude).toFixed(1)}`).join(' ');
 
@@ -467,12 +470,11 @@ function drawElevationChart() {
     labelsSvg += `<text class="event-label edge" x="${lastX}" y="${padTop - 5}">暫停</text>`;
   }
 
-  // Frame around just the plotted data — the axis panels sit outside it (Y to
-  // its left, X below it), fixed in place while this scrolls underneath them.
+  // Frame spans the full canvas (pre-filled, not data-dependent) — the axis panels sit
+  // outside it (Y to its left, X below it), fixed in place while this scrolls underneath them.
   const frameSvg = `<rect class="chart-frame" x="${padX}" y="${padTop}" width="${totalW - padX * 2}" height="${plotH}" />`;
 
   scrollEl.innerHTML = `<svg width="${totalW}" height="${H}" viewBox="0 0 ${totalW} ${H}" preserveAspectRatio="none">${frameSvg}${gridSvg}<path class="elevation-line" d="${pathD}" />${dotsSvg}${labelsSvg}</svg>`;
-  el.classList.toggle('show', elevationChartVisible);
   el.dataset.frozen = elevationFrozen ? '1' : '0';
   // Status bar's height varies (alert banner, signal legend) — pin flush above it, not a
   // hardcoded offset that would drift out of place whenever that content changes.
