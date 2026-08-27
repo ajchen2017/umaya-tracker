@@ -41,6 +41,7 @@ const rudyLayer = L.tileLayer(RUDY_TILE_URL, {
   maxZoom: RUDY_MAX_ZOOM, bounds: RUDY_BOUNDS, attribution: '地圖資料 &copy; RudyMap',
 });
 const osmLayer = L.tileLayer(OSM_TILE_URL, { maxZoom: 19, maxNativeZoom: 19, attribution: '&copy; OpenStreetMap contributors' });
+let currentMapLayer = 'rudy';
 switchLayer('rudy'); // also sets btnMapLayer's initial title — real default (Taiwan vs. not) applies once the hiker's actual position is known, see render()
 
 const TRACK_COLORS = [
@@ -100,7 +101,6 @@ let lastPointCount = 0;
 let hasCenteredOnStart = false;
 let startLatLng = null;
 let lastLatLng = null; // newest point — what 📍 recenters to, and what decides the RudyMap-bounds check
-let currentMapLayer = 'rudy';
 let lastPlannedRoute = undefined; // undefined = never checked yet, distinct from null (cleared)
 let lastRenderedPoints = null;
 let currentNickname = '';
