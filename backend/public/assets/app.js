@@ -76,6 +76,16 @@ function haversineMeters(lat1, lng1, lat2, lng2) {
 // plausible speed for the current travel mode (checked against the last kept point, not
 // the raw previous one — so skipping one bad point doesn't also reject the next good one).
 // Same idea as the phone's own GPS teleport filter, applied here to how the line is drawn.
+//
+// A pure speed×time threshold breaks down at short recording intervals: GPS noise itself
+// (worse near buildings — multipath) is commonly 20-50m even standing still, and at a 10s
+// interval a walking speed limit only allows ~33m — so ordinary GPS jitter alone would get
+// misread as "impossibly fast" and rejected, even with zero real movement. The allowed
+// distance is floored by both points' own reported accuracy radius: two fixes whose error
+// circles could plausibly overlap are never rejected on speed grounds, no matter how short
+// the time between them.
+const MIN_ACCURACY_MARGIN_M = 20; // baseline slack even when accuracy is missing/zero
+
 function filterPlausiblePoints(points) {
   const speedLimit = TRAVEL_MODE_SPEED_MPS[travelMode] || TRAVEL_MODE_SPEED_MPS.hiking;
   const kept = [];
@@ -85,7 +95,9 @@ function filterPlausiblePoints(points) {
     const dtSec = (new Date(p.recorded_at) - new Date(last.recorded_at)) / 1000;
     if (dtSec <= 0) return; // duplicate/out-of-order timestamp — no speed can be computed
     const distM = haversineMeters(last.lat, last.lng, p.lat, p.lng);
-    if (distM / dtSec > speedLimit) return; // implausible for this mode — drop
+    const accuracyFloor = (p.accuracy || 0) + (last.accuracy || 0) + MIN_ACCURACY_MARGIN_M;
+    const allowedM = Math.max(speedLimit * dtSec, accuracyFloor);
+    if (distM > allowedM) return; // implausible for this mode even accounting for GPS noise — drop
     kept.push(p);
     last = p;
   });

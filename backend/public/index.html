@@ -19,42 +19,59 @@
 
   #topbar {
     position: absolute; top: 0; left: 0; right: 0; z-index: 1000;
-    display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
-    padding: 10px 12px; gap: 8px; background: linear-gradient(rgba(0,0,0,.55), rgba(0,0,0,0));
+    display: flex; align-items: center;
+    padding: 10px 12px; background: linear-gradient(rgba(0,0,0,.55), rgba(0,0,0,0));
     color: #fff; pointer-events: none;
   }
   #topbar * { pointer-events: auto; }
-  /* margin-left clears Leaflet's default zoom control (top-left, ~40px wide) */
+  /* margin-left clears Leaflet's default zoom control (top-left, ~40px wide). Settings and
+     the layer toggle used to live here too, but sharing this row with a name long enough to
+     wrap broke their own layout (a wrapped flex row re-justifies per line, so a lone second
+     item lands back at the start instead of staying pinned right) — they're now both in the
+     right-side icon column below instead, which only hikeName's own height affects. */
   #hikeName {
     font-size: 16px; font-weight: 600; text-shadow: 0 1px 3px rgba(0,0,0,.6);
-    margin-left: 44px; flex: 1 1 auto; min-width: 0;
+    margin-left: 44px;
+    /* Reserves the right-column icons' width so a wrapped second line can never extend
+       under them — the right column can then sit at plain fixed offsets instead of having
+       to track hikeName's (variable) height at all. */
+    max-width: calc(100% - 44px - 64px);
   }
-  #topbarControls { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 
+  /* Leaflet's own zoom control sits at a fixed offset near the true top of the map and does
+     NOT grow with the topbar's (variable, name-length-dependent) height — this has to track
+     that fixed position, not --topbar-h, or a long/wrapped hike name pulls it away from the
+     +/- buttons it's meant to sit directly under. */
   #zoomLevel {
-    position: absolute; left: 10px; top: calc(var(--topbar-h) + 22px); z-index: 1000;
+    position: absolute; left: 10px; top: 78px; z-index: 1000;
     width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
     background: #fff; border-radius: 4px; font-size: 17px; font-weight: 700;
     color: #333; box-shadow: 0 1px 4px rgba(0,0,0,.3); pointer-events: none;
   }
 
   #btnSettings {
-    margin-left: 8px; width: 44px; height: 44px; border-radius: 50%;
+    position: absolute; right: 12px; top: 8px; z-index: 1000;
+    width: 44px; height: 44px; border-radius: 50%; overflow: hidden;
     background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center;
-    font-size: 20px; text-decoration: none; cursor: pointer;
+    font-size: 24px; text-decoration: none; cursor: pointer;
   }
 
   #statusbar {
     position: absolute; left: 0; right: 0; bottom: 0; z-index: 1000;
-    background: rgba(255,255,255,.95); padding: 10px 14px;
+    background: rgba(255,255,255,.95); padding: 6px 12px;
     box-shadow: 0 -2px 8px rgba(0,0,0,.15);
-    font-size: 13px; color: #222;
+    font-size: 11px; color: #222;
     display: flex; align-items: stretch; gap: 4px;
   }
   /* flex:0 0 auto (not 1) so this only takes its own content width — the chart
      then sits immediately next to it instead of being pushed to the far edge. */
-  #statusbarInfo { flex: 0 0 auto; min-width: 0; }
-  #statusbar .row { display: flex; gap: 8px; margin-top: 2px; }
+  #statusbarInfo { flex: 0 0 auto; min-width: 0; max-width: 100%; }
+  /* flex-wrap + min-width:0 on the value — a flex item refuses to shrink/wrap below its
+     content's natural width by default, so a long value (lat/lng + altitude + accuracy)
+     was overflowing past the screen edge instead of wrapping, getting clipped by body's
+     own overflow:hidden. */
+  #statusbar .row { display: flex; flex-wrap: wrap; gap: 2px 8px; margin-top: 1px; }
+  #statusbar .row > span:last-child { min-width: 0; overflow-wrap: break-word; }
   #statusbar .label { color: #777; }
 
   /* Live elevation-vs-time strip chart — floats over the left edge of the map
@@ -155,21 +172,21 @@
   }
   #sosFrame.show { display: block; }
 
-  /* Moved under the settings gear (top-right) instead of bottom-right — the
-     status bar can grow tall enough (alert row, signal legend) to cover
-     bottom-anchored buttons otherwise. */
+  /* Whole right-side icon column at plain fixed offsets, stacked 52px apart under
+     btnSettings — hikeName's max-width above keeps its wrapped text out of this column
+     entirely, so none of these need to track the topbar's (variable) height. */
   #btnMapLayer {
-    position: absolute; right: 12px; top: calc(var(--topbar-h) + 8px); z-index: 1000;
+    position: absolute; right: 12px; top: 60px; z-index: 1000;
     width: 44px; height: 44px; border-radius: 50%; border: none; overflow: hidden;
     background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3);
-    font-size: 26px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center;
   }
 
   #btnStart {
-    position: absolute; right: 12px; top: calc(var(--topbar-h) + 60px); z-index: 1000;
+    position: absolute; right: 12px; top: 112px; z-index: 1000;
     width: 44px; height: 44px; border-radius: 50%; border: none; overflow: hidden;
     background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3);
-    font-size: 26px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center;
   }
   #btnStart:disabled { opacity: .4; cursor: default; }
 
@@ -188,29 +205,29 @@
   }
 
   #btnColor {
-    position: absolute; right: 12px; top: calc(var(--topbar-h) + 112px); z-index: 1000;
+    position: absolute; right: 12px; top: 164px; z-index: 1000;
     width: 44px; height: 44px; border-radius: 50%; border: none;
     background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3);
     cursor: pointer; display: flex; align-items: center; justify-content: center;
   }
-  #btnColor .swatch { width: 20px; height: 20px; border-radius: 50%; }
+  #btnColor .swatch { width: 24px; height: 24px; border-radius: 50%; }
 
   #btnClearTrack {
-    position: absolute; right: 12px; top: calc(var(--topbar-h) + 164px); z-index: 1000;
+    position: absolute; right: 12px; top: 216px; z-index: 1000;
     width: 44px; height: 44px; border-radius: 50%; border: none; overflow: hidden;
     background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3);
-    font-size: 23px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center;
   }
 
   #btnRefresh {
-    position: absolute; right: 12px; top: calc(var(--topbar-h) + 216px); z-index: 1000;
+    position: absolute; right: 12px; top: 268px; z-index: 1000;
     width: 44px; height: 44px; border-radius: 50%; border: none; overflow: hidden;
     background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.3);
-    font-size: 23px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center;
   }
 
   #colorPicker {
-    display: none; position: absolute; right: 12px; top: calc(var(--topbar-h) + 268px); z-index: 1000;
+    display: none; position: absolute; right: 12px; top: 320px; z-index: 1000;
     background: #fff; border-radius: 12px; padding: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.3);
     grid-template-columns: repeat(4, 1fr); gap: 6px;
   }
@@ -229,10 +246,9 @@
 
 <div id="topbar">
   <div id="hikeName">載入中…</div>
-  <div id="topbarControls">
-    <a id="btnSettings" title="設定">⚙️</a>
-  </div>
 </div>
+
+<a id="btnSettings" title="設定">⚙️</a>
 
 <button id="sosBanner" type="button">🆘 已發出 SOS 標記，請確認登山者狀況（點擊靜音）</button>
 
