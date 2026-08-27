@@ -58,12 +58,21 @@
 
   /* Live elevation-vs-time strip chart — only takes space once there's
      something to plot, so it doesn't eat room on the initial "no data" view.
-     Horizontally scrollable (native scrollbar = the "drag back through history"
-     ask) with separate zoom controls, fixed height so width can scroll freely. */
-  #elevationChart { display: none; flex: 1 1 auto; min-width: 150px; max-width: 260px; height: 108px; position: relative; }
-  #elevationChart.show { display: block; }
-  #elevationScroll { width: 100%; height: 100%; overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+     Split into three pieces: a fixed Y-axis gutter (left), the horizontally
+     scrollable plot itself (native scrollbar = the "drag back through
+     history" ask), and a fixed X-axis caption row below — so the axis labels
+     never scroll away with the data, only the plot does. */
+  #elevationChart {
+    display: none; flex: 1 1 auto; min-width: 150px; max-width: 260px; height: 122px;
+    position: relative; flex-direction: column;
+  }
+  #elevationChart.show { display: flex; }
+  #elevationMain { flex: 1 1 auto; display: flex; overflow: hidden; min-height: 0; }
+  #elevationAxisY { flex: 0 0 32px; }
+  #elevationAxisY svg { display: block; width: 100%; height: 100%; }
+  #elevationScroll { flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
   #elevationScroll svg { display: block; height: 100%; }
+  #elevationAxisX { flex: 0 0 auto; font-size: 10px; color: #888; text-align: center; padding-top: 2px; }
   #elevationZoomControls { position: absolute; top: 0; right: 0; display: flex; gap: 2px; z-index: 1; }
   #elevationZoomControls button {
     width: 16px; height: 16px; font-size: 12px; line-height: 1; padding: 0;
@@ -72,6 +81,7 @@
   #elevationChart .axis-line { stroke: #ddd; stroke-width: 1; }
   #elevationChart .chart-frame { fill: none; stroke: #bbb; stroke-width: 1; }
   #elevationChart .axis-label { font-size: 11px; fill: #888; }
+  #elevationChart .axis-tick { font-size: 10px; fill: #888; text-anchor: end; }
   #elevationChart .elevation-line { stroke: #2d7dd2; stroke-width: 2; fill: none; }
   #elevationChart .elev-point { fill: #2d7dd2; cursor: pointer; }
   #elevationChart .elev-point:hover { fill: #16406e; }
@@ -113,9 +123,12 @@
   #sosBanner {
     display: none; position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
     width: 50%; z-index: 1000;
-    background: #d92b2b; color: #fff; padding: 8px 12px; border-radius: 8px;
-    font-weight: 700; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+    background: #d92b2b; color: #fff; padding: 8px 12px; border-radius: 8px; border: none;
+    font: inherit; font-weight: 700; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+    cursor: pointer;
   }
+  #sosBanner:hover, #sosBanner:focus { background: #c22323; }
+  #sosBanner:active { background: #a91d1d; }
 
   /* Thick red frame around the whole viewport while SOS is active — impossible to miss
      even if the guardian isn't looking straight at the status bar text. */
@@ -201,7 +214,7 @@
   <a id="btnSettings" title="設定">⚙️</a>
 </div>
 
-<div id="sosBanner">🆘 已發出 SOS 標記，請確認登山者狀況</div>
+<button id="sosBanner" type="button">🆘 已發出 SOS 標記，請確認登山者狀況（點擊靜音）</button>
 
 <button id="btnStart" disabled title="回到起點">📍</button>
 
@@ -233,7 +246,11 @@
       <button id="btnElevZoomOut" title="縮小（點間距變窄，看更多歷史）">－</button>
       <button id="btnElevZoomIn" title="放大（點間距變寬）">＋</button>
     </div>
-    <div id="elevationScroll"></div>
+    <div id="elevationMain">
+      <div id="elevationAxisY"></div>
+      <div id="elevationScroll"></div>
+    </div>
+    <div id="elevationAxisX"></div>
   </div>
 </div>
 

@@ -319,19 +319,34 @@ function sosBeep() {
 // Driven by the server-computed alert (respects a later "safe" clearing an
 // earlier SOS), not raw historical SOS points — those never un-happen, but the
 // active emergency state should stop once the hiker checks in.
+let sosActive = false;
+let sosMuted = false; // resets on each fresh SOS onset — muting a past SOS shouldn't silence the next one
+
 function updateSosAlert(alert) {
   const active = !!alert && alert.level === 'red' && alert.reason === 'sos';
-  document.getElementById('sosBanner').style.display = active ? 'block' : 'none';
+  if (active && !sosActive) sosMuted = false; // new onset (was clear, now SOS) — always sound once
+  sosActive = active;
+
+  const banner = document.getElementById('sosBanner');
+  banner.style.display = active ? 'block' : 'none';
+  banner.textContent = sosMuted
+    ? '🆘 已發出 SOS 標記，請確認登山者狀況（聲音已靜音，點擊恢復）'
+    : '🆘 已發出 SOS 標記，請確認登山者狀況（點擊靜音）';
   document.getElementById('sosFrame').classList.toggle('show', active);
 
-  if (active && !sosBeepTimer) {
+  if (active && !sosMuted && !sosBeepTimer) {
     sosBeep();
     sosBeepTimer = setInterval(sosBeep, 1500);
-  } else if (!active && sosBeepTimer) {
+  } else if ((!active || sosMuted) && sosBeepTimer) {
     clearInterval(sosBeepTimer);
     sosBeepTimer = null;
   }
 }
+
+document.getElementById('sosBanner').addEventListener('click', () => {
+  sosMuted = !sosMuted;
+  updateSosAlert(sosActive ? { level: 'red', reason: 'sos' } : null);
+});
 
 function updateHikeStatus(hike) {
   const el = document.getElementById('hikeStatus');
@@ -358,16 +373,38 @@ let elevationPxPerPoint = 8;
 let lastElevationHike = null;
 let lastElevationPoints = null;
 
+// Median (not mean) so one long gap — a dead zone, a pause — doesn't skew the
+// "per grid" estimate away from the actual recording interval.
+function medianIntervalSeconds(pts) {
+  const deltas = [];
+  for (let i = 1; i < pts.length; i++) {
+    const d = (new Date(pts[i].recorded_at) - new Date(pts[i - 1].recorded_at)) / 1000;
+    if (d > 0) deltas.push(d);
+  }
+  if (!deltas.length) return null;
+  deltas.sort((a, b) => a - b);
+  return deltas[Math.floor(deltas.length / 2)];
+}
+function formatDuration(sec) {
+  if (sec < 60) return `${Math.round(sec)} 秒`;
+  if (sec < 3600) return `${Math.round(sec / 60)} 分`;
+  return `${(sec / 3600).toFixed(1)} 小時`;
+}
+
 function drawElevationChart() {
   const hike = lastElevationHike, points = lastElevationPoints;
   if (!hike || !points) return;
   const el = document.getElementById('elevationChart');
+  const yAxisEl = document.getElementById('elevationAxisY');
   const scrollEl = document.getElementById('elevationScroll');
+  const xAxisEl = document.getElementById('elevationAxisX');
 
   const withAltitude = points.filter((p) => p.altitude != null).slice(-ELEVATION_MAX_POINTS);
   if (withAltitude.length < 2) {
     el.classList.remove('show');
+    yAxisEl.innerHTML = '';
     scrollEl.innerHTML = '';
+    xAxisEl.textContent = '';
     return;
   }
 
@@ -375,24 +412,28 @@ function drawElevationChart() {
 
   const alts = withAltitude.map((p) => p.altitude);
   const minAlt = Math.min(...alts);
-  const altRange = Math.max(1, Math.max(...alts) - minAlt); // avoid divide-by-zero on flat ground
+  const maxAlt = Math.max(...alts);
+  const altRange = Math.max(1, maxAlt - minAlt); // avoid divide-by-zero on flat ground
 
   // Fixed pixel dimensions (not a responsive viewBox) — width grows with the
   // point count so the scroll container actually has something to scroll.
-  const H = 108;
-  const padLeft = 24, padRight = 10, padTop = 18, padBottom = 26;
+  // No room reserved here for axis text anymore — that lives in the separate
+  // fixed Y-axis/X-axis panels, which is what keeps it from scrolling away.
+  const H = 96;
+  const padX = 6, padTop = 18, padBottom = 6;
   const plotH = H - padTop - padBottom;
-  const totalW = padLeft + padRight + (withAltitude.length - 1) * elevationPxPerPoint;
-  const xAt = (i) => padLeft + i * elevationPxPerPoint;
+  const totalW = padX * 2 + (withAltitude.length - 1) * elevationPxPerPoint;
+  const xAt = (i) => padX + i * elevationPxPerPoint;
   const yAt = (alt) => padTop + plotH - ((alt - minAlt) / altRange) * plotH;
 
   let gridSvg = '';
   for (let g = 0; g <= 2; g++) {
     const y = (padTop + (plotH / 2) * g).toFixed(1);
-    gridSvg += `<line class="axis-line" x1="${padLeft}" y1="${y}" x2="${totalW - padRight}" y2="${y}" />`;
+    gridSvg += `<line class="axis-line" x1="${padX}" y1="${y}" x2="${totalW - padX}" y2="${y}" />`;
   }
-  // Vertical ticks every 5 points — time-based-by-interval, since each point is
-  // recorded one interval apart (the actual interval value lives on the phone).
+  // Vertical ticks every 5 points — time-based-by-interval, since each grid
+  // represents a fixed number of recordings (see the X-axis caption for what
+  // that is in real time, computed from the actual gaps between points).
   withAltitude.forEach((p, i) => {
     if (i % 5 === 0) {
       const x = xAt(i).toFixed(1);
@@ -423,21 +464,34 @@ function drawElevationChart() {
     labelsSvg += `<text class="event-label edge" x="${lastX}" y="${padTop - 5}">暫停</text>`;
   }
 
-  // Labels sit outside the frame (left of its left edge / below its bottom edge),
-  // not crowding the plotted data.
-  const frameSvg = `<rect class="chart-frame" x="${padLeft}" y="${padTop}" width="${totalW - padLeft - padRight}" height="${plotH}" />`;
-  const yLabelX = padLeft - 12;
-  const yLabelY = padTop + plotH / 2;
-  const axesSvg = `
-    <text class="axis-label" x="${yLabelX}" y="${yLabelY}" text-anchor="middle" transform="rotate(-90, ${yLabelX}, ${yLabelY})">高度(M)</text>
-    <text class="axis-label" x="${padLeft + (totalW - padLeft - padRight) / 2}" y="${H - 4}" text-anchor="middle">時間（定位頻率）</text>
-  `;
+  // Frame around just the plotted data — the axis panels sit outside it (Y to
+  // its left, X below it), fixed in place while this scrolls underneath them.
+  const frameSvg = `<rect class="chart-frame" x="${padX}" y="${padTop}" width="${totalW - padX * 2}" height="${plotH}" />`;
 
-  scrollEl.innerHTML = `<svg width="${totalW}" height="${H}" viewBox="0 0 ${totalW} ${H}">${axesSvg}${frameSvg}${gridSvg}<path class="elevation-line" d="${pathD}" />${dotsSvg}${labelsSvg}</svg>`;
+  scrollEl.innerHTML = `<svg width="${totalW}" height="${H}" viewBox="0 0 ${totalW} ${H}" preserveAspectRatio="none">${frameSvg}${gridSvg}<path class="elevation-line" d="${pathD}" />${dotsSvg}${labelsSvg}</svg>`;
   el.classList.add('show');
   el.dataset.frozen = elevationFrozen ? '1' : '0';
 
   if (wasNearRightEdge) requestAnimationFrame(() => { scrollEl.scrollLeft = scrollEl.scrollWidth; });
+
+  // Fixed Y-axis: rotated "高度(M)" title + the actual altitude at each gridline
+  // (top/middle/bottom), recomputed every redraw since the visible range changes
+  // as new points arrive or the zoom level changes.
+  const yTitleX = 10, yTitleY = padTop + plotH / 2;
+  const yTicks = [maxAlt, (maxAlt + minAlt) / 2, minAlt]
+    .map((alt, g) => `<text class="axis-tick" x="30" y="${(padTop + (plotH / 2) * g + 3).toFixed(1)}">${Math.round(alt)}</text>`)
+    .join('');
+  yAxisEl.innerHTML = `<svg viewBox="0 0 32 ${H}" preserveAspectRatio="none">
+    <text class="axis-label" x="${yTitleX}" y="${yTitleY}" text-anchor="middle" transform="rotate(-90, ${yTitleX}, ${yTitleY})">高度(M)</text>
+    ${yTicks}
+  </svg>`;
+
+  // Fixed X-axis caption: what one grid division (5 points) actually spans in
+  // time, derived from the real gaps between recorded points — the configured
+  // interval value itself only lives on the phone, not this page.
+  const interval = medianIntervalSeconds(withAltitude);
+  const perGrid = interval ? ` · 每格約 ${formatDuration(interval * 5)}` : '';
+  xAxisEl.textContent = `時間（定位頻率）${perGrid}`;
 }
 
 document.getElementById('btnElevZoomIn').addEventListener('click', () => {
@@ -580,10 +634,14 @@ function clearMapVisuals() {
   batteryEl.style.fontWeight = '';
 
   elevationFrozen = false;
+  lastElevationHike = null;
+  lastElevationPoints = null;
   const chartEl = document.getElementById('elevationChart');
   chartEl.classList.remove('show');
-  chartEl.innerHTML = '';
   delete chartEl.dataset.frozen;
+  document.getElementById('elevationAxisY').innerHTML = '';
+  document.getElementById('elevationScroll').innerHTML = '';
+  document.getElementById('elevationAxisX').textContent = '';
 }
 
 document.getElementById('btnClearTrack').addEventListener('click', async () => {
