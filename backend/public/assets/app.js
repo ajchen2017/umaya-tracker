@@ -487,7 +487,9 @@ function drawElevationChart() {
   const el = document.getElementById('elevationChart');
   const yAxisEl = document.getElementById('elevationAxisY');
   const scrollEl = document.getElementById('elevationScroll');
-  const xAxisEl = document.getElementById('elevationAxisX');
+  // The text span, not the outer row — that row also holds the zoom control buttons now,
+  // and .textContent on it would silently wipe those out along with the caption text.
+  const xAxisEl = document.getElementById('elevationAxisXText');
 
   const withAltitude = points.filter((p) => p.altitude != null).slice(-ELEVATION_MAX_POINTS);
   if (withAltitude.length < 2) {
@@ -770,7 +772,7 @@ function clearMapVisuals() {
   delete chartEl.dataset.frozen;
   document.getElementById('elevationAxisY').innerHTML = '';
   document.getElementById('elevationScroll').innerHTML = '';
-  document.getElementById('elevationAxisX').textContent = '';
+  document.getElementById('elevationAxisXText').textContent = '';
 }
 
 document.getElementById('btnClearTrack').addEventListener('click', async () => {

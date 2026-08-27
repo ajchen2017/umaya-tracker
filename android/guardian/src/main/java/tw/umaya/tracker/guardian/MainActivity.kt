@@ -33,6 +33,7 @@ class MainActivity : AppCompatActivity() {
 
     private var pendingGeoOrigin: String? = null
     private var pendingGeoCallback: GeolocationPermissions.Callback? = null
+    private var hasLoadedOnce = false // true once a link has actually been loaded into the WebView
 
     private val requestLocationPermission = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
@@ -113,13 +114,22 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadLink(url: String) {
         webView.loadUrl(url)
+        hasLoadedOnce = true
         inputContainer.visibility = android.view.View.GONE
         webContainer.visibility = android.view.View.VISIBLE
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK && webContainer.visibility == android.view.View.VISIBLE && webView.canGoBack()) {
+        if (keyCode != KeyEvent.KEYCODE_BACK) return super.onKeyDown(keyCode, event)
+        if (webContainer.visibility == android.view.View.VISIBLE && webView.canGoBack()) {
             webView.goBack()
+            return true
+        }
+        // Pressed 👤 to (maybe) change the link, then changed their mind — back should
+        // return to the map already loaded, not exit the app, as long as there is one.
+        if (inputContainer.visibility == android.view.View.VISIBLE && hasLoadedOnce) {
+            inputContainer.visibility = android.view.View.GONE
+            webContainer.visibility = android.view.View.VISIBLE
             return true
         }
         return super.onKeyDown(keyCode, event)

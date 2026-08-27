@@ -102,15 +102,17 @@
   #elevationAxisY svg { display: block; width: 100%; height: 100%; }
   #elevationScroll { flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
   #elevationScroll svg { display: block; height: 100%; }
-  #elevationAxisX { flex: 0 0 auto; font-size: 10px; color: #888; text-align: center; padding-top: 2px; }
-  #elevationZoomControls {
-    position: absolute; top: 0; right: 0; z-index: 1;
-    display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+  /* Zoom controls sit inline right after the caption text (定位頻率 …), not floating over
+     the plot's top-right corner — that used to crowd against the plot's own content up
+     there and look cramped. */
+  #elevationAxisX {
+    flex: 0 0 auto; font-size: 10px; color: #888; padding-top: 2px;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
   }
-  #elevationZoomRow { display: flex; gap: 2px; }
+  #elevationZoomControls { display: flex; gap: 3px; flex: 0 0 auto; }
   #elevationZoomControls button {
     width: 16px; height: 16px; font-size: 12px; line-height: 1; padding: 0;
-    border: 1px solid #ccc; border-radius: 3px; background: rgba(255,255,255,.9); cursor: pointer;
+    border: 1px solid #ccc; border-radius: 3px; background: #fff; cursor: pointer;
   }
   #elevationChart .axis-line { stroke: #ddd; stroke-width: 1; }
   #elevationChart .chart-frame { fill: none; stroke: #bbb; stroke-width: 1; }
@@ -304,18 +306,18 @@
 </div>
 
 <div id="elevationChart">
-  <div id="elevationZoomControls">
-    <div id="elevationZoomRow">
-      <button id="btnElevZoomOut" title="縮小（每格時間跨度變長，可看更久的歷史，最粗到 2 小時一格）">－</button>
-      <button id="btnElevZoomIn" title="放大（每格時間跨度變短）">＋</button>
-    </div>
-    <button id="btnElevZoomReset" title="重設為預設縮放（每格 1 分鐘）">↺</button>
-  </div>
   <div id="elevationMain">
     <div id="elevationAxisY"></div>
     <div id="elevationScroll"></div>
   </div>
-  <div id="elevationAxisX"></div>
+  <div id="elevationAxisX">
+    <span id="elevationAxisXText"></span>
+    <div id="elevationZoomControls">
+      <button id="btnElevZoomOut" title="縮小（每格時間跨度變長，可看更久的歷史，最粗到 2 小時一格）">－</button>
+      <button id="btnElevZoomIn" title="放大（每格時間跨度變短）">＋</button>
+      <button id="btnElevZoomReset" title="重設為預設縮放（每格 1 分鐘）">↺</button>
+    </div>
+  </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
