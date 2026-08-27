@@ -56,6 +56,13 @@ let trackColor = localStorage.getItem('trackColor') || TRACK_COLORS[0];
 // Meters/second a mode is plausibly capable of — hiking tops out around a brisk walk/jog
 // (200m/min), cycling around 40km/h (700m/min). Set on the settings page, read here.
 const TRAVEL_MODE_SPEED_MPS = { hiking: 200 / 60, cycling: 700 / 60 };
+// Absolute per-hop ceiling, independent of elapsed time — the speed check alone can still
+// wave through a real teleport if it happens to pair with a large-enough time gap (a big
+// jump computed against a stale "last kept" point after a burst of corrupted/batched
+// timestamps looks "slow enough" on paper even though no one covered that ground on foot).
+// A hiker in 健行模式 is assumed to be a pedestrian; a single hop past this is a vehicle or
+// a data error either way, not a plausible hiking stride, so it's rejected outright.
+const MAX_SINGLE_HOP_M = { hiking: 2000, cycling: 8000 };
 let travelMode = localStorage.getItem('travelMode') || 'hiking';
 window.addEventListener('storage', (e) => {
   if (e.key !== 'travelMode') return;
@@ -88,6 +95,7 @@ const MIN_ACCURACY_MARGIN_M = 20; // baseline slack even when accuracy is missin
 
 function filterPlausiblePoints(points) {
   const speedLimit = TRAVEL_MODE_SPEED_MPS[travelMode] || TRAVEL_MODE_SPEED_MPS.hiking;
+  const hopCap = MAX_SINGLE_HOP_M[travelMode] || MAX_SINGLE_HOP_M.hiking;
   const kept = [];
   let last = null;
   points.forEach((p) => {
@@ -95,6 +103,7 @@ function filterPlausiblePoints(points) {
     const dtSec = (new Date(p.recorded_at) - new Date(last.recorded_at)) / 1000;
     if (dtSec <= 0) return; // duplicate/out-of-order timestamp — no speed can be computed
     const distM = haversineMeters(last.lat, last.lng, p.lat, p.lng);
+    if (distM > hopCap) return; // no elapsed time makes this plausible for the mode — drop unconditionally
     const accuracyFloor = (p.accuracy || 0) + (last.accuracy || 0) + MIN_ACCURACY_MARGIN_M;
     const allowedM = Math.max(speedLimit * dtSec, accuracyFloor);
     if (distM > allowedM) return; // implausible for this mode even accounting for GPS noise — drop
