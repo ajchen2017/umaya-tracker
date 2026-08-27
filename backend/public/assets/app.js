@@ -440,9 +440,13 @@ function drawElevationChart() {
     const y = (padTop + (plotH / 2) * g).toFixed(1);
     gridSvg += `<line class="axis-line" x1="${padX}" y1="${y}" x2="${totalW - padX}" y2="${y}" />`;
   }
-  // Vertical ticks every 5-points-worth of pixel spacing, drawn across the full canvas
-  // (not stopped at the last real data point) — a fixed grid pattern, not data-driven.
-  const vTickStep = 5 * elevationPxPerPoint;
+  // Vertical ticks one per real minute — not "every 5 points", since the phone's
+  // configured recording interval (not knowable from here except by inferring it from
+  // the actual gaps) decides how many points that actually is. Drawn across the full
+  // canvas, not stopped at the last real data point — a fixed grid pattern.
+  const medianIntervalSec = medianIntervalSeconds(withAltitude);
+  const pointsPerMinute = medianIntervalSec ? Math.max(1, Math.round(60 / medianIntervalSec)) : 5;
+  const vTickStep = pointsPerMinute * elevationPxPerPoint;
   for (let x = padX; x <= totalW - padX; x += vTickStep) {
     gridSvg += `<line class="axis-line" x1="${x.toFixed(1)}" y1="${padTop}" x2="${x.toFixed(1)}" y2="${H - padBottom}" />`;
   }
@@ -494,11 +498,10 @@ function drawElevationChart() {
     ${yTicks}
   </svg>`;
 
-  // Fixed X-axis caption: what one grid division (5 points) actually spans in
-  // time, derived from the real gaps between recorded points — the configured
-  // interval value itself only lives on the phone, not this page.
-  const interval = medianIntervalSeconds(withAltitude);
-  const perGrid = interval ? ` · 每格約 ${formatDuration(interval * 5)}` : '';
+  // Fixed X-axis caption: what one grid division actually spans in time — the phone's
+  // configured interval isn't sent to the server, so this is inferred from the real gaps
+  // between recorded points (same basis as vTickStep above).
+  const perGrid = medianIntervalSec ? ` · 每格 ${formatDuration(medianIntervalSec * pointsPerMinute)}` : '';
   xAxisEl.textContent = `時間（定位頻率）${perGrid}`;
 }
 
