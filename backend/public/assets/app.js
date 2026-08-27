@@ -178,7 +178,24 @@ updateTopbarHeight();
 // an external timezone lookup) so a guardian in Taiwan can see what the hiker's own local
 // clock read, not just their own.
 let timeDisplayMode = localStorage.getItem('timeDisplayMode') || 'guardian';
-window.addEventListener('storage', (e) => { if (e.key === 'timeDisplayMode') timeDisplayMode = e.newValue || 'guardian'; });
+window.addEventListener('storage', (e) => {
+  if (e.key !== 'timeDisplayMode') return;
+  timeDisplayMode = e.newValue || 'guardian';
+  if (lastRenderedPoints) drawTrack(lastRenderedPoints); // storage events don't cover the tab that made the change (see pageshow below) — this is for a second tab open at the same time
+});
+
+// A hike that already ended never gets new points, so drawTrack() never runs again on its
+// own after the first render — nothing would ever pick up a setting changed afterward on
+// the settings page. That's compounded by bfcache: navigating back to this page via history
+// (as "← 返回地圖" does) can restore it from cache without re-running this script at all, so
+// the in-memory settings variables above go stale relative to whatever's now in localStorage.
+// Re-sync from localStorage and force a redraw whenever the page becomes visible again.
+window.addEventListener('pageshow', (e) => {
+  if (!e.persisted) return; // only the bfcache-restore case needs this — a fresh load already reads localStorage above
+  timeDisplayMode = localStorage.getItem('timeDisplayMode') || 'guardian';
+  travelMode = localStorage.getItem('travelMode') || 'hiking';
+  if (lastRenderedPoints) drawTrack(lastRenderedPoints);
+});
 
 function fmtDateTime(iso, lng) {
   const d = new Date(iso);
