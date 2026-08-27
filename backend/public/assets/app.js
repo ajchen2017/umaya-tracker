@@ -335,10 +335,12 @@ function drawTrack(points) {
 
   sosLayer.clearLayers();
   sosPoints.forEach((p) => {
+    // Red dot with "SOS" written inside, at 3x the size of an ordinary marker —
+    // this is the one thing on the map that must never be missed.
     L.marker([p.lat, p.lng], {
-      icon: L.divIcon({ html: '🆘', className: '', iconSize: [24, 24] }),
+      icon: L.divIcon({ html: '<div class="sos-dot">SOS</div>', className: '', iconSize: [72, 72] }),
     })
-      .bindTooltip('SOS', { permanent: true, direction: 'right', offset: [12, 0], className: 'waypoint-label' })
+      .bindTooltip('SOS', { permanent: true, direction: 'right', offset: [36, 0], className: 'waypoint-label' })
       .bindPopup(`SOS<br>${fmtDateTime(p.recorded_at, p.lng)}`)
       .addTo(sosLayer);
   });
