@@ -19,7 +19,8 @@ data class UserDto(val id: Long, val email: String, val displayName: String, val
 
 data class RegisterRequest(val email: String, val password: String, val displayName: String)
 
-data class CreateHikeRequest(val name: String, val nickname: String?)
+data class CreateHikeRequest(val name: String, val nickname: String?, val intervalSeconds: Int)
+data class IntervalRequest(val intervalSeconds: Int)
 data class HikeDto(val id: Long, val name: String, val status: String)
 data class HikeListItemDto(val id: Long, val name: String, val nickname: String?, val status: String)
 
@@ -71,6 +72,13 @@ interface ApiService {
         @Header("Authorization") bearer: String,
         @Path("id") hikeId: Long,
     ): Response<HikeDto>
+
+    @PATCH("hikes/{id}/interval")
+    suspend fun updateInterval(
+        @Header("Authorization") bearer: String,
+        @Path("id") hikeId: Long,
+        @Body body: IntervalRequest,
+    ): Response<Unit>
 
     @POST("hikes/{id}/points")
     suspend fun uploadPoints(

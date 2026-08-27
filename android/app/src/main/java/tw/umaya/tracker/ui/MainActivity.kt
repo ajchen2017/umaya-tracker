@@ -53,6 +53,7 @@ import kotlinx.coroutines.launch
 import tw.umaya.tracker.data.ApiClient
 import tw.umaya.tracker.data.CreateHikeRequest
 import tw.umaya.tracker.data.ForgotPasswordRequest
+import tw.umaya.tracker.data.IntervalRequest
 import tw.umaya.tracker.data.HikeListItemDto
 import tw.umaya.tracker.data.INTERVAL_PRESETS
 import tw.umaya.tracker.data.LoginRequest
@@ -489,6 +490,22 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         Intent(context, LocationForegroundService::class.java)
                             .setAction(LocationForegroundService.ACTION_UPDATE_INTERVAL)
                     )
+                    if (prefs.activeHikeId != -1L) {
+                        val hikeId = prefs.activeHikeId
+                        val token = prefs.authToken
+                        if (token != null) {
+                            scope.launch {
+                                try {
+                                    ApiClient.service.updateInterval(
+                                        "Bearer $token", hikeId, IntervalRequest(intervalSeconds),
+                                    )
+                                } catch (_: Exception) {
+                                    // Best-effort, same contract as pause-state: the family page just
+                                    // keeps showing whatever interval it last successfully heard.
+                                }
+                            }
+                        }
+                    }
                     showIntervalDialog = false
                 }) { Text("套用") }
             },
@@ -688,7 +705,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                         val token = prefs.authToken!!
                                         val res = ApiClient.service.createHike(
                                             "Bearer $token",
-                                            CreateHikeRequest(hikeName, nickname.ifBlank { null }),
+                                            CreateHikeRequest(hikeName, nickname.ifBlank { null }, intervalSeconds),
                                         )
                                         if (!res.isSuccessful) throw Exception("建立行程失敗")
                                         prefs.activeHikeId = res.body()!!.id
@@ -784,7 +801,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             Spacer(Modifier.height(8.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("分享連結：")
+                Text("分享連結給留守人：")
                 TooltipBox(
                     positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
                     tooltip = { PlainTooltip { Text("寄給留守人") } },
@@ -829,6 +846,11 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 }
             }
             Text(shareUrl)
+            Text(
+                "（每隻手機配有一個固定連結網址）",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             Spacer(Modifier.height(24.dp))
 
