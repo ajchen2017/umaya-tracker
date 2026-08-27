@@ -16,14 +16,15 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import tw.umaya.tracker.R
 
 /**
  * Thin WebView wrapper around the existing family/guardian page (tracker.umaya.tw/t/:token) —
  * the page itself already has everything (魯地圖/線上地圖 toggle, elevation chart, SOS alert,
- * settings); this app just gives it an icon and a launcher entry so a guardian doesn't have to
- * keep a browser tab/bookmark around.
+ * settings); this screen just gives it a chrome so a guardian doesn't have to keep a browser
+ * tab/bookmark around. Launched from HomeActivity's role picker, not the app's own launcher.
  */
-class MainActivity : AppCompatActivity() {
+class GuardianActivity : AppCompatActivity() {
 
     private lateinit var prefs: android.content.SharedPreferences
     private lateinit var inputContainer: android.view.View
@@ -45,7 +46,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        setContentView(R.layout.activity_guardian)
         prefs = getSharedPreferences("guardian", MODE_PRIVATE)
 
         inputContainer = findViewById(R.id.inputContainer)
@@ -54,6 +55,7 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.webView)
         val btnGo = findViewById<Button>(R.id.btnGo)
         val btnChangeLink = findViewById<ImageButton>(R.id.btnChangeLink)
+        val btnHome = findViewById<ImageButton>(R.id.btnGuardianHome)
 
         setupWebView()
 
@@ -62,6 +64,7 @@ class MainActivity : AppCompatActivity() {
             webContainer.visibility = android.view.View.GONE
             inputContainer.visibility = android.view.View.VISIBLE
         }
+        btnHome.setOnClickListener { finish() } // back to the role picker, not app exit
 
         val saved = prefs.getString(KEY_LINK, null)
         if (saved != null) {
@@ -83,7 +86,7 @@ class MainActivity : AppCompatActivity() {
                 callback: GeolocationPermissions.Callback?,
             ) {
                 val hasPermission = ContextCompat.checkSelfPermission(
-                    this@MainActivity, Manifest.permission.ACCESS_FINE_LOCATION
+                    this@GuardianActivity, Manifest.permission.ACCESS_FINE_LOCATION
                 ) == PackageManager.PERMISSION_GRANTED
                 if (hasPermission) {
                     callback?.invoke(origin, true, false)

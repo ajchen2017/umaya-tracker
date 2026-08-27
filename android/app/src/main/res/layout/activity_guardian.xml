@@ -68,4 +68,20 @@
 
     </FrameLayout>
 
+    <!-- Outside both inner containers so it's reachable from either screen (link-input
+         or the loaded map). bottom|start mirrors btnChangeLink's bottom|end — the only
+         two corners the page's own UI (Leaflet controls, settings gear, layer icon
+         column) doesn't already claim. -->
+    <ImageButton
+        android:id="@+id/btnGuardianHome"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="10dp"
+        android:background="@drawable/bg_circle_dark"
+        android:contentDescription="回首頁"
+        android:padding="10dp"
+        android:src="@drawable/ic_home"
+        app:tint="#FFFFFF" />
+
 </FrameLayout>

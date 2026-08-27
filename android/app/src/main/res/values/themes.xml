@@ -1,0 +1,5 @@
+<resources>
+    <!-- Only used by GuardianActivity (a View-based/WebView screen, not Compose) — needs an
+         AppCompat/Material parent theme, unlike the rest of the app which is Compose-only. -->
+    <style name="Theme.Guardian" parent="Theme.MaterialComponents.DayNight.NoActionBar" />
+</resources>

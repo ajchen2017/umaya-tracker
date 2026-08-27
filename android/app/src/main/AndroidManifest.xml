@@ -19,7 +19,7 @@
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <activity
-            android:name=".ui.MainActivity"
+            android:name=".ui.HomeActivity"
             android:exported="true"
             android:label="登山健行定位追蹤">
             <intent-filter>
@@ -27,6 +27,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="false"
+            android:label="登山健行定位追蹤" />
+
+        <activity
+            android:name=".guardian.GuardianActivity"
+            android:exported="false"
+            android:label="登山留守人"
+            android:theme="@style/Theme.Guardian" />
 
         <service
             android:name=".location.LocationForegroundService"

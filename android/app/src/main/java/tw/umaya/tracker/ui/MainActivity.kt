@@ -604,6 +604,12 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     )
                 },
                 actions = {
+                    // Back to the role picker (登山者／留守人) — a fixed, always-visible icon
+                    // rather than buried in the ⋮ menu, so switching roles doesn't require
+                    // hunting through a dropdown.
+                    IconButton(onClick = { (context as ComponentActivity).finish() }) {
+                        Text("🏠", style = MaterialTheme.typography.titleLarge)
+                    }
                     Box {
                         TextButton(onClick = { menuExpanded = true }) {
                             Text("⋮", style = MaterialTheme.typography.titleLarge)
