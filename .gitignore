@@ -10,6 +10,7 @@ tileserver/bin/
 
 # Android
 android/app/build/
+android/guardian/build/
 android/build/
 android/.gradle/
 android/local.properties

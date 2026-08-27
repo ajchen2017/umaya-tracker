@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "tracker"
 include(":app")
+include(":guardian")

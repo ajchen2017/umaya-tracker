@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:id="@+id/inputContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="32dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="輸入登山者傳給你的分享連結"
+            android:textSize="17sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="16dp" />
+
+        <EditText
+            android:id="@+id/linkInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="https://tracker.umaya.tw/t/…"
+            android:inputType="textUri"
+            android:maxLines="1"
+            android:layout_marginBottom="16dp" />
+
+        <Button
+            android:id="@+id/btnGo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="前往" />
+
+    </LinearLayout>
+
+    <FrameLayout
+        android:id="@+id/webContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+        <WebView
+            android:id="@+id/webView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- bottom|end, not a top corner — the page itself already fills every top/side
+             corner with its own controls (Leaflet zoom, settings gear, layer icon column). -->
+        <ImageButton
+            android:id="@+id/btnChangeLink"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="10dp"
+            android:background="#88000000"
+            android:contentDescription="變更連結"
+            android:src="@android:drawable/ic_menu_edit"
+            app:tint="#ffffff" />
+
+    </FrameLayout>
+
+</FrameLayout>
