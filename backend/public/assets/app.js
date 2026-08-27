@@ -319,7 +319,7 @@ function drawTrack(points) {
     L.marker([p.lat, p.lng], {
       icon: L.divIcon({ html: MARKER_EVENT_ICONS[p.marker_type], className: '', iconSize: [22, 22] }),
     })
-      .bindTooltip(MARKER_EVENT_LABELS[p.marker_type], { permanent: true, direction: 'right', offset: [10, 0], className: 'waypoint-label' })
+      .bindTooltip(MARKER_EVENT_ICONS[p.marker_type], { permanent: true, direction: 'right', offset: [10, 0], className: 'waypoint-label' })
       .bindPopup(`${MARKER_EVENT_LABELS[p.marker_type]}<br>${fmtDateTime(p.recorded_at, p.lng)}`)
       .addTo(markerEventLayer);
   });
@@ -491,7 +491,7 @@ const ELEVATION_GRID_LEVELS = [
   { sec: 60 * 60, label: '1 小時' },
   { sec: 2 * 60 * 60, label: '2 小時' },
 ];
-const ELEVATION_EVENT_LABELS = { sos: 'SOS', safe: '我很好', camping: '停駐中' };
+const ELEVATION_EVENT_LABELS = { sos: 'SOS', safe: '✅', camping: '⛺' };
 let elevationHikeId = null;
 let elevationFrozen = false;
 let elevationGridLevelIdx = 0; // index into ELEVATION_GRID_LEVELS; 0 = finest (1 分鐘/格)
@@ -580,7 +580,7 @@ function drawElevationChart() {
   withAltitude.forEach((p, i) => {
     const label = ELEVATION_EVENT_LABELS[p.marker_type];
     if (!label) return;
-    const cls = p.marker_type === 'sos' ? 'event-label sos' : 'event-label';
+    const cls = p.marker_type === 'sos' ? 'event-label sos' : 'event-label icon';
     labelsSvg += `<text class="${cls}" x="${xAt(i).toFixed(1)}" y="${(yAt(p.altitude) - 6).toFixed(1)}">${label}</text>`;
   });
   const lastX = xAt(withAltitude.length - 1).toFixed(1);
