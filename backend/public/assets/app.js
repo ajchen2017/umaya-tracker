@@ -379,8 +379,8 @@ function drawElevationChart() {
 
   // Fixed pixel dimensions (not a responsive viewBox) — width grows with the
   // point count so the scroll container actually has something to scroll.
-  const H = 96;
-  const padLeft = 20, padRight = 10, padTop = 18, padBottom = 22;
+  const H = 108;
+  const padLeft = 24, padRight = 10, padTop = 18, padBottom = 26;
   const plotH = H - padTop - padBottom;
   const totalW = padLeft + padRight + (withAltitude.length - 1) * elevationPxPerPoint;
   const xAt = (i) => padLeft + i * elevationPxPerPoint;
