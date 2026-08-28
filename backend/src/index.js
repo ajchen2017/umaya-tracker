@@ -35,9 +35,17 @@ app.use('/downloads', express.static(path.join(__dirname, '..', 'public', 'downl
 // always in sync with whatever "更新魯地圖" last fetched — no separate copy to keep updated.
 // Only maps/theme/dem are exposed, not the whole tileserver dir (config/ has server internals).
 const TILESERVER_DIR = path.join(__dirname, '..', '..', 'tileserver');
-app.use('/mapdata/maps', express.static(path.join(TILESERVER_DIR, 'maps')));
-app.use('/mapdata/theme', express.static(path.join(TILESERVER_DIR, 'theme')));
-app.use('/mapdata/dem', express.static(path.join(TILESERVER_DIR, 'dem')));
+// Node's mime lookup treats ".map" as a JS sourcemap (application/json) — wrong for Mapsforge's
+// own binary .map format, though harmless for the Android client (it saves raw bytes either
+// way); corrected here anyway so the header isn't actively misleading.
+const staticOpts = {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.map')) res.setHeader('Content-Type', 'application/octet-stream');
+  },
+};
+app.use('/mapdata/maps', express.static(path.join(TILESERVER_DIR, 'maps'), staticOpts));
+app.use('/mapdata/theme', express.static(path.join(TILESERVER_DIR, 'theme'), staticOpts));
+app.use('/mapdata/dem', express.static(path.join(TILESERVER_DIR, 'dem'), staticOpts));
 app.get('/t/:shareToken/settings', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'settings.html'));
 });
