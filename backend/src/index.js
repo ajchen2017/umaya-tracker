@@ -9,6 +9,7 @@ const pointRoutes = require('./routes/points');
 const publicRoutes = require('./routes/public');
 const adminRoutes = require('./routes/admin');
 const signalPointsRoutes = require('./routes/signalPoints');
+const mapdataRoutes = require('./routes/mapdata');
 
 const app = express();
 app.use(cors());
@@ -20,12 +21,23 @@ app.use('/api/hikes', pointRoutes);
 app.use('/api/t', publicRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/signal-points', signalPointsRoutes);
+app.use('/api/mapdata', mapdataRoutes);
 
 // Family view (SPA): static assets + one HTML shell for any share token.
 app.use('/t/assets', express.static(path.join(__dirname, '..', 'public', 'assets')));
 // Debug-build APK for manual distribution to testers — not linked from anywhere, just a
 // stable URL to hand out. The file itself isn't tracked in git; deployed by scp.
 app.use('/downloads', express.static(path.join(__dirname, '..', 'public', 'downloads')));
+
+// Raw Mapsforge offline map data (main .map + .poi, render theme, SRTM hillshade tiles) — the
+// hiker app downloads these directly for native offline vector rendering. Same directory
+// mapsforgesrv itself reads from (see admin/updateRudyMap.js's TILESERVER_DIR), so this is
+// always in sync with whatever "更新魯地圖" last fetched — no separate copy to keep updated.
+// Only maps/theme/dem are exposed, not the whole tileserver dir (config/ has server internals).
+const TILESERVER_DIR = path.join(__dirname, '..', '..', 'tileserver');
+app.use('/mapdata/maps', express.static(path.join(TILESERVER_DIR, 'maps')));
+app.use('/mapdata/theme', express.static(path.join(TILESERVER_DIR, 'theme')));
+app.use('/mapdata/dem', express.static(path.join(TILESERVER_DIR, 'dem')));
 app.get('/t/:shareToken/settings', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'settings.html'));
 });
