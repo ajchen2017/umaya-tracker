@@ -1,0 +1,12 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="36dp"
+    android:height="36dp"
+    android:viewportWidth="36"
+    android:viewportHeight="36">
+    <!-- Points "up" at rotation=0 — Marker.setRotation() then tracks compass heading directly. -->
+    <path
+        android:fillColor="#2D7DD2"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.5"
+        android:pathData="M18,3 L29,30 L18,23 L7,30 Z" />
+</vector>

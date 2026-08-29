@@ -7,15 +7,24 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -50,9 +59,20 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.mutableStateListOf
+import kotlinx.coroutines.withContext
+import org.mapsforge.core.model.LatLong
+import org.osmdroid.util.GeoPoint
 import tw.umaya.tracker.data.ApiClient
 import tw.umaya.tracker.data.CreateHikeRequest
 import tw.umaya.tracker.data.ForgotPasswordRequest
@@ -60,6 +80,7 @@ import tw.umaya.tracker.data.IntervalRequest
 import tw.umaya.tracker.data.HikeListItemDto
 import tw.umaya.tracker.data.INTERVAL_PRESETS
 import tw.umaya.tracker.data.LoginRequest
+import tw.umaya.tracker.data.MapsforgeDownloader
 import tw.umaya.tracker.data.Prefs
 import tw.umaya.tracker.data.RegisterRequest
 import tw.umaya.tracker.data.intervalLabel
@@ -69,8 +90,33 @@ import tw.umaya.tracker.widget.TrackerWidgetProvider
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.text.SimpleDateFormat
+import java.util.Locale
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
+
+/** One imported GPX/KML reference overlay (功能選單「載入GPX/KML」) — several can be loaded at
+ *  once, each tracked by [id] so it can be individually re-centered on or removed. [segments] are
+ *  drawn as independent, unconnected polylines — see RouteParser.kt. [uri] is kept (not just the
+ *  derived [id]) so removing a route can also drop it from [Prefs.loadedGpxUris]. */
+private data class LoadedRoute(val id: String, val uri: String, val name: String, val segments: List<List<GeoPoint>>) {
+    val pointCount get() = segments.sumOf { it.size }
+    val firstPoint get() = segments.first().first()
+}
+
+/** Reopens the SAF file picker at the folder the hiker last picked a GPX/KML from, instead of
+ *  the device's default root every time — reads [Prefs.lastGpxFolderUri] fresh on each launch. */
+private class OpenDocumentAtLastFolder(private val prefs: Prefs) : ActivityResultContracts.OpenDocument() {
+    override fun createIntent(context: android.content.Context, input: Array<String>): Intent {
+        val intent = super.createIntent(context, input)
+        prefs.lastGpxFolderUri?.let { intent.putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(it)) }
+        return intent
+    }
+}
+
+/** Default GPX track name shown in the 結束追蹤 dialog — yyyy-mm-dd-hh-mm-ss per spec. */
+private fun defaultGpxTrackName(): String =
+    SimpleDateFormat("yyyy-MM-dd-HH-mm-ss", Locale.US).format(System.currentTimeMillis())
 
 /** Raw exception messages ("timeout", "Unable to resolve host…") aren't useful to a hiker. */
 private fun friendlyErrorMessage(e: Exception): String = when (e) {
@@ -94,6 +140,35 @@ private fun requestBackgroundExecutionExemption(context: android.content.Context
         )
     } catch (_: ActivityNotFoundException) {
         // OEM without this dialog — nothing more we can do from here.
+    }
+}
+
+/** A labeled dropdown of integers — used by the 開始追蹤 dialog's 最短間隔時間/距離 pickers. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NumberDropdown(
+    label: String,
+    value: Int,
+    range: IntRange,
+    unit: String,
+    onValueChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }, modifier = modifier) {
+        OutlinedTextField(
+            value = "$value$unit",
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.menuAnchor().fillMaxWidth(),
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            range.forEach { v ->
+                DropdownMenuItem(text = { Text("$v$unit") }, onClick = { onValueChange(v); expanded = false })
+            }
+        }
     }
 }
 
@@ -141,15 +216,21 @@ private fun IntervalSlider(seconds: Int, onSecondsChange: (Int) -> Unit, onChang
  * stray touch. Holding fills the ring over [HOLD_MS]; releasing early cancels with no effect.
  */
 @Composable
-private fun SosHoldButton(onTriggered: () -> Unit) {
+private fun SosHoldButton(
+    outerSize: Dp = 200.dp,
+    showCaption: Boolean = true,
+    onTriggered: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
     var progress by remember { mutableStateOf(0f) }
     val holdMs = 3000L
+    val innerSize = outerSize * 0.84f
+    val textSizeSp = (outerSize.value * 0.2f).sp
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             modifier = Modifier
-                .size(200.dp)
+                .size(outerSize)
                 .pointerInput(Unit) {
                     // Not detectTapGestures: this sits inside a verticalScroll Column, and a
                     // plain onPress there gets its gesture stolen by the ancestor scroll on any
@@ -210,7 +291,7 @@ private fun SosHoldButton(onTriggered: () -> Unit) {
             }
             Box(
                 modifier = Modifier
-                    .size(168.dp)
+                    .size(innerSize)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.error),
                 contentAlignment = Alignment.Center,
@@ -220,39 +301,19 @@ private fun SosHoldButton(onTriggered: () -> Unit) {
                     textAlign = TextAlign.Center,
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.displaySmall,
+                    fontSize = textSizeSp,
                 )
             }
         }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "長按 3 秒發送 SOS 求救",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
-        )
+        if (showCaption) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "長按 3 秒發送 SOS 求救",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
     }
-}
-
-/** Solid-color action button that visibly darkens while held — a hiker glancing at the screen
- *  mid-tap needs to see the press land, not just infer it from the default ripple. */
-@Composable
-private fun ActionButton(
-    label: String,
-    baseColor: Color,
-    pressedColor: Color,
-    height: Dp,
-    textStyle: TextStyle,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
-    Button(
-        modifier = modifier.height(height),
-        interactionSource = interactionSource,
-        colors = ButtonDefaults.buttonColors(containerColor = if (isPressed) pressedColor else baseColor),
-        onClick = onClick,
-    ) { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = textStyle) }
 }
 
 class MainActivity : ComponentActivity() {
@@ -439,11 +500,49 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var continuingHikeId by remember { mutableStateOf<Long?>(null) }
     var continuingNeedsReactivation by remember { mutableStateOf(false) }
     var intervalSeconds by remember { mutableStateOf(prefs.intervalSeconds) }
-    var menuExpanded by remember { mutableStateOf(false) }
     var showIntervalDialog by remember { mutableStateOf(false) }
     var showClearRouteDialog by remember { mutableStateOf(false) }
     var showBackgroundExecDialog by remember { mutableStateOf(false) }
     var showExitConfirmDialog by remember { mutableStateOf(false) }
+    var showStartHikeDialog by remember { mutableStateOf(false) } // wraps the 開始新行程/接續舊行程 flow
+    var showFunctionMenu by remember { mutableStateOf(false) }
+    var mapController by remember { mutableStateOf<HikeMapController?>(null) }
+    var currentMapLayer by remember { mutableStateOf(MapLayer.RUDY) } // 魯地圖 default
+    var gpsFollowing by remember { mutableStateOf(true) }
+    var gpsHasFix by remember { mutableStateOf(false) } // false while "connecting" — drives the pulse animation
+    var zoomLevelDisplay by remember { mutableStateOf("—") } // shown between the ＋/－ buttons
+    var gpxRecording by remember { mutableStateOf(prefs.isGpxRecording) }
+    var gpxPaused by remember { mutableStateOf(prefs.isGpxPaused) }
+    var showGpxStartDialog by remember { mutableStateOf(false) }
+    var showGpxStopDialog by remember { mutableStateOf(false) }
+    var showLoadRouteDialog by remember { mutableStateOf(false) }
+    var showMapSettingsDialog by remember { mutableStateOf(false) }
+    var scaleBarEnabled by remember { mutableStateOf(prefs.showScaleBar) }
+    var hillshadingEnabled by remember { mutableStateOf(prefs.showHillshading) }
+    var enabledLayerIds by remember {
+        mutableStateOf(prefs.enabledMapLayerIds ?: HIKING_THEME_LAYERS.filter { it.defaultEnabled }.map { it.id }.toSet())
+    }
+    var showLayerSettingsDialog by remember { mutableStateOf(false) }
+    var mapOrientationMode by remember {
+        mutableStateOf(
+            when (prefs.mapOrientationMode) {
+                "track" -> MapOrientationMode.TRACK_UP
+                "compass" -> MapOrientationMode.COMPASS_UP
+                else -> MapOrientationMode.NORTH_UP
+            }
+        )
+    }
+    val mapsforgeDownloader = remember { MapsforgeDownloader(context) }
+    var mapsforgeReady by remember { mutableStateOf(mapsforgeDownloader.hasCoreMapData()) }
+    var offlineMapController by remember { mutableStateOf<OfflineMapController?>(null) }
+    // (downloadedBytes, totalBytes, currentFile), null = not downloading
+    var mapsforgeDownloadState by remember { mutableStateOf<Triple<Long, Long, String>?>(null) }
+    // 魯地圖已下載向量資料時改用 Mapsforge 離線渲染；否則（或線上地圖）沿用 osmdroid。
+    val mapsforgeActive = currentMapLayer == MapLayer.RUDY && mapsforgeReady
+    var gpxMinIntervalSec by remember { mutableStateOf(prefs.gpxMinIntervalSec) }
+    var gpxMinDistanceM by remember { mutableStateOf(prefs.gpxMinDistanceM) }
+    var gpxStopFormat by remember { mutableStateOf("gpx") }
+    var gpxStopName by remember { mutableStateOf("") }
     var backgroundExecutionEnabled by remember { mutableStateOf(prefs.backgroundExecutionEnabled) }
     var isPaused by remember { mutableStateOf(prefs.isPaused) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -461,7 +560,11 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         return false
     }
 
-    val routePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+    // OpenDocument (SAF), not GetContent — GetContent can resolve to any ACTION_GET_CONTENT
+    // handler installed on the phone (including odd third-party file managers), which on this
+    // device was returning inconsistently and bouncing the app back to the role picker.
+    // OpenDocument always goes through Android's own DocumentsUI picker.
+    val routePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             try {
@@ -478,6 +581,309 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 Toast.makeText(context, friendlyErrorMessage(e), Toast.LENGTH_LONG).show()
             }
         }
+    }
+
+    // (1) 載入 GPX/KML — local-only reference overlays on the native map, distinct from
+    // routePickerLauncher above (which uploads a "planned route" for the guardian's web page).
+    // Several can be loaded at once (e.g. comparing candidate trails), each removable on its own.
+    val loadedRoutes = remember { mutableStateListOf<LoadedRoute>() }
+
+    // Shared by the picker (below) and the on-launch restore effect (further down) — parses the
+    // file, draws it on whichever engine is active, and registers it in loadedRoutes. Doesn't
+    // touch Prefs.loadedGpxUris itself; callers decide whether this load should be persisted.
+    suspend fun loadRouteFromUri(uri: Uri): Boolean {
+        return try {
+            val (name, segments) = withContext(Dispatchers.IO) {
+                val displayName = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) c.getString(0) else null
+                } ?: uri.lastPathSegment ?: "已載入路線"
+                val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    ?: throw Exception("無法讀取檔案")
+                displayName to parseRoutePoints(text)
+            }
+            if (segments.isEmpty()) throw Exception("檔案裡沒有找到任何座標點")
+            val id = "$name#${System.identityHashCode(uri)}" // unique enough: name collisions still get distinct overlays
+            if (mapsforgeActive) {
+                offlineMapController?.addLoadedRoute(id, segments.map { seg -> seg.map { LatLong(it.latitude, it.longitude) } })
+            } else {
+                mapController?.addLoadedRoute(id, segments)
+            }
+            loadedRoutes.removeAll { it.uri == uri.toString() }
+            loadedRoutes.add(LoadedRoute(id, uri.toString(), name, segments))
+            true
+        } catch (e: Exception) {
+            Log.e("LoadRoute", "載入 GPX/KML 失敗：$uri", e)
+            false
+        }
+    }
+
+    // Restores routes loaded in a previous session — runs once the map engine is actually ready
+    // to draw into (mapController/offlineMapController), not on first composition.
+    var gpxRoutesRestored by remember { mutableStateOf(false) }
+    LaunchedEffect(mapController, offlineMapController) {
+        if (gpxRoutesRestored) return@LaunchedEffect
+        if (mapController == null && offlineMapController == null) return@LaunchedEffect
+        gpxRoutesRestored = true
+        val stillReadable = mutableListOf<String>()
+        for (uriString in prefs.loadedGpxUris) {
+            if (loadRouteFromUri(Uri.parse(uriString))) stillReadable.add(uriString)
+        }
+        // Drops URIs that failed (file moved/deleted/permission revoked) so the list doesn't
+        // grow forever with dead entries — a route only stays persisted while it can still load.
+        if (stillReadable.size != prefs.loadedGpxUris.size) prefs.loadedGpxUris = stillReadable
+    }
+
+    val localRoutePickerLauncher = rememberLauncherForActivityResult(remember { OpenDocumentAtLastFolder(prefs) }) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        prefs.lastGpxFolderUri = uri.toString() // reopens the picker here next time (EXTRA_INITIAL_URI below)
+        // Needed to still be able to re-open this file after the app restarts — a plain
+        // OpenDocument grant is one-shot and dies with this process.
+        context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        scope.launch {
+            if (loadRouteFromUri(uri)) {
+                prefs.loadedGpxUris = (prefs.loadedGpxUris + uri.toString()).distinct()
+            } else {
+                Toast.makeText(context, "載入失敗", Toast.LENGTH_LONG).show()
+            }
+            // Dialog stays open — the 已載入 list + 跳到.../關閉 choice below is the actual
+            // acknowledgement now, not a Toast that could be missed.
+        }
+    }
+
+    if (showLoadRouteDialog) {
+        AlertDialog(
+            onDismissRequest = { showLoadRouteDialog = false },
+            title = { Text("載入 GPX/KML") },
+            text = {
+                Column {
+                    Text(
+                        "選擇檔案後會以深藍色線疊加在地圖上，只在這支手機顯示，不會上傳；可以重複選檔載入多條。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    loadedRoutes.forEach { route ->
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "✅ ${route.name}（${route.pointCount} 個點${if (route.segments.size > 1) "，${route.segments.size} 段" else ""}）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                if (mapsforgeActive) {
+                                    offlineMapController?.animateTo(route.firstPoint.latitude, route.firstPoint.longitude)
+                                } else {
+                                    mapController?.animateTo(route.firstPoint, 16.0)
+                                }
+                                showLoadRouteDialog = false
+                            }) { Text("跳到起點") }
+                            OutlinedButton(onClick = {
+                                if (mapsforgeActive) offlineMapController?.removeLoadedRoute(route.id) else mapController?.removeLoadedRoute(route.id)
+                                loadedRoutes.remove(route)
+                                prefs.loadedGpxUris = prefs.loadedGpxUris - route.uri
+                            }) { Text("移除") }
+                        }
+                    }
+                    if (loadedRoutes.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = {
+                            if (mapsforgeActive) offlineMapController?.recenterOnGps() else mapController?.recenterOnGps()
+                            showLoadRouteDialog = false
+                        }) { Text("跳到目前位置") }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { localRoutePickerLauncher.launch(arrayOf("*/*")) }) { Text("選擇檔案") }
+            },
+            dismissButton = {
+                Row {
+                    if (loadedRoutes.isNotEmpty()) {
+                        TextButton(onClick = {
+                            if (mapsforgeActive) offlineMapController?.clearAllLoadedRoutes() else mapController?.clearAllLoadedRoutes()
+                            loadedRoutes.clear()
+                            prefs.loadedGpxUris = emptyList()
+                        }) { Text("全部移除") }
+                    }
+                    TextButton(onClick = { showLoadRouteDialog = false }) { Text("關閉") }
+                }
+            },
+        )
+    }
+
+    // Applies once the map exists and whenever these settings change from elsewhere (e.g. a
+    // fresh HikeMap instance after process recreation) — keeps the map in sync with prefs.
+    LaunchedEffect(mapController, offlineMapController, scaleBarEnabled, mapOrientationMode) {
+        mapController?.setScaleBarEnabled(scaleBarEnabled)
+        mapController?.setOrientationMode(mapOrientationMode)
+        offlineMapController?.setScaleBarEnabled(scaleBarEnabled)
+    }
+
+    if (showMapSettingsDialog) {
+        AlertDialog(
+            onDismissRequest = { showMapSettingsDialog = false },
+            title = { Text("地圖設定") },
+            text = {
+                Column {
+                    Text("離線地圖（Mapsforge，向量離線渲染）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (mapsforgeReady) "已下載完成，切換到魯地圖時會使用這份離線向量資料。"
+                        else "直接從 rudymap.tw 下載，約 400MB（解壓後約 1GB）。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    val mfProgress = mapsforgeDownloadState
+                    if (mfProgress != null) {
+                        val (done, total, currentFile) = mfProgress
+                        Text(
+                            if (total > 0) "下載中（$currentFile）：${done / 1_000_000}MB / ${total / 1_000_000}MB"
+                            else "準備中…",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        LinearProgressIndicator(
+                            progress = { if (total > 0) done.toFloat() / total else 0f },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        OutlinedButton(onClick = {
+                            mapsforgeDownloader.cancel()
+                            mapsforgeDownloadState = null
+                        }) { Text("取消下載") }
+                    } else {
+                        Button(onClick = {
+                            mapsforgeDownloadState = Triple(0L, 0L, "")
+                            scope.launch {
+                                try {
+                                    mapsforgeDownloader.downloadAll { downloadedBytes, totalBytes, currentFile ->
+                                        mapsforgeDownloadState = Triple(downloadedBytes, totalBytes, currentFile)
+                                    }
+                                    mapsforgeDownloadState = null
+                                    mapsforgeReady = mapsforgeDownloader.hasCoreMapData()
+                                    Toast.makeText(context, "向量魯地圖下載完成", Toast.LENGTH_LONG).show()
+                                } catch (e: CancellationException) {
+                                    mapsforgeDownloadState = null
+                                } catch (e: Exception) {
+                                    mapsforgeDownloadState = null
+                                    Toast.makeText(context, e.message ?: "下載失敗", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }) { Text(if (mapsforgeReady) "重新下載向量魯地圖" else "下載向量魯地圖") }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+                    Text("顯示設定", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Text("比例尺", modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = scaleBarEnabled,
+                            onCheckedChange = { scaleBarEnabled = it; prefs.showScaleBar = it },
+                        )
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("向量魯地圖山坡陰影")
+                            Text(
+                                "每塊圖磚都要多算一層地形陰影，關掉可以省效能。變更後要切換一次地圖圖層（或重新開啟App）才會生效。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = hillshadingEnabled,
+                            onCheckedChange = { hillshadingEnabled = it; prefs.showHillshading = it },
+                        )
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { showLayerSettingsDialog = true }) {
+                        Text("向量魯地圖圖層顯示（${enabledLayerIds.size}/${HIKING_THEME_LAYERS.size}）")
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    Text("地圖方向", style = MaterialTheme.typography.bodyMedium)
+                    if (mapsforgeActive) {
+                        Text(
+                            "向量魯地圖引擎不支援旋轉地圖，固定「地圖北邊朝螢幕上方」；切換回線上地圖時可用其他兩種。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    val orientationOptions = listOf(
+                        MapOrientationMode.NORTH_UP to "地圖北邊朝螢幕上方",
+                        MapOrientationMode.TRACK_UP to "行進方向朝螢幕上方",
+                        MapOrientationMode.COMPASS_UP to "指北針朝螢幕上方",
+                    )
+                    orientationOptions.forEach { (mode, label) ->
+                        val optionEnabled = !mapsforgeActive || mode == MapOrientationMode.NORTH_UP
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable(enabled = optionEnabled) {
+                                mapOrientationMode = mode
+                                prefs.mapOrientationMode = when (mode) {
+                                    MapOrientationMode.TRACK_UP -> "track"
+                                    MapOrientationMode.COMPASS_UP -> "compass"
+                                    MapOrientationMode.NORTH_UP -> "north"
+                                }
+                            },
+                        ) {
+                            RadioButton(selected = mapOrientationMode == mode, onClick = null, enabled = optionEnabled)
+                            Text(label)
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "目前縮放層級：$zoomLevelDisplay",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showMapSettingsDialog = false }) { Text("關閉") }
+            },
+        )
+    }
+
+    if (showLayerSettingsDialog) {
+        AlertDialog(
+            onDismissRequest = { showLayerSettingsDialog = false },
+            title = { Text("向量魯地圖圖層顯示") },
+            text = {
+                Column(modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    Text(
+                        "關掉不需要的圖層可以減少畫面雜訊、也能省一些渲染效能。變更後要切換一次地圖圖層（或重新開啟App）才會生效。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    HIKING_THEME_LAYERS.forEach { layer ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                enabledLayerIds = if (layer.id in enabledLayerIds) {
+                                    enabledLayerIds - layer.id
+                                } else {
+                                    enabledLayerIds + layer.id
+                                }
+                                prefs.enabledMapLayerIds = enabledLayerIds
+                            },
+                        ) {
+                            Checkbox(checked = layer.id in enabledLayerIds, onCheckedChange = null)
+                            Text(layer.label)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    enabledLayerIds = HIKING_THEME_LAYERS.filter { it.defaultEnabled }.map { it.id }.toSet()
+                    prefs.enabledMapLayerIds = null
+                }) { Text("重設為預設值") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLayerSettingsDialog = false }) { Text("關閉") }
+            },
+        )
     }
 
     if (showClearRouteDialog) {
@@ -591,154 +997,132 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         )
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        "⛰️ 登山健行定位追蹤",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.5.sp,
-                        ),
-                    )
-                },
-                actions = {
-                    // Back to the role picker (登山者／留守人) — a fixed, always-visible icon
-                    // rather than buried in the ⋮ menu, so switching roles doesn't require
-                    // hunting through a dropdown.
-                    IconButton(onClick = { (context as ComponentActivity).finish() }) {
-                        Text("🏠", style = MaterialTheme.typography.titleLarge)
-                    }
-                    Box {
-                        TextButton(onClick = { menuExpanded = true }) {
-                            Text("⋮", style = MaterialTheme.typography.titleLarge)
-                        }
-                        DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                            if (hasActiveHike) {
-                                DropdownMenuItem(
-                                    text = { Text("定位頻率") },
-                                    onClick = { menuExpanded = false; showIntervalDialog = true },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("上傳／更新規劃路線（GPX/KML）") },
-                                    onClick = { menuExpanded = false; routePickerLauncher.launch("*/*") },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("清除已上傳的規劃路線") },
-                                    onClick = { menuExpanded = false; showClearRouteDialog = true },
-                                )
-                            }
-                            DropdownMenuItem(
-                                text = { Text("背景執行") },
-                                onClick = { menuExpanded = false; showBackgroundExecDialog = true },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("登出") },
-                                onClick = {
-                                    menuExpanded = false
-                                    prefs.authToken = null
-                                    prefs.shareToken = null
-                                    onLoggedOut()
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("結束") },
-                                onClick = { menuExpanded = false; showExitConfirmDialog = true },
-                            )
-                        }
-                    }
-                },
-            )
-        },
-    ) { paddingValues ->
-    Column(
-        modifier = Modifier.fillMaxSize().padding(paddingValues).padding(24.dp).verticalScroll(rememberScrollState()),
-    ) {
-        if (!hasActiveHike) {
-            if (startMode == null) {
-                Button(
-                    onClick = {
-                        error = null
-                        continuingHikeId = null
-                        nickname = prefs.lastNickname
-                        hikeName = ""
-                        startMode = "new"
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("開始新行程") }
+    val shareUrl = "https://tracker.umaya.tw/t/$shareToken"
 
-                Spacer(Modifier.height(12.dp))
+    LaunchedEffect(hasActiveHike) {
+        if (!hasActiveHike) return@LaunchedEffect
+        // Re-assert on every entry to this screen (app reopen, process restart) — if the
+        // service died (e.g. killed on package update) nothing else would restart it, and
+        // tracking would silently stay stopped forever with this screen still claiming
+        // "行程進行中". Safe to call when already running: pause state is preserved server-side.
+        context.startForegroundService(
+            Intent(context, LocationForegroundService::class.java)
+                .setAction(LocationForegroundService.ACTION_START)
+        )
+    }
 
-                OutlinedButton(
-                    enabled = !loading,
-                    onClick = {
-                        error = null
-                        loading = true
-                        scope.launch {
-                            try {
-                                val token = prefs.authToken!!
-                                val res = ApiClient.service.listHikes("Bearer $token")
-                                if (!res.isSuccessful) throw Exception("讀取行程列表失敗")
-                                // Most recent hike regardless of status — 接續舊行程 should be
-                                // able to pick back up an already-ended one too (e.g. the app
-                                // was reinstalled, or 結束行程 was pressed by mistake), not just
-                                // one still stuck active server-side.
-                                val hike = res.body()?.firstOrNull()
-                                if (hike == null) {
-                                    error = "沒有可接續的舊行程"
-                                } else {
-                                    continuingHikeId = hike.id
-                                    continuingNeedsReactivation = hike.status != "active"
-                                    nickname = hike.nickname ?: ""
-                                    hikeName = hike.name
-                                    startMode = "continue"
+    var serverOnline by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            serverOnline = try {
+                ApiClient.service.listHikes("Bearer ${prefs.authToken}").isSuccessful
+            } catch (_: Exception) {
+                false
+            }
+            delay(15_000)
+        }
+    }
+
+    if (showStartHikeDialog) {
+        AlertDialog(
+            onDismissRequest = { showStartHikeDialog = false; startMode = null },
+            title = { Text(if (startMode == null) "開始被追蹤" else if (startMode == "continue") "接續舊行程" else "開始新行程") },
+            text = {
+                if (startMode == null) {
+                    Column {
+                        Button(
+                            onClick = {
+                                error = null
+                                continuingHikeId = null
+                                nickname = prefs.lastNickname
+                                hikeName = ""
+                                startMode = "new"
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("開始新行程") }
+
+                        Spacer(Modifier.height(12.dp))
+
+                        OutlinedButton(
+                            enabled = !loading,
+                            onClick = {
+                                error = null
+                                loading = true
+                                scope.launch {
+                                    try {
+                                        val token = prefs.authToken!!
+                                        val res = ApiClient.service.listHikes("Bearer $token")
+                                        if (!res.isSuccessful) throw Exception("讀取行程列表失敗")
+                                        // Most recent hike regardless of status — 接續舊行程 should be
+                                        // able to pick back up an already-ended one too (e.g. the app
+                                        // was reinstalled, or 結束行程 was pressed by mistake), not just
+                                        // one still stuck active server-side.
+                                        val hike = res.body()?.firstOrNull()
+                                        if (hike == null) {
+                                            error = "沒有可接續的舊行程"
+                                        } else {
+                                            continuingHikeId = hike.id
+                                            continuingNeedsReactivation = hike.status != "active"
+                                            nickname = hike.nickname ?: ""
+                                            hikeName = hike.name
+                                            startMode = "continue"
+                                        }
+                                    } catch (e: Exception) {
+                                        error = friendlyErrorMessage(e)
+                                    } finally {
+                                        loading = false
+                                    }
                                 }
-                            } catch (e: Exception) {
-                                error = friendlyErrorMessage(e)
-                            } finally {
-                                loading = false
-                            }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            // 帶入最後一個舊行程的名稱，還沒查過的話先顯示通用文字
+                            Text(if (hikeName.isNotBlank()) "接續舊行程（$hikeName）" else "接續舊行程")
                         }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("接續舊行程") }
-            } else {
-                val isContinue = startMode == "continue"
-                if (isContinue && continuingNeedsReactivation) {
-                    Text(
-                        "這個行程先前已標記為結束，按確定後會重新標記為進行中並繼續記錄。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    Spacer(Modifier.height(12.dp))
+                        error?.let {
+                            Spacer(Modifier.height(8.dp))
+                            Text(it, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                } else {
+                    val isContinue = startMode == "continue"
+                    Column {
+                        if (isContinue && continuingNeedsReactivation) {
+                            Text(
+                                "這個行程先前已標記為結束，按確定後會重新標記為進行中並繼續記錄。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            Spacer(Modifier.height(12.dp))
+                        }
+                        OutlinedTextField(
+                            value = nickname, onValueChange = { nickname = it },
+                            label = { Text("暱稱（顯示給留守人看）") },
+                            enabled = !isContinue,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(12.dp))
+
+                        OutlinedTextField(
+                            value = hikeName, onValueChange = { hikeName = it },
+                            label = { Text("行程名稱（例如：北大武）") },
+                            enabled = !isContinue,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(12.dp))
+
+                        IntervalSlider(intervalSeconds, onSecondsChange = { intervalSeconds = it })
+                        error?.let {
+                            Spacer(Modifier.height(8.dp))
+                            Text(it, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
                 }
-                OutlinedTextField(
-                    value = nickname, onValueChange = { nickname = it },
-                    label = { Text("暱稱（顯示給留守人看）") },
-                    enabled = !isContinue,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(12.dp))
-
-                OutlinedTextField(
-                    value = hikeName, onValueChange = { hikeName = it },
-                    label = { Text("行程名稱（例如：北大武）") },
-                    enabled = !isContinue,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(12.dp))
-
-                IntervalSlider(intervalSeconds, onSecondsChange = { intervalSeconds = it })
-
-                Spacer(Modifier.height(16.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(
-                        onClick = { startMode = null; error = null },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("返回") }
-
-                    Button(
+            },
+            confirmButton = {
+                if (startMode != null) {
+                    val isContinue = startMode == "continue"
+                    TextButton(
                         enabled = !loading && (isContinue || hikeName.isNotBlank()),
                         onClick = {
                             error = null
@@ -770,6 +1154,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                     )
                                     hasActiveHike = true
                                     startMode = null
+                                    showStartHikeDialog = false
                                     TrackerWidgetProvider.updateAllWidgets(context)
                                     if (prefs.backgroundExecutionEnabled) requestBackgroundExecutionExemption(context)
                                 } catch (e: Exception) {
@@ -779,51 +1164,477 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                 }
                             }
                         },
-                        modifier = Modifier.weight(1f),
                     ) { Text("確定") }
                 }
-            }
-        } else {
-            val shareUrl = "https://tracker.umaya.tw/t/$shareToken"
-
-            LaunchedEffect(Unit) {
-                // Re-assert on every entry to this screen (app reopen, process restart) — if the
-                // service died (e.g. killed on package update) nothing else would restart it, and
-                // tracking would silently stay stopped forever with this screen still claiming
-                // "行程進行中". Safe to call when already running: pause state is preserved server-side.
-                context.startForegroundService(
-                    Intent(context, LocationForegroundService::class.java)
-                        .setAction(LocationForegroundService.ACTION_START)
-                )
-            }
-
-            var serverOnline by remember { mutableStateOf<Boolean?>(null) }
-            LaunchedEffect(Unit) {
-                while (true) {
-                    serverOnline = try {
-                        ApiClient.service.listHikes("Bearer ${prefs.authToken}").isSuccessful
-                    } catch (_: Exception) {
-                        false
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    if (startMode == null) {
+                        showStartHikeDialog = false
+                    } else {
+                        startMode = null; error = null
                     }
-                    delay(15_000)
+                }) { Text(if (startMode == null) "取消" else "返回") }
+            },
+        )
+    }
+
+    if (showGpxStartDialog) {
+        AlertDialog(
+            onDismissRequest = { showGpxStartDialog = false },
+            title = { Text("開始追蹤") },
+            text = {
+                Column {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        NumberDropdown(
+                            label = "最短間隔時間", value = gpxMinIntervalSec, range = 1..20, unit = "秒",
+                            onValueChange = { gpxMinIntervalSec = it }, modifier = Modifier.weight(1f),
+                        )
+                        NumberDropdown(
+                            label = "最短間隔距離", value = gpxMinDistanceM, range = 5..20, unit = "公尺",
+                            onValueChange = { gpxMinDistanceM = it }, modifier = Modifier.weight(1f),
+                        )
+                    }
+                    if (!gpsHasFix) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "⚠️ 衛星定位尚未就緒，現在開始可能會錯過最前面幾個點",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                // (1) 重新開始 — abandons any unfinished on-disk trail and starts fresh.
+                TextButton(onClick = {
+                    if (!gpsHasFix) Toast.makeText(context, "衛星定位尚未就緒，仍會開始記錄", Toast.LENGTH_LONG).show()
+                    prefs.gpxMinIntervalSec = gpxMinIntervalSec
+                    prefs.gpxMinDistanceM = gpxMinDistanceM
+                    gpxRecording = true; gpxPaused = false
+                    context.startForegroundService(
+                        Intent(context, LocationForegroundService::class.java)
+                            .setAction(LocationForegroundService.ACTION_GPX_START)
+                            .putExtra(LocationForegroundService.EXTRA_GPX_RESUME_EXISTING, false)
+                    )
+                    showGpxStartDialog = false
+                }) { Text("重新開始") }
+            },
+            dismissButton = {
+                // (2) 繼續 — resumes the on-disk unfinished trail if one exists (e.g. the app/
+                // service died mid-recording); safely falls back to starting fresh if not.
+                TextButton(onClick = {
+                    if (!gpsHasFix) Toast.makeText(context, "衛星定位尚未就緒，仍會開始記錄", Toast.LENGTH_LONG).show()
+                    prefs.gpxMinIntervalSec = gpxMinIntervalSec
+                    prefs.gpxMinDistanceM = gpxMinDistanceM
+                    gpxRecording = true; gpxPaused = false
+                    context.startForegroundService(
+                        Intent(context, LocationForegroundService::class.java)
+                            .setAction(LocationForegroundService.ACTION_GPX_START)
+                            .putExtra(LocationForegroundService.EXTRA_GPX_RESUME_EXISTING, true)
+                    )
+                    showGpxStartDialog = false
+                }) { Text("繼續") }
+            },
+        )
+    }
+
+    if (showGpxStopDialog) {
+        AlertDialog(
+            onDismissRequest = { showGpxStopDialog = false },
+            title = { Text("結束追蹤") },
+            text = {
+                Column {
+                    Text("匯出格式", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("gpx" to "GPX", "kml" to "KML").forEach { (value, label) ->
+                            OutlinedButton(
+                                onClick = { gpxStopFormat = value },
+                                colors = if (gpxStopFormat == value) {
+                                    ButtonDefaults.outlinedButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                                    )
+                                } else ButtonDefaults.outlinedButtonColors(),
+                            ) { Text(label) }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = gpxStopName, onValueChange = { gpxStopName = it },
+                        label = { Text("軌跡名稱") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                // (3) 確定 — saves under the chosen name/format.
+                TextButton(onClick = {
+                    gpxRecording = false; gpxPaused = false
+                    context.startService(
+                        Intent(context, LocationForegroundService::class.java)
+                            .setAction(LocationForegroundService.ACTION_GPX_STOP)
+                            .putExtra(LocationForegroundService.EXTRA_GPX_NAME, gpxStopName)
+                            .putExtra(LocationForegroundService.EXTRA_GPX_FORMAT, gpxStopFormat)
+                    )
+                    showGpxStopDialog = false
+                }) { Text("確定") }
+            },
+            dismissButton = {
+                // (4) 放棄 — discards the recording entirely, nothing saved.
+                TextButton(onClick = {
+                    gpxRecording = false; gpxPaused = false
+                    context.startService(
+                        Intent(context, LocationForegroundService::class.java)
+                            .setAction(LocationForegroundService.ACTION_GPX_STOP)
+                            .putExtra(LocationForegroundService.EXTRA_GPX_DISCARD, true)
+                    )
+                    showGpxStopDialog = false
+                }) { Text("放棄") }
+            },
+        )
+    }
+
+    // "Connecting" (no fix yet) resets every time GPS is turned back on — polls rather than
+    // relying on osmdroid's runOnFirstFix, which only ever fires once per MapView instance and
+    // wouldn't notice a fresh fix after a later GPS-off/on cycle.
+    LaunchedEffect(gpsFollowing, mapController, offlineMapController, mapsforgeActive) {
+        val activeController: Any? = if (mapsforgeActive) offlineMapController else mapController
+        if (!gpsFollowing || activeController == null) {
+            gpsHasFix = false
+            return@LaunchedEffect
+        }
+        gpsHasFix = false
+        while (gpsFollowing) {
+            val hasFix = if (mapsforgeActive) offlineMapController?.currentFix() != null else mapController?.currentFix() != null
+            if (hasFix) {
+                gpsHasFix = true
+                break
+            }
+            delay(500)
+        }
+    }
+    // Mapsforge has no built-in location provider (unlike osmdroid's MyLocationNewOverlay, which
+    // already handles this for the raster/線上地圖 path) — feed it fixes directly, only while the
+    // vector map is actually showing and GPS is toggled on, so it doesn't double up with osmdroid.
+    var hasAutoRecentered by remember { mutableStateOf(false) }
+    DisposableEffect(mapsforgeActive, gpsFollowing, offlineMapController) {
+        if (!mapsforgeActive || !gpsFollowing || offlineMapController == null) {
+            return@DisposableEffect onDispose {}
+        }
+        val fusedClient = LocationServices.getFusedLocationProviderClient(context)
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L).build()
+        val callback = object : LocationCallback() {
+            override fun onLocationResult(result: LocationResult) {
+                val loc = result.lastLocation ?: return
+                offlineMapController?.updateGpsFix(loc.latitude, loc.longitude, loc.accuracy)
+                // First fix after opening the map screen — jump straight to it instead of
+                // leaving the hiker looking at Taiwan's overall centroid until they press 📍.
+                if (!hasAutoRecentered) {
+                    hasAutoRecentered = true
+                    offlineMapController?.recenterOnGps()
+                }
+            }
+        }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            fusedClient.requestLocationUpdates(request, callback, Looper.getMainLooper())
+        }
+        onDispose { fusedClient.removeLocationUpdates(callback) }
+    }
+
+    val gpsPulseAlpha by rememberInfiniteTransition(label = "gps-pulse").animateFloat(
+        initialValue = 1f, targetValue = 0.3f,
+        animationSpec = infiniteRepeatable(tween(600), repeatMode = RepeatMode.Reverse),
+        label = "gps-pulse-alpha",
+    )
+
+    // Zoom-level readout between the ＋/－ buttons — neither engine exposes zoom changes as a
+    // Compose-observable value, so this polls rather than needing a listener wired through.
+    LaunchedEffect(mapController, offlineMapController, mapsforgeActive) {
+        while (true) {
+            zoomLevelDisplay = if (mapsforgeActive) {
+                offlineMapController?.zoomLevel()?.let { "%.1f".format(it) } ?: "—"
+            } else {
+                mapController?.mapView?.zoomLevelDouble?.let { "%.1f".format(it) } ?: "—"
+            }
+            // Keeps 街道/地名文字 sized to the current zoom even when it changed via a pinch
+            // gesture directly on the map, not just the ＋/－ buttons or 回到目前位置 — debounced
+            // internally so an in-progress pinch doesn't repeatedly purge the tile cache.
+            offlineMapController?.pollTextScale()
+            delay(500)
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (mapsforgeActive) {
+            OfflineMapView(
+                modifier = Modifier.fillMaxSize(),
+                downloader = mapsforgeDownloader,
+                hillshadingEnabled = hillshadingEnabled,
+                enabledLayerIds = enabledLayerIds,
+            ) { offlineMapController = it }
+        } else {
+            HikeMap(modifier = Modifier.fillMaxSize(), initialLayer = currentMapLayer) { mapController = it }
+        }
+
+        // ---- 1. 正上方橫bar滿框：GPS位置／GPX錄製/暫停／GPX停止／GPS開關／切換地圖 ----
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopCenter)
+                .background(Color(0xEE202020))
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+        ) {
+            // (1) 回到現在手機 GPS 位置
+            TopBarIconButton("📍") {
+                if (mapsforgeActive) {
+                    val fix = offlineMapController?.currentFix()
+                    offlineMapController?.recenterOnGps()
+                    Toast.makeText(
+                        context,
+                        if (fix != null) "定位座標：${fix.latitude}, ${fix.longitude}" else "尚無定位資料",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                } else {
+                    mapController?.recenterOnGps()
                 }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("伺服器狀態：", fontWeight = FontWeight.Bold)
-                Text(
-                    when (serverOnline) {
-                        true -> "正常"
-                        false -> "離線"
-                        null -> "檢查中"
-                    },
-                    fontWeight = FontWeight.Bold,
-                    color = if (serverOnline == false) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+            // (2) 啟動/暫停記錄軌跡 GPX — 同一圖示，依錄製狀態切換
+            TopBarIconButton(
+                when {
+                    !gpxRecording -> "⏺"
+                    gpxPaused -> "▶"
+                    else -> "⏸"
+                }
+            ) {
+                when {
+                    !gpxRecording -> {
+                        gpxMinIntervalSec = prefs.gpxMinIntervalSec
+                        gpxMinDistanceM = prefs.gpxMinDistanceM
+                        showGpxStartDialog = true
+                    }
+                    gpxPaused -> {
+                        gpxPaused = false; prefs.isGpxPaused = false
+                        context.startService(
+                            Intent(context, LocationForegroundService::class.java)
+                                .setAction(LocationForegroundService.ACTION_GPX_RESUME)
+                        )
+                    }
+                    else -> {
+                        gpxPaused = true; prefs.isGpxPaused = true
+                        context.startService(
+                            Intent(context, LocationForegroundService::class.java)
+                                .setAction(LocationForegroundService.ACTION_GPX_PAUSE)
+                        )
+                    }
+                }
+            }
+
+            // (3) 停止記錄 GPX
+            TopBarIconButton("⏹", enabled = gpxRecording) {
+                gpxStopFormat = "gpx"
+                gpxStopName = defaultGpxTrackName()
+                showGpxStopDialog = true
+            }
+
+            // (4) 打開/關閉 GPS — 連線中（還沒拿到第一個定位）時圖示閃爍
+            TopBarIconButton(
+                label = if (gpsFollowing) "🛰️" else "🚫",
+                modifier = if (gpsFollowing && !gpsHasFix) Modifier.alpha(gpsPulseAlpha) else Modifier,
+            ) {
+                gpsFollowing = !gpsFollowing
+                if (!mapsforgeActive) mapController?.setGpsEnabled(gpsFollowing)
+                if (!gpsFollowing) offlineMapController?.setGpsVisible(false)
+            }
+
+            // (5) 切換地圖（線上地圖／魯地圖）
+            TopBarIconButton(if (currentMapLayer == MapLayer.ONLINE) "🗺️" else "⛰️") {
+                currentMapLayer = if (currentMapLayer == MapLayer.ONLINE) MapLayer.RUDY else MapLayer.ONLINE
+                mapController?.setLayer(currentMapLayer)
+            }
+        }
+
+        // ---- 2. 左上功能選單（跳出視窗）----
+        // 目前只接了已有對應功能的項目；其餘（載入GPX/KML、方位點、離線地圖安裝、
+        // GPS/軌跡/方位點細節設定）屬於下一階段的獨立子系統，先不做假按鈕。
+        Box(modifier = Modifier.align(Alignment.TopStart).padding(top = 60.dp, start = 8.dp)) {
+            MapCircleButton("☰", size = 40.dp) { showFunctionMenu = true }
+            DropdownMenu(expanded = showFunctionMenu, onDismissRequest = { showFunctionMenu = false }) {
+                DropdownMenuItem(
+                    text = { Text("載入 GPX/KML") },
+                    onClick = { showFunctionMenu = false; showLoadRouteDialog = true },
                 )
-                if (serverOnline == false) {
-                    IconButton(
-                        modifier = Modifier.size(32.dp),
+                DropdownMenuItem(
+                    text = { Text("地圖設定") },
+                    onClick = { showFunctionMenu = false; showMapSettingsDialog = true },
+                )
+                if (hasActiveHike) {
+                    DropdownMenuItem(
+                        text = { Text("回報設定（定位頻率）") },
+                        onClick = { showFunctionMenu = false; showIntervalDialog = true },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("軌跡管理：上傳／更新規劃路線") },
+                        onClick = { showFunctionMenu = false; routePickerLauncher.launch(arrayOf("*/*")) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("軌跡管理：清除已上傳的規劃路線") },
+                        onClick = { showFunctionMenu = false; showClearRouteDialog = true },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("分享行程連結給留守人") },
                         onClick = {
+                            showFunctionMenu = false
+                            try {
+                                context.startActivity(Intent.createChooser(
+                                    Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, shareUrl)
+                                    },
+                                    "分享行程連結",
+                                ))
+                            } catch (_: ActivityNotFoundException) {
+                                Toast.makeText(context, "找不到可用的分享 App", Toast.LENGTH_LONG).show()
+                            }
+                        },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("背景活動管理") },
+                    onClick = { showFunctionMenu = false; showBackgroundExecDialog = true },
+                )
+                DropdownMenuItem(
+                    text = { Text("程式設定：登出") },
+                    onClick = {
+                        showFunctionMenu = false
+                        prefs.authToken = null
+                        prefs.shareToken = null
+                        onLoggedOut()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("結束") },
+                    onClick = { showFunctionMenu = false; showExitConfirmDialog = true },
+                )
+            }
+        }
+
+        // Back to the role picker (登山者／留守人) — top-right, mirrors ☰ on the top-left.
+        Box(modifier = Modifier.align(Alignment.TopEnd).padding(top = 60.dp, end = 8.dp)) {
+            MapCircleButton("🏠", size = 40.dp) { (context as ComponentActivity).finish() }
+        }
+
+        // ---- 3. 左側圓圈：登山者回報區（留守人追蹤）----
+        Column(
+            modifier = Modifier.align(Alignment.CenterStart).padding(start = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            MapCircleButton(
+                label = if (!hasActiveHike) "▶️" else if (isPaused) "▶️" else "⏸",
+                background = Color(0xEE2D7DD2),
+            ) {
+                if (!hasActiveHike) {
+                    error = null
+                    continuingHikeId = null
+                    startMode = null
+                    showStartHikeDialog = true
+                } else {
+                    isPaused = !isPaused
+                    prefs.isPaused = isPaused
+                    context.startService(
+                        Intent(context, LocationForegroundService::class.java).setAction(
+                            if (isPaused) LocationForegroundService.ACTION_PAUSE
+                            else LocationForegroundService.ACTION_RESUME
+                        )
+                    )
+                }
+            }
+            MapCircleButton("🏁", enabled = hasActiveHike, background = Color(0xEEC62828)) {
+                loading = true
+                // Local stop always proceeds immediately; the server-side end is handed to
+                // HikeActionWorker, which retries until delivered (or permanently rejected)
+                // and toasts the outcome — same contract as SOS/safe/camping, so a timeout
+                // here can no longer orphan the hike as "active" forever.
+                HikeActionWorker.enqueue(context, prefs.activeHikeId, HikeActionWorker.ACTION_END)
+                context.startService(
+                    Intent(context, LocationForegroundService::class.java)
+                        .setAction(LocationForegroundService.ACTION_STOP)
+                )
+                prefs.clearActiveHike()
+                hasActiveHike = false
+                isPaused = false
+                loading = false
+                TrackerWidgetProvider.updateAllWidgets(context)
+            }
+            MapCircleButton("😊", enabled = hasActiveHike, background = Color(0xEE2E7D32)) {
+                context.startService(
+                    Intent(context, LocationForegroundService::class.java)
+                        .setAction(LocationForegroundService.ACTION_MARK_SAFE)
+                )
+            }
+            MapCircleButton("⛺", enabled = hasActiveHike, background = Color(0xEEEF6C00)) {
+                context.startService(
+                    Intent(context, LocationForegroundService::class.java)
+                        .setAction(LocationForegroundService.ACTION_MARK_CAMPING)
+                )
+            }
+            if (hasActiveHike) {
+                SosHoldButton(outerSize = 84.dp, showCaption = false) {
+                    context.startService(
+                        Intent(context, LocationForegroundService::class.java)
+                            .setAction(LocationForegroundService.ACTION_MARK_SOS)
+                    )
+                }
+            } else {
+                // Same footprint as the active SosHoldButton so the cluster doesn't jump when
+                // a hike starts — SOS only makes sense once there's a hike to attach it to.
+                MapCircleButton("SOS", enabled = false, background = MaterialTheme.colorScheme.error, size = 84.dp) {}
+            }
+        }
+
+        // ---- 4. 右側圓圈：登山導航區（本階段先接 zoom，其餘留待下一階段）----
+        Column(
+            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            MapCircleButton("＋") { if (mapsforgeActive) offlineMapController?.zoomIn() else mapController?.zoomIn() }
+            Text(
+                zoomLevelDisplay,
+                color = Color.White,
+                fontSize = 13.sp,
+                modifier = Modifier
+                    .background(Color(0xEE202020), CircleShape)
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+            )
+            MapCircleButton("－") { if (mapsforgeActive) offlineMapController?.zoomOut() else mapController?.zoomOut() }
+        }
+
+        // ---- 狀態列／錯誤訊息（原本頁面上的伺服器狀態、行程狀態，移到底部一條窄列）----
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(Color(0xCC202020))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            Row {
+                Text(hikeName.ifBlank { "尚未開始行程" }, color = Color.White, fontWeight = FontWeight.Bold)
+                if (hasActiveHike) {
+                    Text(
+                        if (isPaused) "（定位已暫停）" else "（進行中）",
+                        color = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "伺服器：" + when (serverOnline) { true -> "正常"; false -> "離線（點擊回報）"; null -> "檢查中" },
+                    color = if (serverOnline == false) MaterialTheme.colorScheme.error else Color.White.copy(alpha = 0.8f),
+                    modifier = if (serverOnline == false) {
+                        Modifier.clickable {
                             try {
                                 context.startActivity(Intent(Intent.ACTION_SENDTO).apply {
                                     data = Uri.parse("mailto:")
@@ -837,179 +1648,11 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                             } catch (_: ActivityNotFoundException) {
                                 Toast.makeText(context, "找不到可用的郵件 App", Toast.LENGTH_LONG).show()
                             }
-                        },
-                    ) { Text("✉️") }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("行程狀態：", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    if (isPaused) "進行中（定位已暫停）" else "進行中",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
+                        }
+                    } else Modifier,
                 )
             }
-            Spacer(Modifier.height(8.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("分享連結給留守人：", fontWeight = FontWeight.Bold)
-                TooltipBox(
-                    positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
-                    tooltip = { PlainTooltip { Text("寄給留守人") } },
-                    state = rememberTooltipState(),
-                ) {
-                    IconButton(
-                        modifier = Modifier.size(32.dp),
-                        onClick = {
-                            try {
-                                context.startActivity(Intent(Intent.ACTION_SENDTO).apply {
-                                    data = Uri.parse("mailto:")
-                                    putExtra(Intent.EXTRA_SUBJECT, "登山健行定位追蹤 - $hikeName")
-                                    putExtra(Intent.EXTRA_TEXT, "可以在這裡看到我的即時位置：\n$shareUrl")
-                                })
-                            } catch (_: ActivityNotFoundException) {
-                                Toast.makeText(context, "找不到可用的郵件 App", Toast.LENGTH_LONG).show()
-                            }
-                        },
-                    ) { Text("✉️") }
-                }
-                TooltipBox(
-                    positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
-                    tooltip = { PlainTooltip { Text("分享") } },
-                    state = rememberTooltipState(),
-                ) {
-                    IconButton(
-                        modifier = Modifier.size(32.dp),
-                        onClick = {
-                            try {
-                                context.startActivity(Intent.createChooser(
-                                    Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(Intent.EXTRA_TEXT, shareUrl)
-                                    },
-                                    "分享行程連結",
-                                ))
-                            } catch (_: ActivityNotFoundException) {
-                                Toast.makeText(context, "找不到可用的分享 App", Toast.LENGTH_LONG).show()
-                            }
-                        },
-                    ) { Text("📤") }
-                }
-            }
-            Text(buildAnnotatedString {
-                append(shareUrl)
-                append(" ")
-                withStyle(
-                    SpanStyle(
-                        fontSize = MaterialTheme.typography.bodySmall.fontSize,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                ) { append("（每隻手機配有一個固定連結網址）") }
-            })
-
-            Spacer(Modifier.height(24.dp))
-
-            val actionButtonHeight = 56.dp
-            val actionButtonTextStyle = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ActionButton(
-                    label = "😊 我很好",
-                    baseColor = Color(0xFF2E7D32),
-                    pressedColor = Color(0xFF1B5E20),
-                    height = actionButtonHeight,
-                    textStyle = actionButtonTextStyle,
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        context.startService(
-                            Intent(context, LocationForegroundService::class.java)
-                                .setAction(LocationForegroundService.ACTION_MARK_SAFE)
-                        )
-                    },
-                )
-
-                ActionButton(
-                    label = "⛺ 停駐中",
-                    baseColor = Color(0xFFEF6C00),
-                    pressedColor = Color(0xFFBF360C),
-                    height = actionButtonHeight,
-                    textStyle = actionButtonTextStyle,
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        context.startService(
-                            Intent(context, LocationForegroundService::class.java)
-                                .setAction(LocationForegroundService.ACTION_MARK_CAMPING)
-                        )
-                    },
-                )
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ActionButton(
-                    label = if (isPaused) "▶️ 繼續" else "⏸ 暫停",
-                    baseColor = if (isPaused) Color(0xFF2E7D32) else Color(0xFFF9A825),
-                    pressedColor = if (isPaused) Color(0xFF1B5E20) else Color(0xFFF57F17),
-                    height = actionButtonHeight,
-                    textStyle = actionButtonTextStyle,
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        isPaused = !isPaused
-                        prefs.isPaused = isPaused
-                        context.startService(
-                            Intent(context, LocationForegroundService::class.java).setAction(
-                                if (isPaused) LocationForegroundService.ACTION_PAUSE
-                                else LocationForegroundService.ACTION_RESUME
-                            )
-                        )
-                    },
-                )
-
-                ActionButton(
-                    label = "🏁 結束行程",
-                    baseColor = Color(0xFFC62828),
-                    pressedColor = Color(0xFF8E0000),
-                    height = actionButtonHeight,
-                    textStyle = actionButtonTextStyle,
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        loading = true
-                        // Local stop always proceeds immediately; the server-side end is handed to
-                        // HikeActionWorker, which retries until delivered (or permanently rejected)
-                        // and toasts the outcome — same contract as SOS/safe/camping, so a timeout
-                        // here can no longer orphan the hike as "active" forever.
-                        HikeActionWorker.enqueue(context, prefs.activeHikeId, HikeActionWorker.ACTION_END)
-                        context.startService(
-                            Intent(context, LocationForegroundService::class.java)
-                                .setAction(LocationForegroundService.ACTION_STOP)
-                        )
-                        prefs.clearActiveHike()
-                        hasActiveHike = false
-                        isPaused = false
-                        loading = false
-                        TrackerWidgetProvider.updateAllWidgets(context)
-                    },
-                )
-            }
-
-            Spacer(Modifier.height(24.dp))
-            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                SosHoldButton {
-                    context.startService(
-                        Intent(context, LocationForegroundService::class.java)
-                            .setAction(LocationForegroundService.ACTION_MARK_SOS)
-                    )
-                }
-            }
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
-
-        error?.let {
-            Spacer(Modifier.height(12.dp))
-            Text(it, color = MaterialTheme.colorScheme.error)
-        }
-    }
     }
 }

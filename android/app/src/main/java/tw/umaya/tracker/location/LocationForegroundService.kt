@@ -57,6 +57,17 @@ class LocationForegroundService : Service() {
         const val ACTION_UPDATE_INTERVAL = "tw.umaya.tracker.action.UPDATE_INTERVAL"
         const val ACTION_PAUSE = "tw.umaya.tracker.action.PAUSE"
         const val ACTION_RESUME = "tw.umaya.tracker.action.RESUME"
+        // Local GPX trail recording — independent of the hike-reporting actions above.
+        const val ACTION_GPX_START = "tw.umaya.tracker.action.GPX_START"
+        const val ACTION_GPX_PAUSE = "tw.umaya.tracker.action.GPX_PAUSE"
+        const val ACTION_GPX_RESUME = "tw.umaya.tracker.action.GPX_RESUME"
+        const val ACTION_GPX_STOP = "tw.umaya.tracker.action.GPX_STOP"
+        // GPX_START: true = 繼續 an on-disk unfinished file (prefs.gpxFilePath), false/absent = 重新開始
+        const val EXTRA_GPX_RESUME_EXISTING = "gpx_resume_existing"
+        // GPX_STOP: 放棄 discards instead of finalizing; otherwise EXTRA_NAME/EXTRA_FORMAT ("gpx"/"kml") apply
+        const val EXTRA_GPX_DISCARD = "gpx_discard"
+        const val EXTRA_GPX_NAME = "gpx_name"
+        const val EXTRA_GPX_FORMAT = "gpx_format"
         private const val CHANNEL_ID = "tracking"
         private const val NOTIFICATION_ID = 1001
 
@@ -70,6 +81,7 @@ class LocationForegroundService : Service() {
     private lateinit var fusedClient: FusedLocationProviderClient
     private lateinit var prefs: Prefs
     private lateinit var db: AppDatabase
+    private lateinit var gpxRecorder: GpxRecorder
     private val scope = CoroutineScope(Dispatchers.IO)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var lastLocation: Location? = null
@@ -85,6 +97,9 @@ class LocationForegroundService : Service() {
             if (isPlausibleFix(location)) {
                 lastAcceptedLocation = location
                 recordPoint(location, "normal")
+                if (prefs.isGpxRecording && !prefs.isGpxPaused) {
+                    gpxRecorder.appendPoint(location, prefs.gpxMinIntervalSec, prefs.gpxMinDistanceM)
+                }
             }
         }
     }
@@ -107,6 +122,7 @@ class LocationForegroundService : Service() {
         fusedClient = LocationServices.getFusedLocationProviderClient(this)
         prefs = Prefs(this)
         db = AppDatabase.get(this)
+        gpxRecorder = GpxRecorder(this)
         createNotificationChannel()
         // speak() right after construction would silently no-op: the engine takes a moment to
         // connect, and calls made before onInit fires are dropped rather than queued. Stash a
@@ -136,14 +152,14 @@ class LocationForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                stopLocationUpdates()
-                stopSelf()
+                refreshLocationUpdates()
+                if (!prefs.isGpxRecording) stopSelf() // GPX recording alone still needs this service running
                 return START_NOT_STICKY
             }
-            ACTION_UPDATE_INTERVAL -> if (hasLocationPermission() && !prefs.isPaused) startLocationUpdates()
+            ACTION_UPDATE_INTERVAL -> refreshLocationUpdates()
             ACTION_PAUSE -> {
-                stopLocationUpdates()
                 prefs.isPaused = true
+                refreshLocationUpdates()
                 updateNotification()
                 TrackerWidgetProvider.updateAllWidgets(applicationContext)
                 if (prefs.activeHikeId != -1L) {
@@ -152,7 +168,7 @@ class LocationForegroundService : Service() {
             }
             ACTION_RESUME -> {
                 prefs.isPaused = false
-                if (hasLocationPermission()) startLocationUpdates()
+                refreshLocationUpdates()
                 updateNotification()
                 TrackerWidgetProvider.updateAllWidgets(applicationContext)
                 if (prefs.activeHikeId != -1L) {
@@ -165,16 +181,69 @@ class LocationForegroundService : Service() {
             }
             ACTION_MARK_SAFE -> markPoint("safe")
             ACTION_MARK_CAMPING -> markPoint("camping")
+            ACTION_GPX_START -> {
+                startForeground(NOTIFICATION_ID, buildNotification())
+                val resumeExisting = intent?.getBooleanExtra(EXTRA_GPX_RESUME_EXISTING, false) ?: false
+                // 重新開始 explicitly means "not that one" — abandon any dangling unfinished
+                // file rather than leaving it orphaned on disk forever.
+                if (!resumeExisting) prefs.gpxFilePath?.let { java.io.File(it).delete() }
+                val path = gpxRecorder.start(if (resumeExisting) prefs.gpxFilePath else null)
+                prefs.gpxFilePath = path
+                prefs.isGpxRecording = true
+                prefs.isGpxPaused = false
+                refreshLocationUpdates()
+                updateNotification()
+            }
+            ACTION_GPX_PAUSE -> {
+                prefs.isGpxPaused = true
+                refreshLocationUpdates()
+                updateNotification()
+            }
+            ACTION_GPX_RESUME -> {
+                prefs.isGpxPaused = false
+                refreshLocationUpdates()
+                updateNotification()
+            }
+            ACTION_GPX_STOP -> {
+                val discard = intent?.getBooleanExtra(EXTRA_GPX_DISCARD, false) ?: false
+                if (discard) {
+                    gpxRecorder.discard()
+                    toast("已放棄本次 GPX 錄製")
+                } else {
+                    val name = intent?.getStringExtra(EXTRA_GPX_NAME) ?: ""
+                    val format = intent?.getStringExtra(EXTRA_GPX_FORMAT) ?: "gpx"
+                    val saved = gpxRecorder.finalize(name, format)
+                    toast(
+                        if (saved != null) "已儲存（${saved.second} 個點）：${saved.first}"
+                        else "沒有正在錄製的 GPX"
+                    )
+                }
+                prefs.isGpxRecording = false
+                prefs.isGpxPaused = false
+                prefs.gpxFilePath = null
+                refreshLocationUpdates()
+                updateNotification()
+                if (prefs.activeHikeId == -1L) stopSelf()
+            }
             else -> {
                 // Also how the screen re-asserts the service is alive on reopen (ACTION_START
                 // falls through to here, since it doesn't match a case above) — a killed
                 // process would otherwise leave "行程進行中" showing with tracking silently
                 // stopped and nothing to restart it. Must not override an existing pause.
                 startForeground(NOTIFICATION_ID, buildNotification())
-                if (hasLocationPermission() && !prefs.isPaused) startLocationUpdates()
+                refreshLocationUpdates()
             }
         }
         return START_STICKY
+    }
+
+    /** Single source of truth for whether the fused-location callback should be running —
+     *  hike reporting and local GPX recording are independent, either one alone is enough
+     *  to need live fixes, so this can't just be "is there an active hike". */
+    private fun refreshLocationUpdates() {
+        val shouldRun = hasLocationPermission() &&
+            ((prefs.activeHikeId != -1L && !prefs.isPaused) || (prefs.isGpxRecording && !prefs.isGpxPaused))
+        if (shouldRun) startLocationUpdates() else stopLocationUpdates()
     }
 
     private fun hasLocationPermission() =
@@ -278,12 +347,13 @@ class LocationForegroundService : Service() {
         val stopPending = PendingIntent.getService(
             this, 0, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val hasHike = prefs.activeHikeId != -1L
+        val parts = mutableListOf<String>()
+        if (hasHike) parts += if (prefs.isPaused) "行程已暫停" else "行程記錄中（每 ${intervalLabel(prefs.intervalSeconds)} 回報一次）"
+        if (prefs.isGpxRecording) parts += if (prefs.isGpxPaused) "GPX 已暫停" else "GPX 錄製中"
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(if (prefs.isPaused) "行程已暫停" else "行程記錄中")
-            .setContentText(
-                if (prefs.isPaused) "定位記錄已暫停，行程仍在進行中"
-                else "正在背景記錄你的位置，每 ${intervalLabel(prefs.intervalSeconds)} 一筆"
-            )
+            .setContentTitle(if (parts.isEmpty()) "定位服務" else parts.joinToString(" · "))
+            .setContentText("正在背景記錄你的位置")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setOngoing(true)
             .addAction(0, "結束行程", stopPending)

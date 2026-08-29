@@ -18,6 +18,19 @@ android {
         buildConfigField("String", "API_BASE_URL", "\"https://tracker.umaya.tw/api/\"")
     }
 
+    buildTypes {
+        debug {
+            // A different applicationId + visible name lets a debug test build install
+            // side-by-side with the already-installed app instead of overwriting it —
+            // useful while a change (like the map-screen redesign) hasn't been verified yet.
+            applicationIdSuffix = ".dev"
+            resValue("string", "app_name", "登山健行定位追蹤（測試版）")
+        }
+        release {
+            resValue("string", "app_name", "登山健行定位追蹤")
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -50,6 +63,18 @@ dependencies {
 
     // Location
     implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    // Map rendering — plain XYZ tile source support, so it can hit the same 魯地圖/線上地圖
+    // tile endpoints the guardian web page already uses, no separate map backend needed.
+    // Embedded into Compose via AndroidView (already part of androidx.compose.ui:ui).
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
+
+    // Mapsforge — real offline vector rendering of the downloaded .map file (魯地圖), replacing
+    // osmdroid's raster-tile caching for that layer. 線上地圖 stays on osmdroid (plain XYZ tiles).
+    implementation("org.mapsforge:mapsforge-map-android:0.19.0")
+    implementation("org.mapsforge:mapsforge-map-reader:0.19.0")
+    implementation("org.mapsforge:mapsforge-core:0.19.0")
+    implementation("org.mapsforge:mapsforge-map:0.19.0")
 
     // Local offline queue
     implementation("androidx.room:room-runtime:2.6.1")

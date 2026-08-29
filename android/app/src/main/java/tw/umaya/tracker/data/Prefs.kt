@@ -64,6 +64,60 @@ class Prefs(context: Context) {
         get() = prefs.getString("last_nickname", "") ?: ""
         set(value) = prefs.edit().putString("last_nickname", value).apply()
 
+    /** Local GPX trail recording — independent of hasActiveHike/isPaused, which are about
+     *  reporting to the guardian server. A hiker can record their own GPX with no hike started. */
+    var isGpxRecording: Boolean
+        get() = prefs.getBoolean("is_gpx_recording", false)
+        set(value) = prefs.edit().putBoolean("is_gpx_recording", value).apply()
+
+    var isGpxPaused: Boolean
+        get() = prefs.getBoolean("is_gpx_paused", false)
+        set(value) = prefs.edit().putBoolean("is_gpx_paused", value).apply()
+
+    /** Absolute path of the GPX file currently being appended to, if any — lets 開始追蹤's
+     *  「繼續」 resume the same on-disk file after the app/service process died mid-recording,
+     *  instead of silently abandoning it and starting a new one. Cleared once the recording is
+     *  finalized (儲存) or discarded (放棄). */
+    var gpxFilePath: String?
+        get() = prefs.getString("gpx_file_path", null)
+        set(value) = prefs.edit().putString("gpx_file_path", value).apply()
+
+    /** Minimum seconds between logged GPX points — a hard floor independent of how often the
+     *  underlying GPS callback actually fires. Range 1–20; default 5. */
+    var gpxMinIntervalSec: Int
+        get() = prefs.getInt("gpx_min_interval_sec", 5)
+        set(value) = prefs.edit().putInt("gpx_min_interval_sec", value).apply()
+
+    /** Minimum meters moved between logged GPX points — independent OR-condition alongside
+     *  [gpxMinIntervalSec] (whichever threshold is hit first triggers a log). Range 5–20; default 5. */
+    var gpxMinDistanceM: Int
+        get() = prefs.getInt("gpx_min_distance_m", 5)
+        set(value) = prefs.edit().putInt("gpx_min_distance_m", value).apply()
+
+    /** 地圖比例尺 開/關 — default off. */
+    var showScaleBar: Boolean
+        get() = prefs.getBoolean("show_scale_bar", false)
+        set(value) = prefs.edit().putBoolean("show_scale_bar", value).apply()
+
+    /** 向量魯地圖顯示山坡陰影(DEM) 開/關 — default on. Each tile needs the DEM-based shading
+     *  composited on top of the vector rendering, so this is a real performance/battery cost,
+     *  not just visual. */
+    var showHillshading: Boolean
+        get() = prefs.getBoolean("show_hillshading", true)
+        set(value) = prefs.edit().putBoolean("show_hillshading", value).apply()
+
+    /** 向量魯地圖圖層設定（各 elmt-hiking overlay 的開關）—— null 表示還沒改過，用主題各自的
+     *  預設值；一旦使用者調整過任何一個，就存完整的「目前開啟中」清單，逗號分隔。 */
+    var enabledMapLayerIds: Set<String>?
+        get() = prefs.getString("enabled_map_layer_ids", null)?.split(",")?.filter { it.isNotBlank() }?.toSet()
+        set(value) = prefs.edit().putString("enabled_map_layer_ids", value?.joinToString(",")).apply()
+
+    /** 地圖方向 — "north" (default), "track", or "compass". Stored as a string rather than the
+     *  enum directly so this file doesn't need to depend on the ui package. */
+    var mapOrientationMode: String
+        get() = prefs.getString("map_orientation_mode", "north") ?: "north"
+        set(value) = prefs.edit().putString("map_orientation_mode", value).apply()
+
     /** True while the hiker has paused GPS recording mid-hike (hike itself stays active). */
     var isPaused: Boolean
         get() = prefs.getBoolean("is_paused", false)
@@ -84,6 +138,21 @@ class Prefs(context: Context) {
     var lastPassword: String?
         get() = prefs.getString("last_password", null)
         set(value) = prefs.edit().putString("last_password", value).apply()
+
+    /** Parent-folder URI of the last GPX/KML file the hiker picked (via SAF's
+     *  EXTRA_INITIAL_URI) — so 載入GPX/KML's file picker reopens where they left off instead of
+     *  the device's default root every time. */
+    var lastGpxFolderUri: String?
+        get() = prefs.getString("last_gpx_folder_uri", null)
+        set(value) = prefs.edit().putString("last_gpx_folder_uri", value).apply()
+
+    /** URIs of loaded GPX/KML reference overlays (功能選單「載入GPX/KML」) that should survive an
+     *  app restart — re-read and redrawn automatically next launch until the hiker removes them.
+     *  Newline-joined since a content:// URI can't itself contain a raw newline. Persisting this
+     *  requires [takePersistableUriPermission] at pick-time — done where the file is picked. */
+    var loadedGpxUris: List<String>
+        get() = prefs.getString("loaded_gpx_uris", null)?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
+        set(value) = prefs.edit().putString("loaded_gpx_uris", value.joinToString("\n")).apply()
 
     val isLoggedIn: Boolean get() = authToken != null
     val hasActiveHike: Boolean get() = activeHikeId != -1L
