@@ -64,10 +64,10 @@ class LocationForegroundService : Service() {
         const val ACTION_GPX_STOP = "tw.umaya.tracker.action.GPX_STOP"
         // GPX_START: true = 繼續 an on-disk unfinished file (prefs.gpxFilePath), false/absent = 重新開始
         const val EXTRA_GPX_RESUME_EXISTING = "gpx_resume_existing"
-        // GPX_STOP: 放棄 discards instead of finalizing; otherwise EXTRA_NAME/EXTRA_FORMAT ("gpx"/"kml") apply
-        const val EXTRA_GPX_DISCARD = "gpx_discard"
+        // GPX_STOP: EXTRA_NAME/EXTRA_FORMAT ("gpx"/"kml"); EXTRA_OUTPUT_URI = where the hiker chose to save it
         const val EXTRA_GPX_NAME = "gpx_name"
         const val EXTRA_GPX_FORMAT = "gpx_format"
+        const val EXTRA_GPX_OUTPUT_URI = "gpx_output_uri"
         private const val CHANNEL_ID = "tracking"
         private const val NOTIFICATION_ID = 1001
 
@@ -149,7 +149,19 @@ class LocationForegroundService : Service() {
         super.onDestroy()
     }
 
+    private fun copyToUri(source: java.io.File, target: android.net.Uri): Boolean = try {
+        contentResolver.openOutputStream(target, "wt")?.use { out -> source.inputStream().use { it.copyTo(out) } } != null
+    } catch (e: Exception) {
+        android.util.Log.e("LocationService", "複製軌跡到 $target 失敗", e)
+        false
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // A killed/updated process loses the recorder's open file even though prefs still say
+        // 記錄中 — reattach to the same on-disk file so later fixes keep landing in it.
+        if (prefs.isGpxRecording && !gpxRecorder.isActive && intent?.action != ACTION_GPX_START) {
+            prefs.gpxFilePath = gpxRecorder.start(prefs.gpxFilePath)
+        }
         when (intent?.action) {
             ACTION_STOP -> {
                 refreshLocationUpdates()
@@ -205,19 +217,18 @@ class LocationForegroundService : Service() {
                 updateNotification()
             }
             ACTION_GPX_STOP -> {
-                val discard = intent?.getBooleanExtra(EXTRA_GPX_DISCARD, false) ?: false
-                if (discard) {
-                    gpxRecorder.discard()
-                    toast("已放棄本次 GPX 錄製")
-                } else {
-                    val name = intent?.getStringExtra(EXTRA_GPX_NAME) ?: ""
-                    val format = intent?.getStringExtra(EXTRA_GPX_FORMAT) ?: "gpx"
-                    val saved = gpxRecorder.finalize(name, format)
-                    toast(
-                        if (saved != null) "已儲存（${saved.second} 個點）：${saved.first}"
-                        else "沒有正在錄製的 GPX"
-                    )
-                }
+                val name = intent?.getStringExtra(EXTRA_GPX_NAME) ?: ""
+                val format = intent?.getStringExtra(EXTRA_GPX_FORMAT) ?: "gpx"
+                val outputUri = intent?.getStringExtra(EXTRA_GPX_OUTPUT_URI)?.let(android.net.Uri::parse)
+                val saved = gpxRecorder.finalize(name, format)
+                toast(
+                    when {
+                        saved == null -> "沒有正在記錄的軌跡"
+                        outputUri == null -> "已儲存（${saved.second} 個點）：${saved.first}"
+                        copyToUri(java.io.File(saved.first), outputUri) -> "已儲存到選擇的位置（${saved.second} 個點）"
+                        else -> "無法寫入選擇的位置，已改存在：${saved.first}"
+                    }
+                )
                 prefs.isGpxRecording = false
                 prefs.isGpxPaused = false
                 prefs.gpxFilePath = null

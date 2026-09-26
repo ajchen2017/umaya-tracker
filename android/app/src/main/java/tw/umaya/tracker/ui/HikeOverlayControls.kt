@@ -3,8 +3,11 @@ package tw.umaya.tracker.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.ui.text.style.TextOverflow
@@ -36,6 +39,28 @@ fun MapCircleButton(
         contentAlignment = Alignment.Center,
     ) {
         Text(label, fontSize = 20.sp, color = Color.White)
+    }
+}
+
+/** A caption pill under a map button — readable over any map background. */
+@Composable
+fun MapButtonCaption(text: String) {
+    Text(
+        text,
+        fontSize = 11.sp,
+        color = Color.White,
+        modifier = Modifier
+            .background(Color(0xCC202020), RoundedCornerShape(6.dp))
+            .padding(horizontal = 5.dp, vertical = 1.dp),
+    )
+}
+
+/** [MapCircleButton] with a caption under it. */
+@Composable
+fun LabeledMapButton(label: String, caption: String, background: Color, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        MapCircleButton(label, background = background, onClick = onClick)
+        MapButtonCaption(caption)
     }
 }
 

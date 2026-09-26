@@ -151,13 +151,20 @@ class Prefs(context: Context) {
         get() = prefs.getString("last_gpx_folder_uri", null)
         set(value) = prefs.edit().putString("last_gpx_folder_uri", value).apply()
 
-    /** URIs of loaded GPX/KML reference overlays (功能選單「載入GPX/KML」) that should survive an
-     *  app restart — re-read and redrawn automatically next launch until the hiker removes them.
-     *  Newline-joined since a content:// URI can't itself contain a raw newline. Persisting this
-     *  requires [takePersistableUriPermission] at pick-time — done where the file is picked. */
-    var loadedGpxUris: List<String>
-        get() = prefs.getString("loaded_gpx_uris", null)?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
-        set(value) = prefs.edit().putString("loaded_gpx_uris", value.joinToString("\n")).apply()
+    /** App-private copies of loaded GPX/KML reference routes (功能選單「載入GPX/KML」), redrawn on
+     *  every launch until the hiker removes them. Newline-joined absolute paths. */
+    var loadedRouteFiles: List<String>
+        get() = prefs.getString("loaded_route_files", null)?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
+        set(value) = prefs.edit().putString("loaded_route_files", value.joinToString("\n")).apply()
+
+    /** Server-side hike_routes id per loaded route file, for routes shared with the guardian page
+     *  during the current hike — needed to unshare one when it's removed. "id\tpath" lines. */
+    var routeServerIds: Map<String, Long>
+        get() = prefs.getString("route_server_ids", null)?.lines()?.mapNotNull { line ->
+            val (id, path) = line.split("\t", limit = 2).takeIf { it.size == 2 } ?: return@mapNotNull null
+            id.toLongOrNull()?.let { path to it }
+        }?.toMap() ?: emptyMap()
+        set(value) = prefs.edit().putString("route_server_ids", value.entries.joinToString("\n") { "${it.value}\t${it.key}" }).apply()
 
     val isLoggedIn: Boolean get() = authToken != null
     val hasActiveHike: Boolean get() = activeHikeId != -1L

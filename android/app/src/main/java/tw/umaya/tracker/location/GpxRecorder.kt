@@ -95,12 +95,6 @@ class GpxRecorder(private val context: Context) {
     }
 
     /** Deletes the in-progress file without keeping anything (放棄). */
-    fun discard() {
-        file?.delete()
-        file = null
-        pointCount = 0
-        lastLogged = null
-    }
 
     /**
      * Renames the finished trail to the hiker's chosen name, converting to KML too if asked.

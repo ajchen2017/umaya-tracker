@@ -71,8 +71,8 @@ document.getElementById('btnUploadRoute').addEventListener('click', async () => 
 
   try {
     const text = await file.text();
-    const res = await fetch(`/api/t/${shareToken}/route`, {
-      method: 'PUT',
+    const res = await fetch(`/api/t/${shareToken}/routes?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: text,
     });

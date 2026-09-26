@@ -10,6 +10,7 @@ import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 data class LoginRequest(val email: String, val password: String)
 data class LoginResponse(val token: String, val user: UserDto)
@@ -40,7 +41,7 @@ data class UploadPointsRequest(val points: List<UploadPointDto>)
 data class UploadPointsResponse(val inserted: Int, val skipped: Int)
 
 data class PauseStateRequest(val paused: Boolean)
-data class RouteStatusDto(val hasRoute: Boolean)
+data class HikeRouteDto(val id: Long, val name: String)
 
 interface ApiService {
     @POST("auth/register")
@@ -87,12 +88,14 @@ interface ApiService {
         @Body body: UploadPointsRequest,
     ): Response<UploadPointsResponse>
 
-    @PUT("hikes/{id}/route")
+    /** Shares one GPX/KML file with the guardian page for this hike; the server deletes them at hike end. */
+    @POST("hikes/{id}/routes")
     suspend fun uploadRoute(
         @Header("Authorization") bearer: String,
         @Path("id") hikeId: Long,
+        @Query("name") name: String,
         @Body body: RequestBody,
-    ): Response<Unit>
+    ): Response<HikeRouteDto>
 
     @PATCH("hikes/{id}/pause-state")
     suspend fun setPauseState(
@@ -101,15 +104,10 @@ interface ApiService {
         @Body body: PauseStateRequest,
     ): Response<Unit>
 
-    @DELETE("hikes/{id}/route")
+    @DELETE("hikes/{id}/routes/{routeId}")
     suspend fun deleteRoute(
         @Header("Authorization") bearer: String,
         @Path("id") hikeId: Long,
+        @Path("routeId") routeId: Long,
     ): Response<Unit>
-
-    @GET("hikes/{id}/route")
-    suspend fun getRouteStatus(
-        @Header("Authorization") bearer: String,
-        @Path("id") hikeId: Long,
-    ): Response<RouteStatusDto>
 }

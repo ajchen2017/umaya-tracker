@@ -24,16 +24,13 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import org.osmdroid.config.Configuration
-import org.osmdroid.tileprovider.MapTileProviderBasic
-import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
 import org.osmdroid.tileprovider.tilesource.XYTileSource
 import org.osmdroid.util.GeoPoint
-import org.osmdroid.util.MapTileIndex
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Overlay
 import org.osmdroid.views.overlay.Polyline
 import org.osmdroid.views.overlay.ScaleBarOverlay
-import org.osmdroid.views.overlay.TilesOverlay
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import tw.umaya.tracker.R
@@ -45,33 +42,16 @@ import java.io.File
  *  orientation, so it stays correct (and usually points straight up) in every mode. */
 enum class MapOrientationMode { NORTH_UP, TRACK_UP, COMPASS_UP }
 
-/** Online map endpoint used by osmdroid. Offline maps are rendered by OfflineMapView/Mapsforge. */
+/** The online map (OpenStreetMap, worldwide) — offline maps are rendered by OfflineMapView/Mapsforge. */
 private val OSM_SOURCE = XYTileSource("OSM", 2, 19, 256, ".png", arrayOf("https://tile.openstreetmap.org/"))
 
-private const val ONLINE_MIN_ZOOM = 8.0
+private const val ONLINE_INITIAL_ZOOM = 8.0
 private const val ONLINE_MAX_ZOOM = 21.0
 private const val ONLINE_DEFAULT_ZOOM = 19.0
-
-/** Same self-hosted mapsforgesrv the guardian web page uses (backend/public/assets/config.js), in its
- *  transparent-sea "hiking-overlay" variant: drawn over an OSM base layer so areas outside the
- *  RudyMap coverage show real OSM instead of a white band. XYTileSource can't append a query. */
-private val RUDY_ONLINE_SOURCE = object : OnlineTileSourceBase(
-    "RudyHikingOverlay", ONLINE_MIN_ZOOM.toInt(), 19, 256, ".png", arrayOf("https://tracker.umaya.tw/tiles/"),
-) {
-    override fun getTileURLString(pMapTileIndex: Long): String =
-        "$baseUrl${MapTileIndex.getZoom(pMapTileIndex)}/${MapTileIndex.getX(pMapTileIndex)}/" +
-            "${MapTileIndex.getY(pMapTileIndex)}.png?task=hiking-overlay&transparent=true"
-}
 private const val LORA_MARKER_SIZE_PX = 64
 
 /** OFFLINE = one of MapsforgeDownloader's offline packs (which one is tracked separately). */
-enum class MapSource { RUDY_ONLINE, OFFLINE, OPENSTREETMAP }
-
-private fun tileSourceFor(source: MapSource) = when (source) {
-    MapSource.RUDY_ONLINE -> RUDY_ONLINE_SOURCE
-    MapSource.OFFLINE -> OSM_SOURCE
-    MapSource.OPENSTREETMAP -> OSM_SOURCE
-}
+enum class MapSource { OFFLINE, OPENSTREETMAP }
 
 private fun loraMarkerDrawable(context: Context, point: LoraDevicePoint): BitmapDrawable {
     val bitmap = Bitmap.createBitmap(LORA_MARKER_SIZE_PX, LORA_MARKER_SIZE_PX, Bitmap.Config.ARGB_8888)
@@ -112,6 +92,7 @@ private fun ensureOsmdroidConfigured(context: Context) {
 class HikeMapController internal constructor(
     internal val mapView: MapView,
     private val locationOverlay: MyLocationNewOverlay,
+    private val directionArrow: Marker,
 ) {
     fun zoomIn() = mapView.controller.zoomIn()
     fun zoomOut() = mapView.controller.zoomOut()
@@ -148,7 +129,7 @@ class HikeMapController internal constructor(
     // id -> its Polyline overlays (one per segment — see RouteParser.kt for why a route is a
     // list of segments, not one flat point list) — several loaded routes can be shown at once
     // (e.g. comparing two candidate trails), each removable independently by its id.
-    private val loadedRoutes = mutableMapOf<String, List<Polyline>>()
+    private val loadedRoutes = mutableMapOf<String, List<Overlay>>()
     private val loraDeviceMarkers = mutableMapOf<String, Marker>()
 
     /** (1) 載入 GPX/KML — draws an imported route as one overlay per segment, keyed by [id] (the
@@ -158,20 +139,30 @@ class HikeMapController internal constructor(
      *  hike, or two unrelated trips in one file). Doesn't move the map itself; the caller asks
      *  the hiker whether to jump to the route's start or stay where they are (see [animateTo]).
      *  Loading again under the same [id] replaces just that one route. */
-    fun addLoadedRoute(id: String, segments: List<List<GeoPoint>>) {
+    fun addLoadedRoute(id: String, route: ParsedRoute) {
         loadedRoutes.remove(id)?.forEach { mapView.overlays.remove(it) }
-        if (segments.isEmpty()) { mapView.invalidate(); return }
-        val polylines = segments.map { points ->
+        val polylines: List<Overlay> = route.segments.map { points ->
             Polyline(mapView).apply {
                 setPoints(points)
-                outlinePaint.color = android.graphics.Color.parseColor("#00008B") // dark blue, per request
+                outlinePaint.color = LOADED_ROUTE_COLOR
                 outlinePaint.strokeWidth = 8f
             }
         }
+        val labels: List<Overlay> = route.labels.map { label ->
+            val drawn = routeLabelBitmap(mapView.context, label.text)
+            Marker(mapView).apply {
+                position = label.point
+                icon = BitmapDrawable(mapView.resources, drawn.bitmap)
+                setAnchor(drawn.dotX / drawn.bitmap.width, drawn.dotY / drawn.bitmap.height)
+                title = label.text
+                setOnMarkerClickListener { m, _ -> m.showInfoWindow(); true }
+            }
+        }
         // Direction arrow marker must stay drawn above every loaded route, not under them.
-        val arrowIndex = mapView.overlays.indexOfFirst { it is Marker }
-        if (arrowIndex >= 0) mapView.overlays.addAll(arrowIndex, polylines) else mapView.overlays.addAll(polylines)
-        loadedRoutes[id] = polylines
+        val overlays = polylines + labels
+        val arrowIndex = mapView.overlays.indexOf(directionArrow)
+        if (arrowIndex >= 0) mapView.overlays.addAll(arrowIndex, overlays) else mapView.overlays.addAll(overlays)
+        loadedRoutes[id] = overlays
         mapView.invalidate()
     }
 
@@ -241,7 +232,7 @@ class HikeMapController internal constructor(
  * MapView exists.
  */
 @Composable
-fun HikeMap(modifier: Modifier = Modifier, initialSource: MapSource = MapSource.RUDY_ONLINE, onReady: (HikeMapController) -> Unit) {
+fun HikeMap(modifier: Modifier = Modifier, onReady: (HikeMapController) -> Unit) {
     val context = LocalContext.current
     ensureOsmdroidConfigured(context)
 
@@ -254,23 +245,14 @@ fun HikeMap(modifier: Modifier = Modifier, initialSource: MapSource = MapSource.
         modifier = modifier.fillMaxSize(),
         factory = { ctx ->
             MapView(ctx).apply {
-                if (initialSource == MapSource.RUDY_ONLINE) {
-                    setTileSource(OSM_SOURCE)
-                    val rudyProvider = MapTileProviderBasic(ctx, RUDY_ONLINE_SOURCE)
-                    overlays.add(TilesOverlay(rudyProvider, ctx).apply {
-                        loadingBackgroundColor = Color.TRANSPARENT
-                        loadingLineColor = Color.TRANSPARENT
-                    })
-                } else {
-                    setTileSource(tileSourceFor(initialSource))
-                }
+                setTileSource(OSM_SOURCE)
                 setMultiTouchControls(true)
-                // Server tiles are 256px; unscaled on a ~3.5x-density screen their text is unreadable.
+                // Tiles are 256px; unscaled on a ~3.5x-density screen their text is unreadable.
                 isTilesScaledToDpi = true
                 setBuiltInZoomControls(false) // custom zoom buttons in the 右側導航區, not osmdroid's stock +/-
-                minZoomLevel = tileSourceFor(initialSource).minimumZoomLevel.toDouble()
+                minZoomLevel = OSM_SOURCE.minimumZoomLevel.toDouble()
                 maxZoomLevel = ONLINE_MAX_ZOOM
-                controller.setZoom(ONLINE_MIN_ZOOM)
+                controller.setZoom(ONLINE_INITIAL_ZOOM)
                 controller.setCenter(GeoPoint(23.6, 121.0)) // Taiwan-wide fallback until a GPS fix lands
 
                 val locationOverlay = MyLocationNewOverlay(GpsMyLocationProvider(ctx), this)
@@ -298,7 +280,7 @@ fun HikeMap(modifier: Modifier = Modifier, initialSource: MapSource = MapSource.
                 directionMarker = marker
                 locationOverlayRef = locationOverlay
 
-                val controller = HikeMapController(this, locationOverlay)
+                val controller = HikeMapController(this, locationOverlay, marker)
                 controllerRef = controller
                 onReady(controller)
             }

@@ -93,22 +93,27 @@ import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.text.SimpleDateFormat
+import java.io.File
 import java.util.Locale
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 
-/** One imported GPX/KML reference overlay (功能選單「載入GPX/KML」) — several can be loaded at
- *  once, each tracked by [id] so it can be individually re-centered on or removed. [segments] are
- *  drawn as independent, unconnected polylines — see RouteParser.kt. [uri] is kept (not just the
- *  derived [id]) so removing a route can also drop it from [Prefs.loadedGpxUris]. */
-private data class LoadedRoute(val id: String, val uri: String, val name: String, val segments: List<List<GeoPoint>>) {
-    val pointCount get() = segments.sumOf { it.size }
-    val firstPoint get() = segments.first().first()
+/** One loaded GPX/KML reference route (功能選單「載入GPX/KML」). [file] is the app-private copy
+ *  (also its identity); [serverId] is set while it's shared with the guardian page for the
+ *  current hike. */
+private data class LoadedRoute(val file: String, val name: String, val route: ParsedRoute, val serverId: Long?) {
+    val pointCount get() = route.segments.sumOf { it.size }
+    val firstPoint: GeoPoint get() = route.segments.firstOrNull()?.firstOrNull() ?: route.labels.first().point
+    val summary get() = buildList {
+        add("$pointCount 個點")
+        if (route.segments.size > 1) add("${route.segments.size} 段")
+        if (route.labels.isNotEmpty()) add("${route.labels.size} 個標註")
+    }.joinToString("，")
 }
 
 /** Reopens the SAF file picker at the folder the hiker last picked a GPX/KML from, instead of
  *  the device's default root every time — reads [Prefs.lastGpxFolderUri] fresh on each launch. */
-private class OpenDocumentAtLastFolder(private val prefs: Prefs) : ActivityResultContracts.OpenDocument() {
+private class OpenDocumentsAtLastFolder(private val prefs: Prefs) : ActivityResultContracts.OpenMultipleDocuments() {
     override fun createIntent(context: android.content.Context, input: Array<String>): Intent {
         val intent = super.createIntent(context, input)
         prefs.lastGpxFolderUri?.let { intent.putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(it)) }
@@ -118,7 +123,6 @@ private class OpenDocumentAtLastFolder(private val prefs: Prefs) : ActivityResul
 
 private fun mapSourceIcon(source: MapSource): String = when (source) {
     MapSource.OPENSTREETMAP -> "🗺️"
-    MapSource.RUDY_ONLINE -> "🌐"
     MapSource.OFFLINE -> "⛰️"
 }
 
@@ -509,7 +513,6 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var continuingNeedsReactivation by remember { mutableStateOf(false) }
     var intervalSeconds by remember { mutableStateOf(prefs.intervalSeconds) }
     var showIntervalDialog by remember { mutableStateOf(false) }
-    var showClearRouteDialog by remember { mutableStateOf(false) }
     var showBackgroundExecDialog by remember { mutableStateOf(false) }
     var showExitConfirmDialog by remember { mutableStateOf(false) }
     var showStartHikeDialog by remember { mutableStateOf(false) } // wraps the 開始新行程/接續舊行程 flow
@@ -547,10 +550,10 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     val installedPackIds = remember(packRevision) {
         offlinePacks.filter { mapsforgeDownloader.isInstalled(it) }.map { it.id }.toSet()
     }
-    // 每次開啟都從魯地圖開始：台灣離線包已安裝就用離線，否則用線上魯地圖。
+    // 每次開啟都從魯地圖開始：台灣離線包已安裝就用它，否則只能先用 OpenStreetMap。
     var currentOfflinePackId by remember { mutableStateOf(TAIWAN_PACK_ID) }
     var currentMapSource by remember {
-        mutableStateOf(if (TAIWAN_PACK_ID in installedPackIds) MapSource.OFFLINE else MapSource.RUDY_ONLINE)
+        mutableStateOf(if (TAIWAN_PACK_ID in installedPackIds) MapSource.OFFLINE else MapSource.OPENSTREETMAP)
     }
     val currentOfflinePack = offlinePacks.firstOrNull { it.id == currentOfflinePackId }
     var offlineMapController by remember { mutableStateOf<OfflineMapController?>(null) }
@@ -578,89 +581,102 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
 
-    // Confirms the server actually has (or no longer has) the route — not just that
-    // the PUT/DELETE returned 200 — before telling the hiker it's done. Polls briefly
-    // since the write and this read can race.
-    suspend fun verifyRouteStatus(token: String, expectPresent: Boolean): Boolean {
-        repeat(5) { attempt ->
-            val res = ApiClient.service.getRouteStatus("Bearer $token", prefs.activeHikeId)
-            if (res.isSuccessful && res.body()?.hasRoute == expectPresent) return true
-            if (attempt < 4) delay(500)
-        }
-        return false
-    }
-
-    // OpenDocument (SAF), not GetContent — GetContent can resolve to any ACTION_GET_CONTENT
-    // handler installed on the phone (including odd third-party file managers), which on this
-    // device was returning inconsistently and bouncing the app back to the role picker.
-    // OpenDocument always goes through Android's own DocumentsUI picker.
-    val routePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            try {
-                val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                    ?: throw Exception("無法讀取檔案")
-                if (!(text.contains("<gpx") || text.contains("<kml"))) throw Exception("檔案不是有效的 GPX 或 KML")
-                val token = prefs.authToken!!
-                val body = text.toRequestBody("application/xml".toMediaTypeOrNull())
-                val res = ApiClient.service.uploadRoute("Bearer $token", prefs.activeHikeId, body)
-                if (!res.isSuccessful) throw Exception("上傳失敗")
-                if (!verifyRouteStatus(token, expectPresent = true)) throw Exception("已上傳，但伺服器尚未確認存好，請稍後查看留守人網頁")
-                Toast.makeText(context, "✅ 規劃路線已上傳並確認", Toast.LENGTH_LONG).show()
-            } catch (e: Exception) {
-                Toast.makeText(context, friendlyErrorMessage(e), Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
-    // (1) 載入 GPX/KML — local-only reference overlays on the native map, distinct from
-    // routePickerLauncher above (which uploads a "planned route" for the guardian's web page).
-    // Several can be loaded at once (e.g. comparing candidate trails), each removable on its own.
+    // 載入 GPX/KML — reference routes drawn on whichever map is showing. Each picked file is copied
+    // into app storage, so reloading after an app restart never depends on the original file's URI
+    // permission still being valid. While a hike is active, a route is also shared with the
+    // guardian page (serverId) and unshared when removed; the server drops them all at hike end.
+    val routesDir = remember { File(context.filesDir, "routes").apply { mkdirs() } }
     val loadedRoutes = remember { mutableStateListOf<LoadedRoute>() }
+    var importingRoutes by remember { mutableStateOf(false) }
+    // Routes ticked in the 開始新行程 dialog to share once the hike is created.
+    val routesToShare = remember { mutableStateListOf<String>() }
 
-    // Shared by the picker (below) and the on-launch restore effect (further down) — parses the
-    // file, draws it on whichever engine is active, and registers it in loadedRoutes. Doesn't
-    // touch Prefs.loadedGpxUris itself; callers decide whether this load should be persisted.
-    suspend fun loadRouteFromUri(uri: Uri): Boolean {
-        return try {
-            val (name, segments) = withContext(Dispatchers.IO) {
-                val displayName = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
-                    if (c.moveToFirst()) c.getString(0) else null
-                } ?: uri.lastPathSegment ?: "已載入路線"
-                val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                    ?: throw Exception("無法讀取檔案")
-                displayName to parseRoutePoints(text)
-            }
-            if (segments.isEmpty()) throw Exception("檔案裡沒有找到任何座標點")
-            val id = "$name#${System.identityHashCode(uri)}" // unique enough: name collisions still get distinct overlays
-            if (mapsforgeActive) {
-                offlineMapController?.addLoadedRoute(id, segments.map { seg -> seg.map { LatLong(it.latitude, it.longitude) } })
-            } else {
-                mapController?.addLoadedRoute(id, segments)
-            }
-            loadedRoutes.removeAll { it.uri == uri.toString() }
-            loadedRoutes.add(LoadedRoute(id, uri.toString(), name, segments))
-            true
+    fun persistRoutes() {
+        prefs.loadedRouteFiles = loadedRoutes.map { it.file }
+        prefs.routeServerIds = loadedRoutes.mapNotNull { r -> r.serverId?.let { r.file to it } }.toMap()
+    }
+
+    suspend fun shareRoute(file: String) {
+        val route = loadedRoutes.firstOrNull { it.file == file } ?: return
+        if (!prefs.hasActiveHike || route.serverId != null) return
+        try {
+            val text = withContext(Dispatchers.IO) { File(route.file).readText() }
+            val res = ApiClient.service.uploadRoute(
+                "Bearer ${prefs.authToken}", prefs.activeHikeId, route.name,
+                text.toRequestBody("application/xml".toMediaTypeOrNull()),
+            )
+            val serverId = res.body()?.id ?: throw Exception("伺服器回應 ${res.code()}")
+            val index = loadedRoutes.indexOfFirst { it.file == file }
+            if (index >= 0) loadedRoutes[index] = loadedRoutes[index].copy(serverId = serverId)
+            persistRoutes()
         } catch (e: Exception) {
-            Log.e("LoadRoute", "載入 GPX/KML 失敗：$uri", e)
-            false
+            Toast.makeText(context, "「${route.name}」同步給留守人失敗：${friendlyErrorMessage(e)}", Toast.LENGTH_LONG).show()
         }
     }
 
-    // Restores routes loaded in a previous session — runs once the map engine is actually ready
-    // to draw into (mapController/offlineMapController), not on first composition.
-    var gpxRoutesRestored by remember { mutableStateOf(false) }
-    LaunchedEffect(mapController, offlineMapController) {
-        if (gpxRoutesRestored) return@LaunchedEffect
-        if (mapController == null && offlineMapController == null) return@LaunchedEffect
-        gpxRoutesRestored = true
-        val stillReadable = mutableListOf<String>()
-        for (uriString in prefs.loadedGpxUris) {
-            if (loadRouteFromUri(Uri.parse(uriString))) stillReadable.add(uriString)
+    fun removeRoute(route: LoadedRoute) {
+        loadedRoutes.removeAll { it.file == route.file }
+        routesToShare.remove(route.file)
+        persistRoutes()
+        File(route.file).delete()
+        val serverId = route.serverId ?: return
+        val hikeId = prefs.activeHikeId
+        scope.launch {
+            runCatching { ApiClient.service.deleteRoute("Bearer ${prefs.authToken}", hikeId, serverId) }
         }
-        // Drops URIs that failed (file moved/deleted/permission revoked) so the list doesn't
-        // grow forever with dead entries — a route only stays persisted while it can still load.
-        if (stillReadable.size != prefs.loadedGpxUris.size) prefs.loadedGpxUris = stillReadable
+    }
+
+    /** Copies and parses the picked files; returns the app-private paths of the ones that loaded. */
+    suspend fun importRoutes(uris: List<Uri>): List<String> {
+        importingRoutes = true
+        val added = mutableListOf<String>()
+        for (uri in uris) {
+            try {
+                val route = withContext(Dispatchers.IO) {
+                    val displayName = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) c.getString(0) else null
+                    } ?: uri.lastPathSegment ?: "路線.gpx"
+                    val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                        ?: throw Exception("無法讀取檔案")
+                    if (!(text.contains("<gpx", true) || text.contains("<kml", true))) throw Exception("不是 GPX 或 KML 檔")
+                    val parsed = parseRoute(text)
+                    if (parsed.segments.isEmpty() && parsed.labels.isEmpty()) throw Exception("檔案裡沒有找到任何座標點")
+                    val file = File(routesDir, "${System.currentTimeMillis()}_${displayName.replace(Regex("[\\\\/:*?\"<>|]"), "_")}")
+                    file.writeText(text)
+                    LoadedRoute(file.absolutePath, displayName, parsed, null)
+                }
+                loadedRoutes.add(route)
+                added += route.file
+            } catch (e: Exception) {
+                Log.e("LoadRoute", "載入 GPX/KML 失敗：$uri", e)
+                Toast.makeText(context, "載入失敗：${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+        persistRoutes()
+        importingRoutes = false
+        return added
+    }
+
+    LaunchedEffect(Unit) {
+        if (loadedRoutes.isNotEmpty()) return@LaunchedEffect
+        val serverIds = prefs.routeServerIds
+        val restored = withContext(Dispatchers.IO) {
+            prefs.loadedRouteFiles.mapNotNull { path ->
+                val f = File(path)
+                if (!f.exists()) return@mapNotNull null
+                runCatching { LoadedRoute(path, f.name.substringAfter('_'), parseRoute(f.readText()), serverIds[path]) }.getOrNull()
+            }
+        }
+        loadedRoutes.addAll(restored)
+        persistRoutes()
+    }
+
+    // Redraws every loaded route whenever the map instance or the route list changes — switching
+    // maps (or offline packs) creates a brand-new map view that has no overlays of its own.
+    val loadedRouteKeys = loadedRoutes.joinToString("\n") { it.file }
+    LaunchedEffect(mapController, offlineMapController, loadedRouteKeys) {
+        mapController?.let { c -> c.clearAllLoadedRoutes(); loadedRoutes.forEach { c.addLoadedRoute(it.file, it.route) } }
+        offlineMapController?.let { c -> c.clearAllLoadedRoutes(); loadedRoutes.forEach { c.addLoadedRoute(it.file, it.route) } }
     }
 
     var importingMap by remember { mutableStateOf(false) }
@@ -684,37 +700,67 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         }
     }
 
-    val localRoutePickerLauncher = rememberLauncherForActivityResult(remember { OpenDocumentAtLastFolder(prefs) }) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        prefs.lastGpxFolderUri = uri.toString() // reopens the picker here next time (EXTRA_INITIAL_URI below)
-        // Needed to still be able to re-open this file after the app restarts — a plain
-        // OpenDocument grant is one-shot and dies with this process.
-        context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    fun finishRecording(output: Uri?) {
+        if (output == null) {
+            Toast.makeText(context, "沒有選擇儲存位置，仍在記錄中", Toast.LENGTH_LONG).show()
+            return
+        }
+        gpxRecording = false; gpxPaused = false
+        context.startService(
+            Intent(context, LocationForegroundService::class.java)
+                .setAction(LocationForegroundService.ACTION_GPX_STOP)
+                .putExtra(LocationForegroundService.EXTRA_GPX_NAME, gpxStopName)
+                .putExtra(LocationForegroundService.EXTRA_GPX_FORMAT, gpxStopFormat)
+                .putExtra(LocationForegroundService.EXTRA_GPX_OUTPUT_URI, output.toString())
+        )
+    }
+    val saveGpxLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/gpx+xml")) { finishRecording(it) }
+    val saveKmlLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.google-earth.kml+xml")) { finishRecording(it) }
+
+    // The recorder lives in the service; after the process was killed or the app updated, nothing
+    // restarts it on its own even though prefs still say 記錄中 — reopening the app does.
+    LaunchedEffect(Unit) {
+        if (prefs.isGpxRecording) {
+            context.startForegroundService(
+                Intent(context, LocationForegroundService::class.java).setAction(LocationForegroundService.ACTION_START)
+            )
+        }
+    }
+
+    // Multi-select. Picking from the 開始新行程 dialog ticks the new routes for sharing; picking
+    // during an active hike shares them right away; otherwise they're local-only for now.
+    val routePickerLauncher = rememberLauncherForActivityResult(remember { OpenDocumentsAtLastFolder(prefs) }) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        prefs.lastGpxFolderUri = uris.first().toString() // reopens the picker here next time
+        val fromStartDialog = showStartHikeDialog
+        if (!fromStartDialog) showLoadRouteDialog = true
         scope.launch {
-            if (loadRouteFromUri(uri)) {
-                prefs.loadedGpxUris = (prefs.loadedGpxUris + uri.toString()).distinct()
-            } else {
-                Toast.makeText(context, "載入失敗", Toast.LENGTH_LONG).show()
-            }
-            // Dialog stays open — the 已載入 list + 跳到.../關閉 choice below is the actual
-            // acknowledgement now, not a Toast that could be missed.
+            val added = importRoutes(uris)
+            if (fromStartDialog) routesToShare.addAll(added)
+            else if (prefs.hasActiveHike) added.forEach { shareRoute(it) }
         }
     }
 
     if (showLoadRouteDialog) {
         AlertDialog(
             onDismissRequest = { showLoadRouteDialog = false },
-            title = { Text("載入 GPX/KML") },
+            title = { Text("GPX/KML 路線") },
             text = {
-                Column {
+                Column(modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
                     Text(
-                        "選擇檔案後會以深藍色線疊加在地圖上，只在這支手機顯示，不會上傳；可以重複選檔載入多條。",
+                        if (hasActiveHike) "行程進行中：載入的路線會同步顯示在留守人的地圖上，移除時也會一併移除；行程結束後自動從伺服器刪除。"
+                        else "目前沒有進行中的行程，路線只顯示在這支手機；開始新行程時可以勾選要同步給留守人的路線。",
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    if (importingRoutes) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("載入中…", style = MaterialTheme.typography.bodySmall)
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
                     loadedRoutes.forEach { route ->
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "✅ ${route.name}（${route.pointCount} 個點${if (route.segments.size > 1) "，${route.segments.size} 段" else ""}）",
+                            "✅ ${route.name}（${route.summary}）" + if (route.serverId != null) "・已同步給留守人" else "",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary,
                         )
@@ -727,11 +773,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                 }
                                 showLoadRouteDialog = false
                             }) { Text("跳到起點") }
-                            OutlinedButton(onClick = {
-                                if (mapsforgeActive) offlineMapController?.removeLoadedRoute(route.id) else mapController?.removeLoadedRoute(route.id)
-                                loadedRoutes.remove(route)
-                                prefs.loadedGpxUris = prefs.loadedGpxUris - route.uri
-                            }) { Text("移除") }
+                            OutlinedButton(onClick = { removeRoute(route) }) { Text("移除") }
                         }
                     }
                     if (loadedRoutes.isNotEmpty()) {
@@ -744,16 +786,12 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 }
             },
             confirmButton = {
-                TextButton(onClick = { localRoutePickerLauncher.launch(arrayOf("*/*")) }) { Text("選擇檔案") }
+                TextButton(enabled = !importingRoutes, onClick = { routePickerLauncher.launch(arrayOf("*/*")) }) { Text("新增檔案") }
             },
             dismissButton = {
                 Row {
                     if (loadedRoutes.isNotEmpty()) {
-                        TextButton(onClick = {
-                            if (mapsforgeActive) offlineMapController?.clearAllLoadedRoutes() else mapController?.clearAllLoadedRoutes()
-                            loadedRoutes.clear()
-                            prefs.loadedGpxUris = emptyList()
-                        }) { Text("全部移除") }
+                        TextButton(onClick = { loadedRoutes.toList().forEach { removeRoute(it) } }) { Text("全部移除") }
                     }
                     TextButton(onClick = { showLoadRouteDialog = false }) { Text("關閉") }
                 }
@@ -783,7 +821,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     if (currentMapSource == MapSource.OFFLINE && currentOfflinePackId == pack.id) {
-                        selectMapSource(MapSource.RUDY_ONLINE)
+                        selectMapSource(MapSource.OPENSTREETMAP)
                     }
                     mapsforgeDownloader.delete(pack)
                     packRevision++
@@ -1058,30 +1096,6 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         )
     }
 
-    if (showClearRouteDialog) {
-        AlertDialog(
-            onDismissRequest = { showClearRouteDialog = false },
-            title = { Text("清除規劃路線") },
-            text = { Text("確定要清除已上傳到伺服器的規劃路線嗎？留守人網頁上的規劃路線會跟著消失。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showClearRouteDialog = false
-                    scope.launch {
-                        try {
-                            val token = prefs.authToken!!
-                            val res = ApiClient.service.deleteRoute("Bearer $token", prefs.activeHikeId)
-                            if (!res.isSuccessful) throw Exception("清除失敗")
-                            if (!verifyRouteStatus(token, expectPresent = false)) throw Exception("已送出清除，但伺服器尚未確認，請稍後查看留守人網頁")
-                            Toast.makeText(context, "✅ 規劃路線已清除並確認", Toast.LENGTH_LONG).show()
-                        } catch (e: Exception) {
-                            Toast.makeText(context, friendlyErrorMessage(e), Toast.LENGTH_LONG).show()
-                        }
-                    }
-                }) { Text("清除") }
-            },
-            dismissButton = { TextButton(onClick = { showClearRouteDialog = false }) { Text("取消") } },
-        )
-    }
 
     if (showExitConfirmDialog) {
         AlertDialog(
@@ -1264,6 +1278,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                 continuingHikeId = null
                                 nickname = prefs.lastNickname
                                 hikeName = ""
+                                routesToShare.clear()
+                                routesToShare.addAll(loadedRoutes.map { it.file })
                                 startMode = "new"
                             },
                             modifier = Modifier.fillMaxWidth(),
@@ -1314,7 +1330,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     }
                 } else {
                     val isContinue = startMode == "continue"
-                    Column {
+                    Column(modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
                         if (isContinue && continuingNeedsReactivation) {
                             Text(
                                 "這個行程先前已標記為結束，按確定後會重新標記為進行中並繼續記錄。",
@@ -1340,6 +1356,39 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         Spacer(Modifier.height(12.dp))
 
                         IntervalSlider(intervalSeconds, onSecondsChange = { intervalSeconds = it })
+                        if (!isContinue) {
+                            Spacer(Modifier.height(12.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("同步給留守人的 GPX/KML", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                                TextButton(enabled = !importingRoutes, onClick = { routePickerLauncher.launch(arrayOf("*/*")) }) { Text("＋ 新增") }
+                            }
+                            if (importingRoutes) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            if (loadedRoutes.isNotEmpty()) {
+                                val allChecked = loadedRoutes.all { it.file in routesToShare }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth().clickable {
+                                        routesToShare.clear()
+                                        if (!allChecked) routesToShare.addAll(loadedRoutes.map { it.file })
+                                    },
+                                ) {
+                                    Checkbox(checked = allChecked, onCheckedChange = null)
+                                    Text("全選", style = MaterialTheme.typography.bodySmall)
+                                }
+                                loadedRoutes.forEach { route ->
+                                    val checked = route.file in routesToShare
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth().clickable {
+                                            if (checked) routesToShare.remove(route.file) else routesToShare.add(route.file)
+                                        },
+                                    ) {
+                                        Checkbox(checked = checked, onCheckedChange = null)
+                                        Text(route.name, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            }
+                        }
                         error?.let {
                             Spacer(Modifier.height(8.dp))
                             Text(it, color = MaterialTheme.colorScheme.error)
@@ -1381,7 +1430,13 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                             .setAction(LocationForegroundService.ACTION_START)
                                     )
                                     hasActiveHike = true
-                                    if (startMode == "new") showShareLinkDialog = true
+                                    if (startMode == "new") {
+                                        // A new hike has nothing on the server yet — ids from an earlier hike are stale.
+                                        for (i in loadedRoutes.indices) loadedRoutes[i] = loadedRoutes[i].copy(serverId = null)
+                                        persistRoutes()
+                                        routesToShare.toList().forEach { shareRoute(it) }
+                                        showShareLinkDialog = true
+                                    }
                                     startMode = null
                                     showStartHikeDialog = false
                                     TrackerWidgetProvider.updateAllWidgets(context)
@@ -1411,7 +1466,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     if (showGpxStartDialog) {
         AlertDialog(
             onDismissRequest = { showGpxStartDialog = false },
-            title = { Text("開始追蹤") },
+            title = { Text("開始記錄") },
             text = {
                 Column {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1447,6 +1502,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                             .putExtra(LocationForegroundService.EXTRA_GPX_RESUME_EXISTING, false)
                     )
                     showGpxStartDialog = false
+                    Toast.makeText(context, "⏺ 開始記錄", Toast.LENGTH_SHORT).show()
                 }) { Text("重新開始") }
             },
             dismissButton = {
@@ -1463,6 +1519,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                             .putExtra(LocationForegroundService.EXTRA_GPX_RESUME_EXISTING, true)
                     )
                     showGpxStartDialog = false
+                    Toast.makeText(context, "⏺ 繼續記錄上次未完成的軌跡", Toast.LENGTH_SHORT).show()
                 }) { Text("繼續") }
             },
         )
@@ -1471,7 +1528,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     if (showGpxStopDialog) {
         AlertDialog(
             onDismissRequest = { showGpxStopDialog = false },
-            title = { Text("結束追蹤") },
+            title = { Text("結束記錄") },
             text = {
                 Column {
                     Text("匯出格式", style = MaterialTheme.typography.bodySmall)
@@ -1497,29 +1554,17 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 }
             },
             confirmButton = {
-                // (3) 確定 — saves under the chosen name/format.
+                // 確定 → the system save dialog, where the hiker picks the folder and edits the file
+                // name; recording only stops once a location is actually chosen.
                 TextButton(onClick = {
-                    gpxRecording = false; gpxPaused = false
-                    context.startService(
-                        Intent(context, LocationForegroundService::class.java)
-                            .setAction(LocationForegroundService.ACTION_GPX_STOP)
-                            .putExtra(LocationForegroundService.EXTRA_GPX_NAME, gpxStopName)
-                            .putExtra(LocationForegroundService.EXTRA_GPX_FORMAT, gpxStopFormat)
-                    )
                     showGpxStopDialog = false
+                    val fileName = "${gpxStopName.ifBlank { defaultGpxTrackName() }}.$gpxStopFormat"
+                    if (gpxStopFormat == "kml") saveKmlLauncher.launch(fileName) else saveGpxLauncher.launch(fileName)
                 }) { Text("確定") }
             },
             dismissButton = {
-                // (4) 放棄 — discards the recording entirely, nothing saved.
-                TextButton(onClick = {
-                    gpxRecording = false; gpxPaused = false
-                    context.startService(
-                        Intent(context, LocationForegroundService::class.java)
-                            .setAction(LocationForegroundService.ACTION_GPX_STOP)
-                            .putExtra(LocationForegroundService.EXTRA_GPX_DISCARD, true)
-                    )
-                    showGpxStopDialog = false
-                }) { Text("放棄") }
+                // 取消 — just closes; recording carries on and 結束記錄 stays available.
+                TextButton(onClick = { showGpxStopDialog = false }) { Text("取消") }
             },
         )
     }
@@ -1546,26 +1591,32 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     // Mapsforge has no built-in location provider (unlike osmdroid's MyLocationNewOverlay, which
     // already handles this for the raster/線上地圖 path) — feed it fixes directly, only while the
     // vector map is actually showing and GPS is toggled on, so it doesn't double up with osmdroid.
-    var hasAutoRecentered by remember { mutableStateOf(false) }
     DisposableEffect(mapsforgeActive, gpsFollowing, offlineMapController) {
         if (!mapsforgeActive || !gpsFollowing || offlineMapController == null) {
             return@DisposableEffect onDispose {}
         }
         val fusedClient = LocationServices.getFusedLocationProviderClient(context)
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L).build()
+        // Per map instance: every time an offline map is (re)selected, its first fix recenters
+        // on the phone — but only if the phone is inside that pack's coverage; otherwise the
+        // view stays on the pack's own centre (e.g. 安娜普納 selected while still in Taiwan).
+        var recentered = false
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 val loc = result.lastLocation ?: return
                 offlineMapController?.updateGpsFix(loc.latitude, loc.longitude, loc.accuracy)
-                // First fix after opening the map screen — jump straight to it instead of
-                // leaving the hiker looking at Taiwan's overall centroid until they press 📍.
-                if (!hasAutoRecentered) {
-                    hasAutoRecentered = true
-                    offlineMapController?.recenterOnGps()
+                if (!recentered) {
+                    recentered = true
+                    if (offlineMapController?.covers(loc.latitude, loc.longitude) == true) offlineMapController?.recenterOnGps()
+                    else offlineMapController?.showWholePack()
                 }
             }
         }
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            // Last known fix first — no waiting for a fresh GPS lock just to center the map.
+            fusedClient.lastLocation.addOnSuccessListener { loc ->
+                if (loc != null && !recentered) callback.onLocationResult(LocationResult.create(listOf(loc)))
+            }
             fusedClient.requestLocationUpdates(request, callback, Looper.getMainLooper())
         }
         onDispose { fusedClient.removeLocationUpdates(callback) }
@@ -1603,10 +1654,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     ) { offlineMapController = it }
                 }
             }
-            currentMapSource == MapSource.RUDY_ONLINE || currentMapSource == MapSource.OPENSTREETMAP -> {
-                key(currentMapSource) {
-                    HikeMap(modifier = Modifier.fillMaxSize(), initialSource = currentMapSource) { mapController = it }
-                }
+            currentMapSource == MapSource.OPENSTREETMAP -> {
+                HikeMap(modifier = Modifier.fillMaxSize()) { mapController = it }
             }
             else -> {
                 Box(
@@ -1675,6 +1724,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                             Intent(context, LocationForegroundService::class.java)
                                 .setAction(LocationForegroundService.ACTION_GPX_RESUME)
                         )
+                        Toast.makeText(context, "▶ 繼續記錄", Toast.LENGTH_SHORT).show()
                     }
                     else -> {
                         gpxPaused = true; prefs.isGpxPaused = true
@@ -1682,6 +1732,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                             Intent(context, LocationForegroundService::class.java)
                                 .setAction(LocationForegroundService.ACTION_GPX_PAUSE)
                         )
+                        Toast.makeText(context, "⏸ 暫停記錄（再按一次繼續）", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -1709,7 +1760,6 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 DropdownMenu(expanded = showMapPicker, onDismissRequest = { showMapPicker = false }) {
                     val choices = listOf(
                         Triple(MapSource.OPENSTREETMAP, null, "OpenStreetMap（線上，全世界）"),
-                        Triple(MapSource.RUDY_ONLINE, null, "魯地圖（線上，台灣）"),
                     ) + offlinePacks.map { pack ->
                         Triple(
                             MapSource.OFFLINE, pack.id,
@@ -1735,8 +1785,11 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             MapCircleButton("☰", size = 40.dp) { showFunctionMenu = true }
             DropdownMenu(expanded = showFunctionMenu, onDismissRequest = { showFunctionMenu = false }) {
                 DropdownMenuItem(
-                    text = { Text("載入 GPX/KML") },
-                    onClick = { showFunctionMenu = false; showLoadRouteDialog = true },
+                    text = { Text("載入 GPX/KML" + if (loadedRoutes.isNotEmpty()) "（已載入 ${loadedRoutes.size}）" else "") },
+                    onClick = {
+                        showFunctionMenu = false
+                        if (loadedRoutes.isEmpty()) routePickerLauncher.launch(arrayOf("*/*")) else showLoadRouteDialog = true
+                    },
                 )
                 DropdownMenuItem(
                     text = { Text("地圖設定") },
@@ -1746,14 +1799,6 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     DropdownMenuItem(
                         text = { Text("回報設定（定位頻率）") },
                         onClick = { showFunctionMenu = false; showIntervalDialog = true },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("軌跡管理：上傳／更新規劃路線") },
-                        onClick = { showFunctionMenu = false; routePickerLauncher.launch(arrayOf("*/*")) },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("軌跡管理：清除已上傳的規劃路線") },
-                        onClick = { showFunctionMenu = false; showClearRouteDialog = true },
                     )
                 }
                 DropdownMenuItem(
@@ -1810,46 +1855,49 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     )
                 }
             }
-            MapCircleButton("🏁", enabled = hasActiveHike, background = Color(0xEEC62828)) {
-                loading = true
-                // Local stop always proceeds immediately; the server-side end is handed to
-                // HikeActionWorker, which retries until delivered (or permanently rejected)
-                // and toasts the outcome — same contract as SOS/safe/camping, so a timeout
-                // here can no longer orphan the hike as "active" forever.
-                HikeActionWorker.enqueue(context, prefs.activeHikeId, HikeActionWorker.ACTION_END)
-                context.startService(
-                    Intent(context, LocationForegroundService::class.java)
-                        .setAction(LocationForegroundService.ACTION_STOP)
-                )
-                prefs.clearActiveHike()
-                hasActiveHike = false
-                isPaused = false
-                loading = false
-                TrackerWidgetProvider.updateAllWidgets(context)
-            }
-            MapCircleButton("😊", enabled = hasActiveHike, background = Color(0xEE2E7D32)) {
-                context.startService(
-                    Intent(context, LocationForegroundService::class.java)
-                        .setAction(LocationForegroundService.ACTION_MARK_SAFE)
-                )
-            }
-            MapCircleButton("⛺", enabled = hasActiveHike, background = Color(0xEEEF6C00)) {
-                context.startService(
-                    Intent(context, LocationForegroundService::class.java)
-                        .setAction(LocationForegroundService.ACTION_MARK_CAMPING)
-                )
-            }
+            // Only meaningful while a hike is in progress — hidden before it starts and after it ends.
             if (hasActiveHike) {
-                SosHoldButton(outerSize = 84.dp, showCaption = false) {
+                LabeledMapButton("🏁", "結束行程", Color(0xEEC62828)) {
+                    loading = true
+                    // Local stop always proceeds immediately; the server-side end is handed to
+                    // HikeActionWorker, which retries until delivered (or permanently rejected)
+                    // and toasts the outcome — same contract as SOS/safe/camping, so a timeout
+                    // here can no longer orphan the hike as "active" forever.
+                    HikeActionWorker.enqueue(context, prefs.activeHikeId, HikeActionWorker.ACTION_END)
                     context.startService(
                         Intent(context, LocationForegroundService::class.java)
-                            .setAction(LocationForegroundService.ACTION_MARK_SOS)
+                            .setAction(LocationForegroundService.ACTION_STOP)
+                    )
+                    prefs.clearActiveHike()
+                    // The server deletes this hike's shared routes when it ends.
+                    for (i in loadedRoutes.indices) loadedRoutes[i] = loadedRoutes[i].copy(serverId = null)
+                    persistRoutes()
+                    hasActiveHike = false
+                    isPaused = false
+                    loading = false
+                    TrackerWidgetProvider.updateAllWidgets(context)
+                }
+                LabeledMapButton("😊", "我很好", Color(0xEE2E7D32)) {
+                    context.startService(
+                        Intent(context, LocationForegroundService::class.java)
+                            .setAction(LocationForegroundService.ACTION_MARK_SAFE)
                     )
                 }
-            } else {
-                // Same footprint as the active SosHoldButton so the cluster doesn't jump when
-                // a hike starts — SOS only makes sense once there's a hike to attach it to.
-                MapCircleButton("SOS", enabled = false, background = MaterialTheme.colorScheme.error, size = 84.dp) {}
+                LabeledMapButton("⛺", "停駐中", Color(0xEEEF6C00)) {
+                    context.startService(
+                        Intent(context, LocationForegroundService::class.java)
+                            .setAction(LocationForegroundService.ACTION_MARK_CAMPING)
+                    )
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    SosHoldButton(outerSize = 52.dp, showCaption = false) {
+                        context.startService(
+                            Intent(context, LocationForegroundService::class.java)
+                                .setAction(LocationForegroundService.ACTION_MARK_SOS)
+                        )
+                    }
+                    MapButtonCaption("長按3秒")
+                }
             }
         }
 

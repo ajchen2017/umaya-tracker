@@ -136,7 +136,7 @@ let lastPointCount = 0;
 let hasCenteredOnStart = false;
 let startLatLng = null;
 let lastLatLng = null; // newest point — what 📍 recenters to, and what decides the RudyMap-bounds check
-let lastPlannedRoute = undefined; // undefined = never checked yet, distinct from null (cleared)
+let lastRouteIds = undefined; // undefined = never checked yet, distinct from '' (no routes)
 let lastRenderedPoints = null;
 let currentNickname = '';
 let lastPointRecordedAt = null;
@@ -245,9 +245,12 @@ function addPlannedWaypoint(lat, lon, name) {
 }
 
 function parseGpxRoute(xml) {
-  addPlannedLine(Array.from(xml.getElementsByTagName('trkpt')).map((el) => [
-    parseFloat(el.getAttribute('lat')), parseFloat(el.getAttribute('lon')),
-  ]));
+  // One line per <trkseg> — joining segments draws a straight line across the gap between them.
+  Array.from(xml.getElementsByTagName('trkseg')).forEach((seg) => {
+    addPlannedLine(Array.from(seg.getElementsByTagName('trkpt')).map((el) => [
+      parseFloat(el.getAttribute('lat')), parseFloat(el.getAttribute('lon')),
+    ]));
+  });
 
   Array.from(xml.getElementsByTagName('wpt')).forEach((el) => {
     const lat = parseFloat(el.getAttribute('lat'));
@@ -288,11 +291,23 @@ function renderPlannedRoute(routeText) {
   const xml = new DOMParser().parseFromString(routeText, 'application/xml');
   if (xml.querySelector('parsererror')) return;
 
-  plannedLayer.clearLayers();
-
   const root = xml.documentElement.tagName.toLowerCase();
   if (root === 'kml') parseKmlRoute(xml);
   else parseGpxRoute(xml);
+}
+
+// Each route file is fetched once and cached by id; the 30s poll only carries the id list.
+const routeContentCache = new Map();
+async function renderRoutes(routes) {
+  const texts = await Promise.all(routes.map(async (r) => {
+    if (!routeContentCache.has(r.id)) {
+      const res = await fetch(`/api/t/${shareToken}/routes/${r.id}`);
+      routeContentCache.set(r.id, res.ok ? await res.text() : '');
+    }
+    return routeContentCache.get(r.id);
+  }));
+  plannedLayer.clearLayers();
+  texts.filter(Boolean).forEach(renderPlannedRoute);
 }
 
 // Non-routine marker types get their own icon on the map — otherwise "我很好"
@@ -740,15 +755,12 @@ function render(data) {
   updateHikeStatus(hike);
   updateElevationChart(hike, points);
 
-  // Re-check every poll, not just once: the planned route can be replaced or
-  // cleared from the phone/settings page mid-hike, and the map needs to follow.
-  if (hike.planned_route !== lastPlannedRoute) {
-    lastPlannedRoute = hike.planned_route;
-    if (hike.planned_route) {
-      renderPlannedRoute(hike.planned_route);
-    } else {
-      plannedLayer.clearLayers();
-    }
+  // Re-check every poll, not just once: routes can be added or removed from the
+  // phone/settings page mid-hike, and the map needs to follow.
+  const routeIds = (data.routes || []).map((r) => r.id).join(',');
+  if (routeIds !== lastRouteIds) {
+    lastRouteIds = routeIds;
+    renderRoutes(data.routes || []);
   }
 
   if (points.length === lastPointCount) return; // nothing new

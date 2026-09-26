@@ -22,6 +22,8 @@ router.patch('/:id/end', requireAuth, async (req, res) => {
     [req.params.id, req.userId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Hike not found' });
+  // Reference routes are only shared for the duration of the hike.
+  await pool.query('DELETE FROM hike_routes WHERE hike_id = $1', [rows[0].id]);
   res.json(rows[0]);
 });
 
@@ -70,43 +72,45 @@ router.patch('/:id/interval', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// Planned route the hiker intends to follow, uploaded as a raw GPX or KML file (XML body).
-// Shown on the family web page alongside the actual live track for comparison.
-router.put('/:id/route', requireAuth, express.text({ type: '*/*', limit: '5mb' }), async (req, res) => {
-  const route = req.body;
-  if (!route || typeof route !== 'string' || !(route.includes('<gpx') || route.includes('<kml'))) {
+// Reference GPX/KML routes (several per hike), each uploaded as a raw XML body with its display
+// name in ?name=. Shown on the guardian page alongside the live track; deleted when the hike ends.
+router.post('/:id/routes', requireAuth, express.text({ type: '*/*', limit: '5mb' }), async (req, res) => {
+  const content = req.body;
+  if (!isRouteDocument(content)) {
     return res.status(400).json({ error: 'Request body must be a GPX or KML (XML) document' });
   }
+  const owns = await pool.query('SELECT id FROM hikes WHERE id = $1 AND user_id = $2', [req.params.id, req.userId]);
+  if (!owns.rows[0]) return res.status(404).json({ error: 'Hike not found' });
 
   const { rows } = await pool.query(
-    'UPDATE hikes SET planned_route = $1 WHERE id = $2 AND user_id = $3 RETURNING id',
-    [route, req.params.id, req.userId]
+    'INSERT INTO hike_routes (hike_id, name, content) VALUES ($1, $2, $3) RETURNING id, name',
+    [req.params.id, String(req.query.name || '路線').slice(0, 200), content]
   );
-  if (!rows[0]) return res.status(404).json({ error: 'Hike not found' });
+  res.status(201).json(rows[0]);
+});
+
+router.get('/:id/routes', requireAuth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT r.id, r.name FROM hike_routes r JOIN hikes h ON h.id = r.hike_id
+     WHERE r.hike_id = $1 AND h.user_id = $2 ORDER BY r.id`,
+    [req.params.id, req.userId]
+  );
+  res.json(rows);
+});
+
+router.delete('/:id/routes/:routeId', requireAuth, async (req, res) => {
+  const { rowCount } = await pool.query(
+    `DELETE FROM hike_routes r USING hikes h
+     WHERE r.id = $1 AND r.hike_id = $2 AND h.id = r.hike_id AND h.user_id = $3`,
+    [req.params.routeId, req.params.id, req.userId]
+  );
+  if (!rowCount) return res.status(404).json({ error: 'Route not found' });
   res.json({ ok: true });
 });
 
-// Confirms what the server actually has stored right now — used by the app to
-// verify an upload/clear really landed before telling the hiker it's done,
-// rather than trusting the PUT/DELETE response alone.
-router.get('/:id/route', requireAuth, async (req, res) => {
-  const { rows } = await pool.query(
-    'SELECT planned_route FROM hikes WHERE id = $1 AND user_id = $2',
-    [req.params.id, req.userId]
-  );
-  if (!rows[0]) return res.status(404).json({ error: 'Hike not found' });
-  res.json({ hasRoute: rows[0].planned_route != null });
-});
-
-// Removes the planned route without replacing it (e.g. the hiker changed plans).
-router.delete('/:id/route', requireAuth, async (req, res) => {
-  const { rows } = await pool.query(
-    'UPDATE hikes SET planned_route = NULL WHERE id = $1 AND user_id = $2 RETURNING id',
-    [req.params.id, req.userId]
-  );
-  if (!rows[0]) return res.status(404).json({ error: 'Hike not found' });
-  res.json({ ok: true });
-});
+function isRouteDocument(content) {
+  return typeof content === 'string' && (content.includes('<gpx') || content.includes('<kml'));
+}
 
 router.get('/', requireAuth, async (req, res) => {
   const { rows } = await pool.query(

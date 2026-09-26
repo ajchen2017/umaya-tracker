@@ -37,7 +37,22 @@ router.get('/:shareToken', async (req, res) => {
   );
 
   const alert = computeAlertLevel(pointsResult.rows, new Date(), hike.alert_config, hike.status === 'ended');
-  res.json({ hike, points: pointsResult.rows, alert });
+  // Route names/ids only — the page polls every 30s, so each file's content is fetched once
+  // separately (GET /routes/:routeId) instead of re-sending every MB of it on every poll.
+  const routesResult = await pool.query('SELECT id, name FROM hike_routes WHERE hike_id = $1 ORDER BY id', [hike.id]);
+  res.json({ hike, points: pointsResult.rows, alert, routes: routesResult.rows });
+});
+
+router.get('/:shareToken/routes/:routeId', async (req, res) => {
+  const hike = await findHikeForShareToken(req.params.shareToken);
+  if (!hike) return res.status(404).json({ error: 'Not found' });
+  const { rows } = await pool.query(
+    'SELECT content FROM hike_routes WHERE id = $1 AND hike_id = $2',
+    [req.params.routeId, hike.id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+  res.set('Content-Type', 'application/xml; charset=utf-8');
+  res.send(rows[0].content);
 });
 
 // Public read of the resolved (defaults-applied) alert thresholds + valid ranges,
@@ -71,18 +86,21 @@ router.delete('/:shareToken/track', async (req, res) => {
   res.json({ ok: true, deleted: rowCount });
 });
 
-// Public route upload: whoever has the share link can attach/replace the planned
-// route (in case the hiker forgot to upload it from the phone before setting off).
-router.put('/:shareToken/route', express.text({ type: '*/*', limit: '5mb' }), async (req, res) => {
-  const route = req.body;
-  if (!route || typeof route !== 'string' || !(route.includes('<gpx') || route.includes('<kml'))) {
+// Public route upload: whoever has the share link can attach a reference route
+// (in case the hiker forgot to load it on the phone before setting off).
+router.post('/:shareToken/routes', express.text({ type: '*/*', limit: '5mb' }), async (req, res) => {
+  const content = req.body;
+  if (!content || typeof content !== 'string' || !(content.includes('<gpx') || content.includes('<kml'))) {
     return res.status(400).json({ error: 'Request body must be a GPX or KML (XML) document' });
   }
 
   const hike = await findHikeForShareToken(req.params.shareToken);
   if (!hike) return res.status(404).json({ error: 'Not found' });
-  await pool.query('UPDATE hikes SET planned_route = $1 WHERE id = $2', [route, hike.id]);
-  res.json({ ok: true });
+  const { rows } = await pool.query(
+    'INSERT INTO hike_routes (hike_id, name, content) VALUES ($1, $2, $3) RETURNING id, name',
+    [hike.id, String(req.query.name || '留守人上傳').slice(0, 200), content]
+  );
+  res.status(201).json(rows[0]);
 });
 
 function escapeXml(str) {

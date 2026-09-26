@@ -73,6 +73,21 @@ CREATE INDEX IF NOT EXISTS idx_track_points_hike_recorded
 -- Safe to re-run against a database created before this column existed.
 ALTER TABLE hikes ADD COLUMN IF NOT EXISTS planned_route TEXT;
 
+-- Reference GPX/KML routes attached to a hike (several per hike), shown on the
+-- guardian page. Replaces the single hikes.planned_route column — any content
+-- still in it is moved over once, then the old column is left empty.
+CREATE TABLE IF NOT EXISTS hike_routes (
+  id          SERIAL PRIMARY KEY,
+  hike_id     INTEGER NOT NULL REFERENCES hikes(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  content     TEXT NOT NULL, -- raw GPX or KML file content, as uploaded
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_hike_routes_hike ON hike_routes (hike_id);
+INSERT INTO hike_routes (hike_id, name, content)
+  SELECT id, '規劃路線', planned_route FROM hikes WHERE planned_route IS NOT NULL;
+UPDATE hikes SET planned_route = NULL WHERE planned_route IS NOT NULL;
+
 -- Mountain-area mobile signal reference points, pooled from multiple government
 -- sources. Reference data, not tied to any one hike. Each source owns its own
 -- rows (source column) and is refreshed independently — see src/admin/updateSignalPoints.js.
