@@ -30,6 +30,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -83,6 +84,7 @@ import tw.umaya.tracker.data.LoginRequest
 import tw.umaya.tracker.data.MapsforgeDownloader
 import tw.umaya.tracker.data.Prefs
 import tw.umaya.tracker.data.RegisterRequest
+import tw.umaya.tracker.data.TAIWAN_PACK_ID
 import tw.umaya.tracker.data.intervalLabel
 import tw.umaya.tracker.location.LocationForegroundService
 import tw.umaya.tracker.sync.HikeActionWorker
@@ -112,6 +114,12 @@ private class OpenDocumentAtLastFolder(private val prefs: Prefs) : ActivityResul
         prefs.lastGpxFolderUri?.let { intent.putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(it)) }
         return intent
     }
+}
+
+private fun mapSourceIcon(source: MapSource): String = when (source) {
+    MapSource.OPENSTREETMAP -> "🗺️"
+    MapSource.RUDY_ONLINE -> "🌐"
+    MapSource.OFFLINE -> "⛰️"
 }
 
 /** Default GPX track name shown in the 結束追蹤 dialog — yyyy-mm-dd-hh-mm-ss per spec. */
@@ -507,7 +515,6 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var showStartHikeDialog by remember { mutableStateOf(false) } // wraps the 開始新行程/接續舊行程 flow
     var showFunctionMenu by remember { mutableStateOf(false) }
     var mapController by remember { mutableStateOf<HikeMapController?>(null) }
-    var currentMapLayer by remember { mutableStateOf(MapLayer.RUDY) } // 魯地圖 default
     var gpsFollowing by remember { mutableStateOf(true) }
     var gpsHasFix by remember { mutableStateOf(false) } // false while "connecting" — drives the pulse animation
     var zoomLevelDisplay by remember { mutableStateOf("—") } // shown between the ＋/－ buttons
@@ -523,6 +530,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         mutableStateOf(prefs.enabledMapLayerIds ?: HIKING_THEME_LAYERS.filter { it.defaultEnabled }.map { it.id }.toSet())
     }
     var showLayerSettingsDialog by remember { mutableStateOf(false) }
+    var showLoraDevicePoints by remember { mutableStateOf(prefs.showLoraDevicePoints) }
+    val loraDevicePoints = remember { mutableStateListOf<LoraDevicePoint>() }
     var mapOrientationMode by remember {
         mutableStateOf(
             when (prefs.mapOrientationMode) {
@@ -533,12 +542,33 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         )
     }
     val mapsforgeDownloader = remember { MapsforgeDownloader(context) }
-    var mapsforgeReady by remember { mutableStateOf(mapsforgeDownloader.hasCoreMapData()) }
+    var packRevision by remember { mutableStateOf(0) } // bumped after a pack is downloaded/imported/deleted
+    val offlinePacks = remember(packRevision) { mapsforgeDownloader.allPacks() }
+    val installedPackIds = remember(packRevision) {
+        offlinePacks.filter { mapsforgeDownloader.isInstalled(it) }.map { it.id }.toSet()
+    }
+    // 每次開啟都從魯地圖開始：台灣離線包已安裝就用離線，否則用線上魯地圖。
+    var currentOfflinePackId by remember { mutableStateOf(TAIWAN_PACK_ID) }
+    var currentMapSource by remember {
+        mutableStateOf(if (TAIWAN_PACK_ID in installedPackIds) MapSource.OFFLINE else MapSource.RUDY_ONLINE)
+    }
+    val currentOfflinePack = offlinePacks.firstOrNull { it.id == currentOfflinePackId }
     var offlineMapController by remember { mutableStateOf<OfflineMapController?>(null) }
-    // (downloadedBytes, totalBytes, currentFile), null = not downloading
+    // (downloadedBytes, totalBytes, currentFile), null = not downloading; one pack at a time.
     var mapsforgeDownloadState by remember { mutableStateOf<Triple<Long, Long, String>?>(null) }
-    // 魯地圖已下載向量資料時改用 Mapsforge 離線渲染；否則（或線上地圖）沿用 osmdroid。
-    val mapsforgeActive = currentMapLayer == MapLayer.RUDY && mapsforgeReady
+    var downloadingPackId by remember { mutableStateOf<String?>(null) }
+    var packStatus by remember { mutableStateOf<Pair<String, List<MapsforgeDownloader.PackageStatus>>?>(null) }
+    var checkingPackId by remember { mutableStateOf<String?>(null) }
+    var packPendingDelete by remember { mutableStateOf<MapsforgeDownloader.OfflinePack?>(null) }
+    val mapsforgeActive = currentMapSource == MapSource.OFFLINE && currentOfflinePackId in installedPackIds
+    var showMapPicker by remember { mutableStateOf(false) }
+    var showShareLinkDialog by remember { mutableStateOf(false) }
+    fun selectMapSource(source: MapSource, packId: String? = null) {
+        currentMapSource = source
+        if (packId != null) currentOfflinePackId = packId
+        mapController = null
+        offlineMapController = null
+    }
     var gpxMinIntervalSec by remember { mutableStateOf(prefs.gpxMinIntervalSec) }
     var gpxMinDistanceM by remember { mutableStateOf(prefs.gpxMinDistanceM) }
     var gpxStopFormat by remember { mutableStateOf("gpx") }
@@ -633,6 +663,27 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         if (stillReadable.size != prefs.loadedGpxUris.size) prefs.loadedGpxUris = stillReadable
     }
 
+    var importingMap by remember { mutableStateOf(false) }
+    val mapImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        importingMap = true
+        scope.launch {
+            try {
+                val displayName = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) c.getString(0) else null
+                } ?: uri.lastPathSegment ?: ""
+                val input = context.contentResolver.openInputStream(uri) ?: throw Exception("無法讀取檔案")
+                val added = mapsforgeDownloader.importMap(input, displayName)
+                packRevision++
+                Toast.makeText(context, "已匯入：${added.joinToString()}", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "匯入失敗：${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                importingMap = false
+            }
+        }
+    }
+
     val localRoutePickerLauncher = rememberLauncherForActivityResult(remember { OpenDocumentAtLastFolder(prefs) }) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         prefs.lastGpxFolderUri = uri.toString() // reopens the picker here next time (EXTRA_INITIAL_URI below)
@@ -718,55 +769,168 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         offlineMapController?.setScaleBarEnabled(scaleBarEnabled)
     }
 
+    val visibleLoraDevicePoints = if (showLoraDevicePoints) loraDevicePoints.toList() else emptyList()
+    LaunchedEffect(mapController, offlineMapController, visibleLoraDevicePoints) {
+        mapController?.setLoraDevicePoints(visibleLoraDevicePoints)
+        offlineMapController?.setLoraDevicePoints(visibleLoraDevicePoints)
+    }
+
+    packPendingDelete?.let { pack ->
+        AlertDialog(
+            onDismissRequest = { packPendingDelete = null },
+            title = { Text("刪除離線地圖包") },
+            text = { Text("確定刪除「${pack.name}」？刪除後要重新下載或匯入才能使用。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (currentMapSource == MapSource.OFFLINE && currentOfflinePackId == pack.id) {
+                        selectMapSource(MapSource.RUDY_ONLINE)
+                    }
+                    mapsforgeDownloader.delete(pack)
+                    packRevision++
+                    packPendingDelete = null
+                }) { Text("刪除") }
+            },
+            dismissButton = { TextButton(onClick = { packPendingDelete = null }) { Text("取消") } },
+        )
+    }
+
     if (showMapSettingsDialog) {
         AlertDialog(
             onDismissRequest = { showMapSettingsDialog = false },
             title = { Text("地圖設定") },
             text = {
-                Column {
-                    Text("離線地圖（Mapsforge，向量離線渲染）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Column(modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                    Text("離線地圖包", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     Text(
-                        if (mapsforgeReady) "已下載完成，切換到魯地圖時會使用這份離線向量資料。"
-                        else "直接從 rudymap.tw 下載，約 400MB（解壓後約 1GB）。",
+                        "每個地圖包各自獨立，沒有網路也能用；下載或匯入後，到地圖頁右上角的地圖選單選用。",
                         style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(Modifier.height(4.dp))
-                    val mfProgress = mapsforgeDownloadState
-                    if (mfProgress != null) {
-                        val (done, total, currentFile) = mfProgress
+                    val packBytes = remember(packRevision) {
+                        offlinePacks.associate { it.id to mapsforgeDownloader.installedBytes(it) }
+                    }
+                    offlinePacks.forEach { pack ->
+                        val installed = pack.id in installedPackIds
+                        Spacer(Modifier.height(10.dp))
+                        Text(pack.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
                         Text(
-                            if (total > 0) "下載中（$currentFile）：${done / 1_000_000}MB / ${total / 1_000_000}MB"
-                            else "準備中…",
+                            when {
+                                installed -> "已安裝（${(packBytes[pack.id] ?: 0L) / 1_000_000}MB）"
+                                pack.isImported -> "缺少地圖樣式檔，請先下載任一魯地圖包"
+                                else -> "尚未下載" + (pack.sizeHint?.let { "，$it" } ?: "")
+                            } + if (pack.isImported) "・自行匯入" else "・來源：rudymap.tw 公開載點",
                             style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        LinearProgressIndicator(
-                            progress = { if (total > 0) done.toFloat() / total else 0f },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        OutlinedButton(onClick = {
-                            mapsforgeDownloader.cancel()
-                            mapsforgeDownloadState = null
-                        }) { Text("取消下載") }
-                    } else {
-                        Button(onClick = {
-                            mapsforgeDownloadState = Triple(0L, 0L, "")
-                            scope.launch {
-                                try {
-                                    mapsforgeDownloader.downloadAll { downloadedBytes, totalBytes, currentFile ->
-                                        mapsforgeDownloadState = Triple(downloadedBytes, totalBytes, currentFile)
-                                    }
-                                    mapsforgeDownloadState = null
-                                    mapsforgeReady = mapsforgeDownloader.hasCoreMapData()
-                                    Toast.makeText(context, "向量魯地圖下載完成", Toast.LENGTH_LONG).show()
-                                } catch (e: CancellationException) {
-                                    mapsforgeDownloadState = null
-                                } catch (e: Exception) {
-                                    mapsforgeDownloadState = null
-                                    Toast.makeText(context, e.message ?: "下載失敗", Toast.LENGTH_LONG).show()
+                        packStatus?.takeIf { it.first == pack.id }?.let { (_, statuses) ->
+                            Text(
+                                "載點確認：${statuses.size} 個檔案可讀，總計 ${statuses.sumOf { it.bytes } / 1_000_000}MB",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        val mfProgress = mapsforgeDownloadState
+                        if (downloadingPackId == pack.id && mfProgress != null) {
+                            val (done, total, currentFile) = mfProgress
+                            Text(
+                                if (total > 0) "下載中（$currentFile）：${done / 1_000_000}MB / ${total / 1_000_000}MB"
+                                else "準備中…",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            LinearProgressIndicator(
+                                progress = { if (total > 0) done.toFloat() / total else 0f },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            OutlinedButton(onClick = {
+                                mapsforgeDownloader.cancel()
+                                mapsforgeDownloadState = null
+                                downloadingPackId = null
+                            }) { Text("取消下載") }
+                        } else {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                                if (!pack.isImported) {
+                                    OutlinedButton(
+                                        enabled = checkingPackId == null,
+                                        contentPadding = PaddingValues(horizontal = 10.dp),
+                                        onClick = {
+                                            checkingPackId = pack.id
+                                            scope.launch {
+                                                try {
+                                                    packStatus = pack.id to mapsforgeDownloader.checkPackages(pack)
+                                                } catch (e: Exception) {
+                                                    packStatus = null
+                                                    Toast.makeText(context, e.message ?: "載點確認失敗", Toast.LENGTH_LONG).show()
+                                                } finally {
+                                                    checkingPackId = null
+                                                }
+                                            }
+                                        },
+                                    ) { Text(if (checkingPackId == pack.id) "確認中…" else "確認載點") }
+                                    Button(
+                                        enabled = downloadingPackId == null,
+                                        contentPadding = PaddingValues(horizontal = 10.dp),
+                                        onClick = {
+                                            downloadingPackId = pack.id
+                                            mapsforgeDownloadState = Triple(0L, 0L, "")
+                                            scope.launch {
+                                                try {
+                                                    mapsforgeDownloader.download(pack) { downloadedBytes, totalBytes, currentFile ->
+                                                        mapsforgeDownloadState = Triple(downloadedBytes, totalBytes, currentFile)
+                                                    }
+                                                    packRevision++
+                                                    Toast.makeText(context, "${pack.name} 下載完成", Toast.LENGTH_LONG).show()
+                                                } catch (e: CancellationException) {
+                                                    // cancelled from the 取消下載 button
+                                                } catch (e: Exception) {
+                                                    Toast.makeText(context, e.message ?: "下載失敗", Toast.LENGTH_LONG).show()
+                                                } finally {
+                                                    mapsforgeDownloadState = null
+                                                    downloadingPackId = null
+                                                }
+                                            }
+                                        },
+                                    ) { Text(if (installed) "一鍵更新" else "下載安裝") }
+                                }
+                                if (installed || pack.isImported) {
+                                    OutlinedButton(
+                                        enabled = downloadingPackId == null,
+                                        contentPadding = PaddingValues(horizontal = 10.dp),
+                                        onClick = { packPendingDelete = pack },
+                                    ) { Text("刪除") }
                                 }
                             }
-                        }) { Text(if (mapsforgeReady) "重新下載向量魯地圖" else "下載向量魯地圖") }
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        enabled = !importingMap && downloadingPackId == null,
+                        onClick = { mapImportLauncher.launch(arrayOf("*/*")) },
+                    ) { Text(if (importingMap) "匯入中…" else "從手機匯入地圖檔（.map／.zip）") }
+                    Text(
+                        "可匯入其他 Mapsforge 格式的地圖檔；會套用魯地圖的樣式顯示。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+                    Text("LoRa / Meshtastic 節點", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("顯示裝置點位")
+                            Text(
+                                if (loraDevicePoints.isEmpty()) "地圖 overlay 已接好；目前尚未接入 Meshtastic/LoRa 節點資料來源。"
+                                else "目前有 ${loraDevicePoints.size} 個節點可顯示。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = showLoraDevicePoints,
+                            onCheckedChange = {
+                                showLoraDevicePoints = it
+                                prefs.showLoraDevicePoints = it
+                            },
+                        )
                     }
 
                     Spacer(Modifier.height(16.dp))
@@ -846,13 +1010,16 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     }
 
     if (showLayerSettingsDialog) {
+        // 開關先存在待確認清單裡，不會立刻套用；按「確認」才寫回 enabledLayerIds/prefs 並讓地圖
+        // 用新圖層重新載入一次（key(enabledLayerIds) 那邊會處理 remount，不必再手動切換地圖/重開App）。
+        var pendingLayerIds by remember(showLayerSettingsDialog) { mutableStateOf(enabledLayerIds) }
         AlertDialog(
             onDismissRequest = { showLayerSettingsDialog = false },
             title = { Text("向量魯地圖圖層顯示") },
             text = {
                 Column(modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
                     Text(
-                        "關掉不需要的圖層可以減少畫面雜訊、也能省一些渲染效能。變更後要切換一次地圖圖層（或重新開啟App）才會生效。",
+                        "關掉不需要的圖層可以減少畫面雜訊、也能省一些渲染效能。選好後按「確認」套用。",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
@@ -860,15 +1027,14 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth().clickable {
-                                enabledLayerIds = if (layer.id in enabledLayerIds) {
-                                    enabledLayerIds - layer.id
+                                pendingLayerIds = if (layer.id in pendingLayerIds) {
+                                    pendingLayerIds - layer.id
                                 } else {
-                                    enabledLayerIds + layer.id
+                                    pendingLayerIds + layer.id
                                 }
-                                prefs.enabledMapLayerIds = enabledLayerIds
                             },
                         ) {
-                            Checkbox(checked = layer.id in enabledLayerIds, onCheckedChange = null)
+                            Checkbox(checked = layer.id in pendingLayerIds, onCheckedChange = null)
                             Text(layer.label)
                         }
                     }
@@ -876,12 +1042,18 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    enabledLayerIds = HIKING_THEME_LAYERS.filter { it.defaultEnabled }.map { it.id }.toSet()
-                    prefs.enabledMapLayerIds = null
-                }) { Text("重設為預設值") }
+                    enabledLayerIds = pendingLayerIds
+                    prefs.enabledMapLayerIds = pendingLayerIds
+                    showLayerSettingsDialog = false
+                }) { Text("確認") }
             },
             dismissButton = {
-                TextButton(onClick = { showLayerSettingsDialog = false }) { Text("關閉") }
+                Row {
+                    TextButton(onClick = {
+                        pendingLayerIds = HIKING_THEME_LAYERS.filter { it.defaultEnabled }.map { it.id }.toSet()
+                    }) { Text("重設為預設值") }
+                    TextButton(onClick = { showLayerSettingsDialog = false }) { Text("取消") }
+                }
             },
         )
     }
@@ -998,6 +1170,62 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     }
 
     val shareUrl = "https://tracker.umaya.tw/t/$shareToken"
+
+    if (showShareLinkDialog) {
+        val shareText = "我的登山行程即時位置（留守人追蹤頁）：\n$shareUrl"
+        AlertDialog(
+            onDismissRequest = { showShareLinkDialog = false },
+            title = { Text("留守人連結") },
+            text = {
+                Column {
+                    if (shareToken == null) {
+                        Text("這個帳號還沒有分享連結，請登出後重新登入一次。", color = MaterialTheme.colorScheme.error)
+                    } else {
+                        Text(
+                            "把這個連結傳給留守人，就能在網頁上看到你的即時位置與軌跡。每個帳號固定一個連結，每次行程都一樣，隨時可從「☰ → 留守人連結」再叫出來。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        SelectionContainer { Text(shareUrl, fontWeight = FontWeight.Bold) }
+                        Spacer(Modifier.height(12.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(contentPadding = PaddingValues(horizontal = 10.dp), onClick = {
+                                val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("留守人連結", shareUrl))
+                                Toast.makeText(context, "已複製連結", Toast.LENGTH_SHORT).show()
+                            }) { Text("複製") }
+                            OutlinedButton(contentPadding = PaddingValues(horizontal = 10.dp), onClick = {
+                                try {
+                                    context.startActivity(Intent.createChooser(
+                                        Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_TEXT, shareText)
+                                        },
+                                        "分享留守人連結",
+                                    ))
+                                } catch (_: ActivityNotFoundException) {
+                                    Toast.makeText(context, "找不到可用的分享 App", Toast.LENGTH_LONG).show()
+                                }
+                            }) { Text("分享") }
+                            OutlinedButton(contentPadding = PaddingValues(horizontal = 10.dp), onClick = {
+                                try {
+                                    context.startActivity(Intent(Intent.ACTION_SENDTO).apply {
+                                        data = Uri.parse("mailto:")
+                                        putExtra(Intent.EXTRA_SUBJECT, "登山行程留守人連結" + if (hikeName.isNotBlank()) "：$hikeName" else "")
+                                        putExtra(Intent.EXTRA_TEXT, shareText)
+                                    })
+                                } catch (_: ActivityNotFoundException) {
+                                    Toast.makeText(context, "找不到可用的郵件 App", Toast.LENGTH_LONG).show()
+                                }
+                            }) { Text("Email") }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showShareLinkDialog = false }) { Text("關閉") } },
+        )
+    }
 
     LaunchedEffect(hasActiveHike) {
         if (!hasActiveHike) return@LaunchedEffect
@@ -1153,6 +1381,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                             .setAction(LocationForegroundService.ACTION_START)
                                     )
                                     hasActiveHike = true
+                                    if (startMode == "new") showShareLinkDialog = true
                                     startMode = null
                                     showStartHikeDialog = false
                                     TrackerWidgetProvider.updateAllWidgets(context)
@@ -1357,24 +1586,49 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             } else {
                 mapController?.mapView?.zoomLevelDouble?.let { "%.1f".format(it) } ?: "—"
             }
-            // Keeps 街道/地名文字 sized to the current zoom even when it changed via a pinch
-            // gesture directly on the map, not just the ＋/－ buttons or 回到目前位置 — debounced
-            // internally so an in-progress pinch doesn't repeatedly purge the tile cache.
-            offlineMapController?.pollTextScale()
             delay(500)
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        if (mapsforgeActive) {
-            OfflineMapView(
-                modifier = Modifier.fillMaxSize(),
-                downloader = mapsforgeDownloader,
-                hillshadingEnabled = hillshadingEnabled,
-                enabledLayerIds = enabledLayerIds,
-            ) { offlineMapController = it }
-        } else {
-            HikeMap(modifier = Modifier.fillMaxSize(), initialLayer = currentMapLayer) { mapController = it }
+        when {
+            mapsforgeActive && currentOfflinePack != null -> {
+                key(enabledLayerIds, currentOfflinePackId) {
+                    OfflineMapView(
+                        modifier = Modifier.fillMaxSize(),
+                        downloader = mapsforgeDownloader,
+                        pack = currentOfflinePack,
+                        hillshadingEnabled = hillshadingEnabled,
+                        enabledLayerIds = enabledLayerIds,
+                    ) { offlineMapController = it }
+                }
+            }
+            currentMapSource == MapSource.RUDY_ONLINE || currentMapSource == MapSource.OPENSTREETMAP -> {
+                key(currentMapSource) {
+                    HikeMap(modifier = Modifier.fillMaxSize(), initialSource = currentMapSource) { mapController = it }
+                }
+            }
+            else -> {
+                Box(
+                    modifier = Modifier.fillMaxSize().background(Color(0xFFF0ECE4)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        // side padding clears the left action buttons and the right zoom column
+                        modifier = Modifier.padding(horizontal = 96.dp, vertical = 24.dp),
+                    ) {
+                        Text("${currentOfflinePack?.name ?: "離線地圖"}尚未安裝", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "請到「☰ → 地圖設定 → 離線地圖包」下載安裝，完成後才能使用。",
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
         }
 
         // ---- 1. 正上方橫bar滿框：GPS位置／GPX錄製/暫停／GPX停止／GPS開關／切換地圖 ----
@@ -1382,7 +1636,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.TopCenter)
-                .background(Color(0xEE202020))
+                .background(Color(0xFF202020))
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
@@ -1449,10 +1703,28 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 if (!gpsFollowing) offlineMapController?.setGpsVisible(false)
             }
 
-            // (5) 切換地圖（線上地圖／魯地圖）
-            TopBarIconButton(if (currentMapLayer == MapLayer.ONLINE) "🗺️" else "⛰️") {
-                currentMapLayer = if (currentMapLayer == MapLayer.ONLINE) MapLayer.RUDY else MapLayer.ONLINE
-                mapController?.setLayer(currentMapLayer)
+            // (5) 選用地圖 — 地圖頁是唯一選地圖的地方；地圖設定只管各地圖的設定。
+            Box {
+                TopBarIconButton(mapSourceIcon(currentMapSource)) { showMapPicker = true }
+                DropdownMenu(expanded = showMapPicker, onDismissRequest = { showMapPicker = false }) {
+                    val choices = listOf(
+                        Triple(MapSource.OPENSTREETMAP, null, "OpenStreetMap（線上，全世界）"),
+                        Triple(MapSource.RUDY_ONLINE, null, "魯地圖（線上，台灣）"),
+                    ) + offlinePacks.map { pack ->
+                        Triple(
+                            MapSource.OFFLINE, pack.id,
+                            "${pack.name}（離線${if (pack.id in installedPackIds) "" else "，尚未下載"}）",
+                        )
+                    }
+                    choices.forEach { (source, packId, label) ->
+                        val selected = source == currentMapSource && (packId == null || packId == currentOfflinePackId)
+                        DropdownMenuItem(
+                            text = { Text("${mapSourceIcon(source)}  $label") },
+                            trailingIcon = if (selected) ({ Text("✓") }) else null,
+                            onClick = { showMapPicker = false; selectMapSource(source, packId) },
+                        )
+                    }
+                }
             }
         }
 
@@ -1483,24 +1755,11 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         text = { Text("軌跡管理：清除已上傳的規劃路線") },
                         onClick = { showFunctionMenu = false; showClearRouteDialog = true },
                     )
-                    DropdownMenuItem(
-                        text = { Text("分享行程連結給留守人") },
-                        onClick = {
-                            showFunctionMenu = false
-                            try {
-                                context.startActivity(Intent.createChooser(
-                                    Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(Intent.EXTRA_TEXT, shareUrl)
-                                    },
-                                    "分享行程連結",
-                                ))
-                            } catch (_: ActivityNotFoundException) {
-                                Toast.makeText(context, "找不到可用的分享 App", Toast.LENGTH_LONG).show()
-                            }
-                        },
-                    )
                 }
+                DropdownMenuItem(
+                    text = { Text("留守人連結（複製／分享／Email）") },
+                    onClick = { showFunctionMenu = false; showShareLinkDialog = true },
+                )
                 DropdownMenuItem(
                     text = { Text("背景活動管理") },
                     onClick = { showFunctionMenu = false; showBackgroundExecDialog = true },
@@ -1617,7 +1876,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(Color(0xCC202020))
+                .background(Color(0xFF202020))
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         ) {
             Row {

@@ -144,6 +144,28 @@ private fun rotatedArrowBitmap(context: Context, degrees: Float) =
     )
 
 private const val ARROW_SIZE_PX = 96
+private const val LORA_MARKER_SIZE_PX = 64
+
+private fun loraNodeBitmap(context: Context, point: LoraDevicePoint) =
+    AndroidGraphicFactory.convertToBitmap(
+        BitmapDrawable(
+            context.resources,
+            AndroidBitmap.createBitmap(LORA_MARKER_SIZE_PX, LORA_MARKER_SIZE_PX, AndroidBitmap.Config.ARGB_8888).also { bmp ->
+                val canvas = AndroidCanvas(bmp)
+                val center = LORA_MARKER_SIZE_PX / 2f
+                val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+                val fill = if (point.isSelf) Color.rgb(24, 119, 242) else Color.rgb(28, 154, 94)
+                paint.color = Color.WHITE
+                canvas.drawCircle(center, center, center - 2f, paint)
+                paint.color = fill
+                canvas.drawCircle(center, center, center - 8f, paint)
+                paint.color = Color.WHITE
+                paint.strokeWidth = 5f
+                paint.style = android.graphics.Paint.Style.STROKE
+                canvas.drawCircle(center, center, center - 19f, paint)
+            },
+        )
+    )
 
 /** Thin handle mirroring [HikeMapController]'s shape so HikeScreen's zoom/recenter/GPS buttons
  *  don't need to know which rendering engine is currently active. Mapsforge itself has no
@@ -163,64 +185,29 @@ class OfflineMapController internal constructor(
     private var lastFix: LatLong? = null
     private var lastHeadingDeg = 0f
     private val loadedRoutePolylines = mutableMapOf<String, List<Polyline>>()
+    private val loraDeviceMarkers = mutableMapOf<String, Marker>()
     private var scaleBar: DefaultMapScaleBar? = null
     internal var rendererLayer: TileRendererLayer? = null
-    internal var tileCache: TileCache? = null
-    private var baseFontScale = 1.0f
-    private var lastPolledZoom: Byte? = null
-    private var zoomStableTicks = 0
 
     fun zoomIn() {
         val pos = mapView.model.mapViewPosition
         pos.setZoomLevel((pos.zoomLevel + 1).coerceAtMost(MAX_ZOOM_LEVEL.toInt()).toByte())
-        applyTextScaleForCurrentZoom()
     }
     fun zoomOut() {
         val pos = mapView.model.mapViewPosition
         pos.setZoomLevel((pos.zoomLevel - 1).coerceAtLeast(MIN_ZOOM_LEVEL.toInt()).toByte())
-        applyTextScaleForCurrentZoom()
     }
     fun animateTo(lat: Double, lon: Double) {
         mapView.model.mapViewPosition.animateTo(LatLong(lat, lon))
     }
     fun zoomLevel(): Double = mapView.model.mapViewPosition.zoomLevel.toDouble()
 
-    /** 字型大小滑桿的基準值（1.0 = 主題預設）。實際套用的 textScale 會再依目前縮放層級調整，
-     *  讓文字跟著放大縮小，不是固定像素大小。 */
+    /** 字型大小滑桿的基準值（1.0 = 主題預設）——固定值，不隨縮放層級調整。曾經試過依縮放動態
+     *  調整，但那需要呼叫 TileCache.purge() 才能讓已渲染的舊圖磚重畫；purge() 會跟 Mapsforge
+     *  背景執行緒（同時在讀寫同一份圖磚快取）搶資料，沒有互斥保護，實測會直接讓 App crash
+     *  （ConcurrentModificationException，見 2026-08-29 log）。固定值最安全。 */
     fun setBaseFontScale(scale: Float) {
-        baseFontScale = scale
-        applyTextScaleForCurrentZoom()
-    }
-
-    /** MIN_ZOOM_LEVEL 時用 0.4 倍基準值，MAX_ZOOM_LEVEL 時用 3.0 倍，中間線性內插。
-     *
-     *  textScale 是「渲染圖磚時」套用的參數，文字是直接畫進圖磚點陣圖裡的——只改 textScale
-     *  不會讓已經渲染、還留在 TileCache 裡的舊圖磚重畫，所以數值真的變動時要 purge 快取，
-     *  逼所有可見圖磚用新的 textScale 重新渲染一次。 */
-    fun applyTextScaleForCurrentZoom() {
-        val layer = rendererLayer ?: return
-        val zoom = mapView.model.mapViewPosition.zoomLevel.toDouble()
-        val t = ((zoom - MIN_ZOOM_LEVEL) / (MAX_ZOOM_LEVEL - MIN_ZOOM_LEVEL)).coerceIn(0.0, 1.0)
-        val factor = 0.4 + t * (3.0 - 0.4)
-        val newScale = (baseFontScale * factor).toFloat()
-        if (kotlin.math.abs(newScale - layer.textScale) < 0.01f) return
-        layer.textScale = newScale
-        tileCache?.purge()
-        mapView.layerManager.redrawLayers()
-    }
-
-    /** Called every ~500ms from HikeScreen's polling loop — debounced so a purge only fires
-     *  once the zoom level has held steady for a bit, not on every intermediate level a pinch
-     *  gesture passes through. */
-    fun pollTextScale() {
-        val currentZoom = mapView.model.mapViewPosition.zoomLevel
-        if (currentZoom != lastPolledZoom) {
-            lastPolledZoom = currentZoom
-            zoomStableTicks = 0
-            return
-        }
-        zoomStableTicks++
-        if (zoomStableTicks == 1) applyTextScaleForCurrentZoom()
+        rendererLayer?.textScale = scale
     }
 
     fun currentFix(): LatLong? = lastFix
@@ -232,7 +219,6 @@ class OfflineMapController internal constructor(
             val pos = mapView.model.mapViewPosition
             pos.setCenter(it)
             pos.setZoomLevel(DEFAULT_ZOOM_LEVEL)
-            applyTextScaleForCurrentZoom()
         }
     }
 
@@ -331,6 +317,29 @@ class OfflineMapController internal constructor(
         loadedRoutePolylines.values.forEach { polylines -> polylines.forEach { layers.remove(it) } }
         loadedRoutePolylines.clear()
     }
+
+    fun setLoraDevicePoints(points: List<LoraDevicePoint>) {
+        val activeIds = points.map { it.id }.toSet()
+        val removed = loraDeviceMarkers.keys - activeIds
+        removed.forEach { id ->
+            loraDeviceMarkers.remove(id)?.let {
+                layers.remove(it)
+                it.onDestroy()
+            }
+        }
+        points.forEach { point ->
+            val latLong = LatLong(point.latitude, point.longitude)
+            val marker = loraDeviceMarkers[point.id]
+            if (marker == null) {
+                loraDeviceMarkers[point.id] = Marker(latLong, loraNodeBitmap(context, point), 0, 0)
+                    .also { layers.add(it) }
+            } else {
+                marker.setLatLong(latLong)
+                marker.setBitmap(loraNodeBitmap(context, point))
+            }
+        }
+        mapView.layerManager.redrawLayers()
+    }
 }
 
 /**
@@ -344,8 +353,9 @@ class OfflineMapController internal constructor(
 fun OfflineMapView(
     modifier: Modifier = Modifier,
     downloader: MapsforgeDownloader,
+    pack: MapsforgeDownloader.OfflinePack,
     elementScale: Float = 0.8f,
-    fontScale: Float = 1.0f,
+    fontScale: Float = 2.8f, // hiking.properties' own text-scale=1.4, doubled per hiker request
     hillshadingEnabled: Boolean = true,
     enabledLayerIds: Set<String> = HIKING_THEME_LAYERS.filter { it.defaultEnabled }.map { it.id }.toSet(),
     onReady: (OfflineMapController) -> Unit,
@@ -383,20 +393,30 @@ fun OfflineMapView(
                 setBuiltInZoomControls(false) // custom zoom buttons in 右側導航區, matching the osmdroid map
                 model.displayModel.setUserScaleFactor(elementScale)
 
-                val mapFile = MapFile(downloader.mapFile)
+                val mapFile = MapFile(downloader.mapFile(pack))
+                val demDir = downloader.demDir(pack)
+                // Cache id is keyed by fontScale: text is baked into the rendered tile bitmap, and
+                // this cache persists to disk across app restarts (last param = true), so a stale
+                // tile from a previous fontScale would otherwise keep being reused verbatim forever
+                // — there's no safe way to force a re-render of already-cached tiles (TileCache.purge()
+                // races Mapsforge's own background LayerManager thread and crashes, see
+                // OfflineMapController.setBaseFontScale below). A distinct cache id per scale value
+                // sidesteps that entirely: changing fontScale just starts a fresh cache directory.
+                // Keyed by pack too: a blank tile rendered from one pack's .map must never be
+                // reused for the same x/y/z under another pack that actually has data there.
                 val tileCache: TileCache = AndroidUtil.createTileCache(
-                    ctx, "offline-map-tiles",
+                    ctx, "offline-map-tiles-${pack.mapFileName.removeSuffix(".map")}-fs${(fontScale * 10).toInt()}",
                     model.displayModel.tileSize, 1f,
                     4.0, // overzoom factor — standard Mapsforge sample default
                     true,
                 )
 
-                val hillsConfig = if (hillshadingEnabled && downloader.demDir.exists() &&
-                    downloader.demDir.listFiles()?.isNotEmpty() == true
+                val hillsConfig = if (hillshadingEnabled && demDir != null && demDir.exists() &&
+                    demDir.listFiles()?.isNotEmpty() == true
                 ) {
                     HillsRenderConfig(
                         MemoryCachingHgtReaderTileSource(
-                            DemFolderFS(downloader.demDir),
+                            DemFolderFS(demDir),
                             SimpleShadingAlgorithm(0.1, 0.666), // matches mapsforgesrv's own config (theme/ + server.properties)
                             AndroidGraphicFactory.INSTANCE,
                         )
@@ -454,7 +474,6 @@ fun OfflineMapView(
 
                 val controller = OfflineMapController(this, context)
                 controller.rendererLayer = rendererLayer
-                controller.tileCache = tileCache
                 controller.setBaseFontScale(fontScale)
                 controllerRef = controller
                 onReady(controller)

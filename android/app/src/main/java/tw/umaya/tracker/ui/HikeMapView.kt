@@ -2,6 +2,10 @@ package tw.umaya.tracker.ui
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.drawable.BitmapDrawable
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -20,12 +24,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import org.osmdroid.config.Configuration
+import org.osmdroid.tileprovider.MapTileProviderBasic
+import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
 import org.osmdroid.tileprovider.tilesource.XYTileSource
 import org.osmdroid.util.GeoPoint
+import org.osmdroid.util.MapTileIndex
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 import org.osmdroid.views.overlay.ScaleBarOverlay
+import org.osmdroid.views.overlay.TilesOverlay
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import tw.umaya.tracker.R
@@ -37,12 +45,51 @@ import java.io.File
  *  orientation, so it stays correct (and usually points straight up) in every mode. */
 enum class MapOrientationMode { NORTH_UP, TRACK_UP, COMPASS_UP }
 
-/** Same two tile endpoints the guardian web page (Leaflet) already uses — no separate map
- *  backend for the native app, just a different rendering client hitting the same tiles. */
-private val OSM_SOURCE = XYTileSource("OSM", 0, 19, 256, ".png", arrayOf("https://tile.openstreetmap.org/"))
-private val RUDY_SOURCE = XYTileSource("Rudy", 8, 21, 256, ".png?task=hiking", arrayOf("https://tracker.umaya.tw/tiles/"))
+/** Online map endpoint used by osmdroid. Offline maps are rendered by OfflineMapView/Mapsforge. */
+private val OSM_SOURCE = XYTileSource("OSM", 2, 19, 256, ".png", arrayOf("https://tile.openstreetmap.org/"))
 
-enum class MapLayer { ONLINE, RUDY }
+private const val ONLINE_MIN_ZOOM = 8.0
+private const val ONLINE_MAX_ZOOM = 21.0
+private const val ONLINE_DEFAULT_ZOOM = 19.0
+
+/** Same self-hosted mapsforgesrv the guardian web page uses (backend/public/assets/config.js), in its
+ *  transparent-sea "hiking-overlay" variant: drawn over an OSM base layer so areas outside the
+ *  RudyMap coverage show real OSM instead of a white band. XYTileSource can't append a query. */
+private val RUDY_ONLINE_SOURCE = object : OnlineTileSourceBase(
+    "RudyHikingOverlay", ONLINE_MIN_ZOOM.toInt(), 19, 256, ".png", arrayOf("https://tracker.umaya.tw/tiles/"),
+) {
+    override fun getTileURLString(pMapTileIndex: Long): String =
+        "$baseUrl${MapTileIndex.getZoom(pMapTileIndex)}/${MapTileIndex.getX(pMapTileIndex)}/" +
+            "${MapTileIndex.getY(pMapTileIndex)}.png?task=hiking-overlay&transparent=true"
+}
+private const val LORA_MARKER_SIZE_PX = 64
+
+/** OFFLINE = one of MapsforgeDownloader's offline packs (which one is tracked separately). */
+enum class MapSource { RUDY_ONLINE, OFFLINE, OPENSTREETMAP }
+
+private fun tileSourceFor(source: MapSource) = when (source) {
+    MapSource.RUDY_ONLINE -> RUDY_ONLINE_SOURCE
+    MapSource.OFFLINE -> OSM_SOURCE
+    MapSource.OPENSTREETMAP -> OSM_SOURCE
+}
+
+private fun loraMarkerDrawable(context: Context, point: LoraDevicePoint): BitmapDrawable {
+    val bitmap = Bitmap.createBitmap(LORA_MARKER_SIZE_PX, LORA_MARKER_SIZE_PX, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    val center = LORA_MARKER_SIZE_PX / 2f
+    val fill = if (point.isSelf) Color.rgb(24, 119, 242) else Color.rgb(28, 154, 94)
+    paint.color = Color.WHITE
+    canvas.drawCircle(center, center, center - 2f, paint)
+    paint.color = fill
+    canvas.drawCircle(center, center, center - 8f, paint)
+    paint.color = Color.WHITE
+    paint.strokeWidth = 5f
+    paint.style = Paint.Style.STROKE
+    canvas.drawCircle(center, center, center - 19f, paint)
+    paint.style = Paint.Style.FILL
+    return BitmapDrawable(context.resources, bitmap)
+}
 
 private var configured = false
 
@@ -73,16 +120,12 @@ class HikeMapController internal constructor(
     fun currentFix() = locationOverlay.myLocation
     fun recenterOnGps() {
         val loc = locationOverlay.myLocation
-        if (loc != null) mapView.controller.animateTo(loc)
+        if (loc != null) mapView.controller.animateTo(loc, ONLINE_DEFAULT_ZOOM, null)
     }
     /** (1) 載入 GPX/KML's "跳到路線起點" choice. */
     fun animateTo(point: GeoPoint, zoom: Double? = null) {
         if (zoom != null) mapView.controller.setZoom(zoom)
         mapView.controller.animateTo(point)
-    }
-    fun setLayer(layer: MapLayer) {
-        mapView.setTileSource(if (layer == MapLayer.RUDY) RUDY_SOURCE else OSM_SOURCE)
-        mapView.invalidate()
     }
     /** (4) 打開/關閉 GPS — actually stops/starts the location overlay, not just its icon; while
      *  off the blue "you are here" dot disappears and [recenterOnGps] has nothing to jump to. */
@@ -106,6 +149,7 @@ class HikeMapController internal constructor(
     // list of segments, not one flat point list) — several loaded routes can be shown at once
     // (e.g. comparing two candidate trails), each removable independently by its id.
     private val loadedRoutes = mutableMapOf<String, List<Polyline>>()
+    private val loraDeviceMarkers = mutableMapOf<String, Marker>()
 
     /** (1) 載入 GPX/KML — draws an imported route as one overlay per segment, keyed by [id] (the
      *  caller's choice — e.g. the file name) so multiple routes can be loaded side by side
@@ -142,6 +186,34 @@ class HikeMapController internal constructor(
         mapView.invalidate()
     }
 
+    fun setLoraDevicePoints(points: List<LoraDevicePoint>) {
+        val activeIds = points.map { it.id }.toSet()
+        val removed = loraDeviceMarkers.keys - activeIds
+        removed.forEach { id ->
+            loraDeviceMarkers.remove(id)?.let { mapView.overlays.remove(it) }
+        }
+        points.forEach { point ->
+            val geo = GeoPoint(point.latitude, point.longitude)
+            val marker = loraDeviceMarkers[point.id]
+            if (marker == null) {
+                loraDeviceMarkers[point.id] = Marker(mapView).apply {
+                    position = geo
+                    icon = loraMarkerDrawable(mapView.context, point)
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                    title = point.titleText()
+                    subDescription = point.detailText()
+                    mapView.overlays.add(this)
+                }
+            } else {
+                marker.position = geo
+                marker.icon = loraMarkerDrawable(mapView.context, point)
+                marker.title = point.titleText()
+                marker.subDescription = point.detailText()
+            }
+        }
+        mapView.invalidate()
+    }
+
     private var scaleBar: ScaleBarOverlay? = null
 
     /** 地圖比例尺 開/關 */
@@ -169,7 +241,7 @@ class HikeMapController internal constructor(
  * MapView exists.
  */
 @Composable
-fun HikeMap(modifier: Modifier = Modifier, initialLayer: MapLayer = MapLayer.RUDY, onReady: (HikeMapController) -> Unit) {
+fun HikeMap(modifier: Modifier = Modifier, initialSource: MapSource = MapSource.RUDY_ONLINE, onReady: (HikeMapController) -> Unit) {
     val context = LocalContext.current
     ensureOsmdroidConfigured(context)
 
@@ -182,10 +254,23 @@ fun HikeMap(modifier: Modifier = Modifier, initialLayer: MapLayer = MapLayer.RUD
         modifier = modifier.fillMaxSize(),
         factory = { ctx ->
             MapView(ctx).apply {
-                setTileSource(if (initialLayer == MapLayer.RUDY) RUDY_SOURCE else OSM_SOURCE)
+                if (initialSource == MapSource.RUDY_ONLINE) {
+                    setTileSource(OSM_SOURCE)
+                    val rudyProvider = MapTileProviderBasic(ctx, RUDY_ONLINE_SOURCE)
+                    overlays.add(TilesOverlay(rudyProvider, ctx).apply {
+                        loadingBackgroundColor = Color.TRANSPARENT
+                        loadingLineColor = Color.TRANSPARENT
+                    })
+                } else {
+                    setTileSource(tileSourceFor(initialSource))
+                }
                 setMultiTouchControls(true)
+                // Server tiles are 256px; unscaled on a ~3.5x-density screen their text is unreadable.
+                isTilesScaledToDpi = true
                 setBuiltInZoomControls(false) // custom zoom buttons in the 右側導航區, not osmdroid's stock +/-
-                controller.setZoom(15.0)
+                minZoomLevel = tileSourceFor(initialSource).minimumZoomLevel.toDouble()
+                maxZoomLevel = ONLINE_MAX_ZOOM
+                controller.setZoom(ONLINE_MIN_ZOOM)
                 controller.setCenter(GeoPoint(23.6, 121.0)) // Taiwan-wide fallback until a GPS fix lands
 
                 val locationOverlay = MyLocationNewOverlay(GpsMyLocationProvider(ctx), this)
@@ -197,7 +282,7 @@ fun HikeMap(modifier: Modifier = Modifier, initialLayer: MapLayer = MapLayer.RUD
                 locationOverlay.setPersonIcon(blank)
                 locationOverlay.setDirectionIcon(blank)
                 locationOverlay.runOnFirstFix {
-                    post { controller.animateTo(locationOverlay.myLocation) }
+                    post { controller.animateTo(locationOverlay.myLocation, ONLINE_DEFAULT_ZOOM, null) }
                 }
                 overlays.add(locationOverlay)
 

@@ -67,14 +67,16 @@ private fun RoleTile(onPickHiker: () -> Unit, onPickGuardian: () -> Unit) {
 
 @Composable
 private fun RoleSquare(iconRes: Int, label: String, onClick: () -> Unit) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.clip(RoundedCornerShape(24.dp)).clickable(onClick = onClick),
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth(0.55f)
                 .aspectRatio(1f)
                 .clip(RoundedCornerShape(24.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .clickable(onClick = onClick),
+                .background(MaterialTheme.colorScheme.surfaceVariant),
         ) {
             Image(
                 painter = painterResource(iconRes),

@@ -118,6 +118,11 @@ class Prefs(context: Context) {
         get() = prefs.getString("map_orientation_mode", "north") ?: "north"
         set(value) = prefs.edit().putString("map_orientation_mode", value).apply()
 
+    /** Whether to draw Meshtastic/LoRa node positions on top of the selected map. */
+    var showLoraDevicePoints: Boolean
+        get() = prefs.getBoolean("show_lora_device_points", true)
+        set(value) = prefs.edit().putBoolean("show_lora_device_points", value).apply()
+
     /** True while the hiker has paused GPS recording mid-hike (hike itself stays active). */
     var isPaused: Boolean
         get() = prefs.getBoolean("is_paused", false)

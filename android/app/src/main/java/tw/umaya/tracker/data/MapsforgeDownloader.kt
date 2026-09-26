@@ -5,6 +5,7 @@ import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 import kotlinx.coroutines.CancellationException
@@ -21,6 +22,8 @@ import okhttp3.Request
  * these files (it mirrors across multiple hosts for exactly this kind of bulk fan-out), so this
  * downloads straight from there instead of relaying ~1GB per install through our own server.
  */
+const val TAIWAN_PACK_ID = "taiwan"
+
 class MapsforgeDownloader(context: Context) {
     val baseDir: File = File(context.getExternalFilesDir(null), "mapsforge")
 
@@ -29,24 +32,124 @@ class MapsforgeDownloader(context: Context) {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    val mapFile: File get() = File(baseDir, "maps/MOI_OSM_Taiwan_TOPO_Rudy.map")
     val themeFile: File get() = File(baseDir, "theme/MOI_OSM.xml")
-    val demDir: File get() = File(baseDir, "dem")
-
-    /** True once the core map file is fully present — enough to render offline. */
-    fun hasCoreMapData(): Boolean = mapFile.exists()
+    private val mapsDir: File get() = File(baseDir, "maps")
 
     @Volatile private var cancelled = false
     fun cancel() { cancelled = true }
 
-    private data class Package(val url: String, val destDir: String)
+    data class PackageStatus(val fileName: String, val url: String, val bytes: Long)
 
-    private val packages = listOf(
-        Package("https://moi.kcwu.csie.org/MOI_OSM_Taiwan_TOPO_Rudy.map.zip", "maps"),
-        Package("https://moi.kcwu.csie.org/MOI_OSM_Taiwan_TOPO_Rudy.poi.zip", "maps"),
-        Package("https://moi.kcwu.csie.org/hgtmix.zip", "dem"),
-        Package("https://moi.kcwu.csie.org/MOI_OSM_Taiwan_TOPO_Rudy_hs_style.zip", "theme"),
+    data class Package(val url: String, val destDir: String)
+
+    /** One independently installable offline map. Catalog packs download from rudymap.tw's mirror;
+     *  imported packs are a .map the hiker copied in themselves (no DEM, no download URLs). */
+    data class OfflinePack(
+        val id: String,
+        val name: String,
+        val mapFileName: String,
+        val demDirName: String?,
+        val downloads: List<Package> = emptyList(),
+        val sizeHint: String? = null,
+    ) {
+        val isImported: Boolean get() = downloads.isEmpty()
+    }
+
+    private val themePackage = Package("https://moi.kcwu.csie.org/MOI_OSM_Taiwan_TOPO_Rudy_hs_style.zip", "theme")
+
+    // Taiwan keeps the original maps/ + dem/ layout so existing installs don't re-download ~1GB.
+    val catalog = listOf(
+        OfflinePack(
+            TAIWAN_PACK_ID, "魯地圖（台灣）", "MOI_OSM_Taiwan_TOPO_Rudy.map", "dem",
+            listOf(
+                Package("https://moi.kcwu.csie.org/MOI_OSM_Taiwan_TOPO_Rudy.map.zip", "maps"),
+                Package("https://moi.kcwu.csie.org/MOI_OSM_Taiwan_TOPO_Rudy.poi.zip", "maps"),
+                Package("https://moi.kcwu.csie.org/hgtmix.zip", "dem"),
+            ),
+            "約 400MB（解壓後約 1GB）",
+        ),
+        OfflinePack(
+            "annapurna", "安娜普納（尼泊爾）", "AW3D30_OSM_Annapurna_TOPO_Rudy.map", "dem-annapurna",
+            listOf(
+                Package("https://moi.kcwu.csie.org/AW3D30_OSM_Annapurna_TOPO_Rudy.map.zip", "maps"),
+                Package("https://moi.kcwu.csie.org/AW3D30_OSM_Annapurna_TOPO_Rudy.poi.zip", "maps"),
+                Package("https://moi.kcwu.csie.org/annapurna_hgtmix.zip", "dem-annapurna"),
+            ),
+            "約 190MB",
+        ),
     )
+
+    /** Catalog packs (installed or not) followed by any .map the hiker imported themselves. */
+    fun allPacks(): List<OfflinePack> {
+        val catalogFiles = catalog.map { it.mapFileName }.toSet()
+        val imported = mapsDir.listFiles { f -> f.extension == "map" && f.name !in catalogFiles }
+            .orEmpty().sortedBy { it.name }
+            .map { OfflinePack("import:${it.name}", it.nameWithoutExtension, it.name, null) }
+        return catalog + imported
+    }
+
+    fun mapFile(pack: OfflinePack): File = File(mapsDir, pack.mapFileName)
+    fun demDir(pack: OfflinePack): File? = pack.demDirName?.let { File(baseDir, it) }
+    fun isInstalled(pack: OfflinePack): Boolean = mapFile(pack).exists() && themeFile.exists()
+    fun installedBytes(pack: OfflinePack): Long =
+        packFiles(pack).sumOf { f -> if (f.isDirectory) f.walk().sumOf { it.length() } else f.length() }
+
+    /** The theme is shared by every pack, so deleting a pack never touches it. */
+    fun delete(pack: OfflinePack) {
+        packFiles(pack).forEach { it.deleteRecursively() }
+    }
+
+    private fun packFiles(pack: OfflinePack): List<File> = listOfNotNull(
+        mapFile(pack),
+        File(mapsDir, pack.mapFileName.removeSuffix(".map") + ".poi"),
+        demDir(pack),
+    ).filter { it.exists() }
+
+    /** Copies a hiker-chosen .map (or a .zip containing one) into maps/; returns the .map names
+     *  added. Fails without leaving a partial file behind if the source has no .map in it. */
+    suspend fun importMap(input: InputStream, displayName: String): List<String> = withContext(Dispatchers.IO) {
+        mapsDir.mkdirs()
+        if (displayName.endsWith(".zip", ignoreCase = true)) {
+            val added = mutableListOf<String>()
+            ZipInputStream(BufferedInputStream(input)).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    val name = File(entry.name).name
+                    if (!entry.isDirectory && name.endsWith(".map", ignoreCase = true)) {
+                        copyAtomically(zis, File(mapsDir, name))
+                        added += name
+                    }
+                    entry = zis.nextEntry
+                }
+            }
+            if (added.isEmpty()) throw IOException("壓縮檔裡沒有 .map 地圖檔")
+            added
+        } else if (displayName.endsWith(".map", ignoreCase = true)) {
+            input.use { copyAtomically(it, File(mapsDir, File(displayName).name)) }
+            listOf(File(displayName).name)
+        } else {
+            throw IOException("只支援 .map 或含 .map 的 .zip 檔")
+        }
+    }
+
+    private fun copyAtomically(input: InputStream, dest: File) {
+        val tmp = File(dest.path + ".part")
+        FileOutputStream(tmp).use { input.copyTo(it) }
+        if (!tmp.renameTo(dest)) throw IOException("無法寫入 ${dest.name}")
+    }
+
+    private fun packagesFor(pack: OfflinePack): List<Package> =
+        if (themeFile.exists()) pack.downloads else pack.downloads + themePackage
+
+    suspend fun checkPackages(pack: OfflinePack): List<PackageStatus> = withContext(Dispatchers.IO) {
+        (pack.downloads + themePackage).map { pkg ->
+            PackageStatus(
+                fileName = File(pkg.url).name,
+                url = pkg.url,
+                bytes = fetchContentLength(pkg.url),
+            )
+        }
+    }
 
     /**
      * Downloads and extracts every package, reporting combined progress across all of them (one
@@ -54,11 +157,12 @@ class MapsforgeDownloader(context: Context) {
      * [cancel] — a zip already downloaded-and-extracted from a prior run is skipped only if the
      * final marker file for it is present; otherwise its .zip.part resumes via Range.
      */
-    suspend fun downloadAll(
+    suspend fun download(
+        pack: OfflinePack,
         onProgress: (downloadedBytes: Long, totalBytes: Long, currentFile: String) -> Unit,
     ) = withContext(Dispatchers.IO) {
         cancelled = false
-        val sizes = packages.map { it to fetchContentLength(it.url) }
+        val sizes = packagesFor(pack).map { it to fetchContentLength(it.url) }
         val totalBytes = sizes.sumOf { it.second }
         var doneBytes = 0L
 

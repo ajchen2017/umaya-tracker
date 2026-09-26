@@ -1,7 +1,19 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("com.google.devtools.ksp")
+}
+
+// 每次 assemble/install 版號 +0.1：BUILD_NUMBER 以 0.1 為單位（10 = 1.0、11 = 1.1）。
+val versionFile = file("version.properties")
+val versionProps = Properties().apply { versionFile.inputStream().use { load(it) } }
+var buildNumber = versionProps.getProperty("BUILD_NUMBER").toInt()
+if (gradle.startParameter.taskNames.any { it.contains("assemble", true) || it.contains("install", true) }) {
+    buildNumber++
+    versionProps.setProperty("BUILD_NUMBER", buildNumber.toString())
+    versionFile.outputStream().use { versionProps.store(it, null) }
 }
 
 android {
@@ -12,8 +24,8 @@ android {
         applicationId = "tw.umaya.tracker"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = buildNumber
+        versionName = "${buildNumber / 10}.${buildNumber % 10}"
 
         buildConfigField("String", "API_BASE_URL", "\"https://tracker.umaya.tw/api/\"")
     }

@@ -51,9 +51,9 @@ if (navigator.geolocation) {
 // bounds: Leaflet never requests tiles outside this box, so the coverage edge is
 // clean map background (ocean-blue), never a stray OpenStreetMap tile bleeding in.
 const rudyLayer = L.tileLayer(RUDY_TILE_URL, {
-  maxZoom: RUDY_MAX_ZOOM, bounds: RUDY_BOUNDS, attribution: '地圖資料 &copy; RudyMap',
+  maxZoom: RUDY_MAX_ZOOM, bounds: RUDY_BOUNDS, zIndex: 2, attribution: '地圖資料 &copy; RudyMap',
 });
-const osmLayer = L.tileLayer(OSM_TILE_URL, { maxZoom: 19, maxNativeZoom: 19, attribution: '&copy; OpenStreetMap contributors' });
+const osmLayer = L.tileLayer(OSM_TILE_URL, { maxZoom: OSM_MAX_ZOOM, maxNativeZoom: 19, attribution: '&copy; OpenStreetMap contributors' });
 let currentMapLayer = 'rudy';
 const MAP_LAYER_LABEL = { rudy: '魯地圖', osm: '線上地圖' };
 switchLayer('rudy'); // also sets btnMapLayer's initial title — real default (Taiwan vs. not) applies once the hiker's actual position is known, see render()
@@ -804,7 +804,9 @@ function switchLayer(layer) {
     map.setMinZoom(OSM_MIN_ZOOM);
     map.setMaxBounds(null);
   } else {
-    map.removeLayer(osmLayer);
+    // RudyMap tiles are the transparent-sea overlay variant — OSM stays underneath so the
+    // coverage edge shows real OSM (e.g. the Fujian coast) instead of a white/ocean band.
+    osmLayer.addTo(map);
     rudyLayer.addTo(map);
     map.setMinZoom(RUDY_MIN_ZOOM);
     if (map.getZoom() < RUDY_MIN_ZOOM) map.setZoom(RUDY_MIN_ZOOM);
