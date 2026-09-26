@@ -1843,6 +1843,9 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         Column(
             modifier = Modifier.align(Alignment.CenterStart).padding(start = 12.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
+            // One shared centre line — otherwise each circle centres on its own caption, and a
+            // wider caption (結束行程) pushes its circle out of line with the rest.
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             MapCircleButton(
                 label = if (!hasActiveHike) "▶️" else if (isPaused) "▶️" else "⏸",
@@ -1899,7 +1902,9 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     )
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    SosHoldButton(outerSize = 52.dp, showCaption = false) {
+                    // Its red disc is 84% of outerSize (the rest is the hold-progress ring) — 62dp
+                    // makes the disc 52dp, matching every other circle in this column.
+                    SosHoldButton(outerSize = 62.dp, showCaption = false) {
                         context.startService(
                             Intent(context, LocationForegroundService::class.java)
                                 .setAction(LocationForegroundService.ACTION_MARK_SOS)
