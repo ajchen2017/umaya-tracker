@@ -66,10 +66,20 @@ fun LabeledMapButton(label: String, caption: String, background: Color, onClick:
 
 /** Same visual language, sized for the top full-width bar rather than a floating cluster. */
 @Composable
-fun TopBarIconButton(label: String, enabled: Boolean = true, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun TopBarIconButton(
+    label: String,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier,
+    /** Optional status disc drawn behind the icon (e.g. GPS ready / searching). */
+    statusColor: Color? = null,
+    /** Optional small corner badge, e.g. "✓". */
+    badge: String? = null,
+    onClick: () -> Unit,
+) {
     Box(
         modifier = modifier
             .size(44.dp)
+            .then(if (statusColor != null) Modifier.background(statusColor, CircleShape) else Modifier)
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -81,5 +91,16 @@ fun TopBarIconButton(label: String, enabled: Boolean = true, modifier: Modifier 
             overflow = TextOverflow.Visible,
             softWrap = false,
         )
+        if (badge != null) {
+            Text(
+                badge,
+                fontSize = 10.sp,
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .background(Color(0xFF2E7D32), CircleShape)
+                    .padding(horizontal = 3.dp),
+            )
+        }
     }
 }

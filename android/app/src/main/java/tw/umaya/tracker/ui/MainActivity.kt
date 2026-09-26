@@ -121,9 +121,10 @@ private class OpenDocumentsAtLastFolder(private val prefs: Prefs) : ActivityResu
     }
 }
 
-private fun mapSourceIcon(source: MapSource): String = when (source) {
+/** ⛰️ for the Taiwan RudyMap pack, 🏔️ for every other offline pack (Annapurna, imported maps). */
+private fun mapSourceIcon(source: MapSource, packId: String?): String = when (source) {
     MapSource.OPENSTREETMAP -> "🗺️"
-    MapSource.OFFLINE -> "⛰️"
+    MapSource.OFFLINE -> if (packId == TAIWAN_PACK_ID) "⛰️" else "🏔️"
 }
 
 /** Default GPX track name shown in the 結束追蹤 dialog — yyyy-mm-dd-hh-mm-ss per spec. */
@@ -1744,10 +1745,16 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 showGpxStopDialog = true
             }
 
-            // (4) 打開/關閉 GPS — 連線中（還沒拿到第一個定位）時圖示閃爍
+            // (4) 打開/關閉 GPS — 搜尋中（還沒拿到第一個定位）琥珀底＋閃爍；定位就緒綠底＋✓
             TopBarIconButton(
                 label = if (gpsFollowing) "🛰️" else "🚫",
                 modifier = if (gpsFollowing && !gpsHasFix) Modifier.alpha(gpsPulseAlpha) else Modifier,
+                statusColor = when {
+                    !gpsFollowing -> null
+                    gpsHasFix -> Color(0xCC2E7D32)
+                    else -> Color(0x99F9A825)
+                },
+                badge = if (gpsFollowing && gpsHasFix) "✓" else null,
             ) {
                 gpsFollowing = !gpsFollowing
                 if (!mapsforgeActive) mapController?.setGpsEnabled(gpsFollowing)
@@ -1756,20 +1763,22 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
 
             // (5) 選用地圖 — 地圖頁是唯一選地圖的地方；地圖設定只管各地圖的設定。
             Box {
-                TopBarIconButton(mapSourceIcon(currentMapSource)) { showMapPicker = true }
+                TopBarIconButton(mapSourceIcon(currentMapSource, currentOfflinePackId)) { showMapPicker = true }
                 DropdownMenu(expanded = showMapPicker, onDismissRequest = { showMapPicker = false }) {
                     val choices = listOf(
-                        Triple(MapSource.OPENSTREETMAP, null, "OpenStreetMap（線上，全世界）"),
+                        Triple(MapSource.OPENSTREETMAP, null, "OpenStreetMap（線上）"),
                     ) + offlinePacks.map { pack ->
-                        Triple(
-                            MapSource.OFFLINE, pack.id,
-                            "${pack.name}（離線${if (pack.id in installedPackIds) "" else "，尚未下載"}）",
-                        )
+                        Triple(MapSource.OFFLINE, pack.id, pack.name + if (pack.id in installedPackIds) "" else "（未下載）")
                     }
                     choices.forEach { (source, packId, label) ->
                         val selected = source == currentMapSource && (packId == null || packId == currentOfflinePackId)
                         DropdownMenuItem(
-                            text = { Text("${mapSourceIcon(source)}  $label") },
+                            text = {
+                                Text(
+                                    "${mapSourceIcon(source, packId)}  $label",
+                                    fontSize = 14.sp, maxLines = 1, softWrap = false,
+                                )
+                            },
                             trailingIcon = if (selected) ({ Text("✓") }) else null,
                             onClick = { showMapPicker = false; selectMapSource(source, packId) },
                         )

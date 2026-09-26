@@ -148,12 +148,13 @@ class HikeMapController internal constructor(
                 outlinePaint.strokeWidth = 8f
             }
         }
+        val dot = routeDotBitmap(mapView.context)
         val labels: List<Overlay> = route.labels.map { label ->
-            val drawn = routeLabelBitmap(mapView.context, label.text)
+            val full = routeLabelBitmap(mapView.context, label.text)
             Marker(mapView).apply {
                 position = label.point
-                icon = BitmapDrawable(mapView.resources, drawn.bitmap)
-                setAnchor(drawn.dotX / drawn.bitmap.width, drawn.dotY / drawn.bitmap.height)
+                relatedObject = full to dot
+                showRouteLabel(this)
                 title = label.text
                 setOnMarkerClickListener { m, _ -> m.showInfoWindow(); true }
             }
@@ -163,6 +164,24 @@ class HikeMapController internal constructor(
         val arrowIndex = mapView.overlays.indexOf(directionArrow)
         if (arrowIndex >= 0) mapView.overlays.addAll(arrowIndex, overlays) else mapView.overlays.addAll(overlays)
         loadedRoutes[id] = overlays
+        mapView.invalidate()
+    }
+
+    /** Dot + text from [ROUTE_LABEL_TEXT_MIN_ZOOM] up, bare dot below — refreshed on every zoom change. */
+    @Suppress("UNCHECKED_CAST")
+    private fun showRouteLabel(marker: Marker) {
+        val (full, dot) = marker.relatedObject as? Pair<RouteLabelBitmap, RouteLabelBitmap> ?: return
+        val look = if (mapView.zoomLevelDouble >= ROUTE_LABEL_TEXT_MIN_ZOOM) full else dot
+        marker.icon = BitmapDrawable(mapView.resources, look.bitmap)
+        marker.setAnchor(look.dotX / look.bitmap.width, look.dotY / look.bitmap.height)
+    }
+
+    private var routeLabelsShowText: Boolean? = null
+    internal fun onZoomChanged() {
+        val showText = mapView.zoomLevelDouble >= ROUTE_LABEL_TEXT_MIN_ZOOM
+        if (showText == routeLabelsShowText) return
+        routeLabelsShowText = showText
+        loadedRoutes.values.flatten().filterIsInstance<Marker>().forEach(::showRouteLabel)
         mapView.invalidate()
     }
 
@@ -281,6 +300,13 @@ fun HikeMap(modifier: Modifier = Modifier, onReady: (HikeMapController) -> Unit)
                 locationOverlayRef = locationOverlay
 
                 val controller = HikeMapController(this, locationOverlay, marker)
+                addMapListener(object : org.osmdroid.events.MapListener {
+                    override fun onScroll(event: org.osmdroid.events.ScrollEvent?) = false
+                    override fun onZoom(event: org.osmdroid.events.ZoomEvent?): Boolean {
+                        controller.onZoomChanged()
+                        return false
+                    }
+                })
                 controllerRef = controller
                 onReady(controller)
             }

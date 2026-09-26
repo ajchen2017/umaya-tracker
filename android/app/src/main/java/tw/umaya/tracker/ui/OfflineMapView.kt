@@ -174,7 +174,10 @@ private fun loraNodeBitmap(context: Context, point: LoraDevicePoint) =
         )
     )
 
-internal class RendererBundle(val layer: TileRendererLayer, val cache: TileCache, private val mapFile: MapFile) {
+/** How the offline map renders within one zoom band; a change of band swaps the whole renderer. */
+internal data class RenderBand(val textScale: Float, val hillshading: Boolean)
+
+internal class RendererBundle(val band: RenderBand, val layer: TileRendererLayer, val cache: TileCache, private val mapFile: MapFile) {
     fun release() {
         layer.onDestroy()
         cache.destroy()
@@ -203,7 +206,7 @@ class OfflineMapController internal constructor(
     private val loraDeviceMarkers = mutableMapOf<String, Marker>()
     private var scaleBar: DefaultMapScaleBar? = null
     /** Builds a fresh renderer (own TileCache + MapFile) at a given text scale. */
-    internal var rendererFactory: ((Float) -> RendererBundle)? = null
+    internal var rendererFactory: ((RenderBand) -> RendererBundle)? = null
     private var renderer: RendererBundle? = null
     internal var baseFontScale = 1f
     /** The pack's own coverage — auto-centering on the phone only makes sense inside it. */
@@ -236,26 +239,51 @@ class OfflineMapController internal constructor(
      *  文字是畫進圖磚點陣圖裡的，改 textScale 不會重畫已快取的圖磚；而 TileCache.purge() 會跟
      *  Mapsforge 背景執行緒搶資料導致 crash（2026-08-29 log）。所以每一段各用一個獨立的快取目錄，
      *  跨段時直接換掉整個渲染圖層，舊圖層延後幾秒、等它的背景工作結束後才釋放。 */
-    private fun textScaleFor(zoom: Int): Float = baseFontScale * when {
-        zoom <= 11 -> 0.5f
-        zoom <= 13 -> 0.6f
-        zoom <= 15 -> 0.72f
-        zoom <= 17 -> 0.86f
-        else -> 1f
-    }
+    private fun bandFor(zoom: Int): RenderBand = RenderBand(
+        textScale = baseFontScale * when {
+            zoom <= 11 -> 0.5f
+            zoom <= 13 -> 0.6f
+            zoom <= 15 -> 0.72f
+            zoom <= 17 -> 0.86f
+            else -> 1f
+        },
+        // At zoom ≤9 the DEM's 1°×1° tiles shade the sea too, showing as tinted rectangles.
+        hillshading = zoom >= 10,
+    )
 
     /** Debounced so a pinch passing through several zoom levels only swaps renderers once. */
     internal fun onPositionChanged() {
         handler.removeCallbacks(applyTextScaleRunnable)
         handler.postDelayed(applyTextScaleRunnable, 600)
+        handler.post { applyRouteLabelMode() }
+    }
+
+    /** A route label marker with both looks: dot + text (zoomed in) and the bare dot (zoomed out). */
+    private class RouteLabelMarker(val marker: Marker, val full: RouteLabelBitmap, val dot: RouteLabelBitmap)
+    private val routeLabelMarkers = mutableMapOf<String, List<RouteLabelMarker>>()
+    private var routeLabelsShowText: Boolean? = null
+
+    private fun Marker.show(look: RouteLabelBitmap) {
+        bitmap = AndroidGraphicFactory.convertToBitmap(BitmapDrawable(context.resources, look.bitmap))
+        // Mapsforge centres the bitmap on the point; shift it so the dot, not the centre, sits there.
+        horizontalOffset = (look.bitmap.width / 2f - look.dotX).toInt()
+        verticalOffset = (look.bitmap.height / 2f - look.dotY).toInt()
+    }
+
+    private fun applyRouteLabelMode(force: Boolean = false) {
+        val showText = mapView.model.mapViewPosition.zoomLevel >= ROUTE_LABEL_TEXT_MIN_ZOOM
+        if (!force && showText == routeLabelsShowText) return
+        routeLabelsShowText = showText
+        routeLabelMarkers.values.flatten().forEach { it.marker.show(if (showText) it.full else it.dot) }
+        mapView.layerManager.redrawLayers()
     }
 
     internal fun applyTextScaleForZoom() {
         val factory = rendererFactory ?: return
-        val scale = textScaleFor(mapView.model.mapViewPosition.zoomLevel.toInt())
+        val band = bandFor(mapView.model.mapViewPosition.zoomLevel.toInt())
         val old = renderer
-        if (old != null && abs(old.layer.textScale - scale) < 0.01f) return
-        val new = factory(scale)
+        if (old != null && old.band == band) return
+        val new = factory(band)
         if (old != null) layers.remove(old.layer, false)
         layers.add(0, new.layer, true)
         renderer = new
@@ -375,27 +403,28 @@ class OfflineMapController internal constructor(
                 addPoints(points.map { LatLong(it.latitude, it.longitude) })
             }
         }
-        val labels: List<Layer> = route.labels.map { label ->
-            val drawn = routeLabelBitmap(context, label.text)
-            val bitmap = AndroidGraphicFactory.convertToBitmap(BitmapDrawable(context.resources, drawn.bitmap))
-            // Mapsforge centres the bitmap on the point; shift it so the dot, not the centre, sits there.
-            Marker(
-                LatLong(label.point.latitude, label.point.longitude), bitmap,
-                (drawn.bitmap.width / 2f - drawn.dotX).toInt(), (drawn.bitmap.height / 2f - drawn.dotY).toInt(),
-            )
+        val dot = routeDotBitmap(context)
+        val labels = route.labels.map { label ->
+            val full = routeLabelBitmap(context, label.text)
+            val marker = Marker(LatLong(label.point.latitude, label.point.longitude), null, 0, 0)
+            RouteLabelMarker(marker, full, dot)
         }
-        val added = polylines + labels
+        routeLabelMarkers[id] = labels
+        val added = polylines + labels.map { it.marker }
         loadedRoutePolylines[id] = added
+        applyRouteLabelMode(force = true)
         added.forEach { layers.add(it) }
     }
 
     fun removeLoadedRoute(id: String) {
         loadedRoutePolylines.remove(id)?.forEach { layers.remove(it) }
+        routeLabelMarkers.remove(id)
     }
 
     fun clearAllLoadedRoutes() {
         loadedRoutePolylines.values.forEach { polylines -> polylines.forEach { layers.remove(it) } }
         loadedRoutePolylines.clear()
+        routeLabelMarkers.clear()
     }
 
     fun setLoraDevicePoints(points: List<LoraDevicePoint>) {
@@ -500,21 +529,23 @@ fun OfflineMapView(
                 // dense unwanted point clutter (and the extra render cost that comes with it).
                 val theme = ExternalRenderTheme(downloader.themeFile, HikingStyleMenuCallback(enabledLayerIds))
 
-                fun createRenderer(textScale: Float): RendererBundle {
+                fun createRenderer(band: RenderBand): RendererBundle {
                     val mapFile = MapFile(downloader.mapFile(pack))
-                    // Cache id keyed by text scale (text is baked into the tile bitmap and the cache
-                    // persists across restarts) and by pack (a blank tile from one pack's .map must
-                    // never be reused where another pack actually has data).
+                    val hills = hillsConfig?.takeIf { band.hillshading }
+                    // Cache id keyed by everything baked into the tile bitmap (text scale, whether it
+                    // was shaded — the cache persists across restarts) and by pack (a blank tile from
+                    // one pack's .map must never be reused where another pack actually has data).
                     val tileCache: TileCache = AndroidUtil.createTileCache(
-                        ctx, "offline-map-tiles-${pack.mapFileName.removeSuffix(".map")}-fs${(textScale * 10).roundToInt()}",
+                        ctx,
+                        "offline-map-tiles-${pack.mapFileName.removeSuffix(".map")}-fs${(band.textScale * 10).roundToInt()}-h${if (hills != null) 1 else 0}",
                         model.displayModel.tileSize, 1f,
                         4.0, // overzoom factor — standard Mapsforge sample default
                         true,
                     )
-                    val layer = if (hillsConfig != null) {
+                    val layer = if (hills != null) {
                         AndroidUtil.createTileRendererLayer(
                             tileCache, model.mapViewPosition, mapFile, theme,
-                            false, true, false, hillsConfig,
+                            false, true, false, hills,
                         )
                     } else {
                         AndroidUtil.createTileRendererLayer(
@@ -522,8 +553,8 @@ fun OfflineMapView(
                             false, true, false,
                         )
                     }
-                    layer.textScale = textScale
-                    return RendererBundle(layer, tileCache, mapFile)
+                    layer.textScale = band.textScale
+                    return RendererBundle(band, layer, tileCache, mapFile)
                 }
 
                 val bounds = MapFile(downloader.mapFile(pack)).let { f -> f.boundingBox().also { f.close() } }

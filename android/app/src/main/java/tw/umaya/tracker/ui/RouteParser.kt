@@ -12,6 +12,22 @@ const val LOADED_ROUTE_COLOR = 0xFF00008B.toInt() // dark blue, shared by both m
 /** A route label drawn as a dot with its text to the right; the dot sits at ([dotX], [dotY]). */
 class RouteLabelBitmap(val bitmap: Bitmap, val dotX: Float, val dotY: Float)
 
+/** Route labels show their text only from this zoom up — below it they crowd into an unreadable pile. */
+const val ROUTE_LABEL_TEXT_MIN_ZOOM = 13
+
+/** The label's dot alone, for zoom levels below [ROUTE_LABEL_TEXT_MIN_ZOOM]. */
+fun routeDotBitmap(context: Context): RouteLabelBitmap {
+    val density = context.resources.displayMetrics.density
+    val radius = 5 * density
+    val size = (radius * 2 + 2).toInt()
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    val c = size / 2f
+    canvas.drawCircle(c, c, radius, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.WHITE })
+    canvas.drawCircle(c, c, radius - 1.5f * density, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = LOADED_ROUTE_COLOR })
+    return RouteLabelBitmap(bitmap, c, c)
+}
+
 fun routeLabelBitmap(context: Context, text: String): RouteLabelBitmap {
     val density = context.resources.displayMetrics.density
     val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
