@@ -36,7 +36,10 @@ if (navigator.geolocation) {
   navigator.geolocation.getCurrentPosition(
     (pos) => {
       const guardianLatLng = [pos.coords.latitude, pos.coords.longitude];
-      if (!hasCenteredOnStart) map.setView(guardianLatLng, 16);
+      if (!hasCenteredOnStart) {
+        if (currentMapLayer === 'rudy' && !RUDY_BOUNDS.contains(guardianLatLng)) switchLayer('osm');
+        map.setView(guardianLatLng, 16);
+      }
       L.marker(guardianLatLng, {
         icon: L.divIcon({ html: GUARDIAN_ICON_HTML, className: '', iconSize: [28, 28] }),
       })
@@ -56,6 +59,9 @@ const rudyLayer = L.tileLayer(RUDY_TILE_URL, {
 const osmLayer = L.tileLayer(OSM_TILE_URL, { maxZoom: OSM_MAX_ZOOM, maxNativeZoom: 19, attribution: '&copy; OpenStreetMap contributors' });
 let currentMapLayer = 'rudy';
 const MAP_LAYER_LABEL = { rudy: '魯地圖', osm: '線上地圖' };
+const MAP_LAYER_ICON = { rudy: '⛰️', osm: '🗺️' };
+// True while OSM is showing only because the hiker left RudyMap's coverage (not the guardian's choice).
+let autoSwitchedToOsm = false;
 switchLayer('rudy'); // also sets btnMapLayer's initial title — real default (Taiwan vs. not) applies once the hiker's actual position is known, see render()
 
 const TRACK_COLORS = [
@@ -776,16 +782,23 @@ function render(data) {
   }
   lastLatLng = [points[points.length - 1].lat, points[points.length - 1].lng];
 
+  // RudyMap only covers Taiwan — follow the hiker onto OSM when they leave it (the view is
+  // clamped to Taiwan while on RudyMap, so it couldn't reach them otherwise), and back onto
+  // RudyMap when they return, unless the guardian picked OSM themselves.
+  const inRudy = RUDY_BOUNDS.contains(lastLatLng);
+  if (currentMapLayer === 'rudy' && !inRudy) {
+    switchLayer('osm');
+    autoSwitchedToOsm = true;
+  } else if (currentMapLayer === 'osm' && inRudy && autoSwitchedToOsm) {
+    switchLayer('rudy');
+  }
+
+  // Every new point recentres on the hiker's latest position — the first one also zooms in.
   if (!hasCenteredOnStart) {
     hasCenteredOnStart = true;
-    // RudyMap only covers Taiwan — a hiker actually outside it would otherwise render as
-    // a dark/blank map (view clamped to Taiwan bounds while trying to center elsewhere).
-    // Re-checked on every "first centering" — including after a hard refresh, since that
-    // re-runs this whole script from scratch and would otherwise default back to RudyMap.
-    if (currentMapLayer === 'rudy' && !RUDY_BOUNDS.contains(lastLatLng)) switchLayer('osm');
     map.setView(lastLatLng, 18);
   } else {
-    map.fitBounds(polyline.getBounds(), { padding: [30, 30] });
+    map.setView(lastLatLng, map.getZoom());
   }
 }
 
@@ -808,7 +821,9 @@ document.getElementById('btnRefresh').addEventListener('click', () => {
 
 function switchLayer(layer) {
   currentMapLayer = layer;
+  autoSwitchedToOsm = false;
   const btn = document.getElementById('btnMapLayer');
+  btn.textContent = MAP_LAYER_ICON[layer];
   btn.title = `目前：${MAP_LAYER_LABEL[layer]}（點擊切換至${MAP_LAYER_LABEL[layer === 'rudy' ? 'osm' : 'rudy']}）`;
   if (layer === 'osm') {
     map.removeLayer(rudyLayer);
