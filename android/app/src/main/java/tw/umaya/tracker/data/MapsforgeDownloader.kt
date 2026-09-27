@@ -13,6 +13,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.mapsforge.core.model.BoundingBox
+import org.mapsforge.map.reader.MapFile
 
 /**
  * Downloads the Mapsforge offline map data (main .map + .poi, render theme + its resource icons,
@@ -91,6 +93,11 @@ class MapsforgeDownloader(context: Context) {
     fun mapFile(pack: OfflinePack): File = File(mapsDir, pack.mapFileName)
     fun demDir(pack: OfflinePack): File? = pack.demDirName?.let { File(baseDir, it) }
     fun isInstalled(pack: OfflinePack): Boolean = mapFile(pack).exists() && themeFile.exists()
+
+    /** The area the pack's .map file covers (read from its header), or null if it can't be read. */
+    fun coverage(pack: OfflinePack): BoundingBox? = runCatching {
+        MapFile(mapFile(pack)).let { f -> f.boundingBox().also { f.close() } }
+    }.getOrNull()
     fun installedBytes(pack: OfflinePack): Long =
         packFiles(pack).sumOf { f -> if (f.isDirectory) f.walk().sumOf { it.length() } else f.length() }
 

@@ -567,11 +567,67 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     val mapsforgeActive = currentMapSource == MapSource.OFFLINE && currentOfflinePackId in installedPackIds
     var showMapPicker by remember { mutableStateOf(false) }
     var showShareLinkDialog by remember { mutableStateOf(false) }
-    fun selectMapSource(source: MapSource, packId: String? = null) {
+    // True while the current map was picked automatically (the startup default, or a switch because
+    // the phone left the previous map's coverage). A manual pick sticks — e.g. browsing 安娜普納
+    // from Taiwan — unless the phone was inside that map and then walks/flies out of it.
+    var autoSwitchedMap by remember { mutableStateOf(true) }
+    var lastCoverageCheck by remember { mutableStateOf<Pair<String, Boolean>?>(null) } // (map, phone inside it)
+    fun selectMapSource(source: MapSource, packId: String? = null, auto: Boolean = false) {
         currentMapSource = source
         if (packId != null) currentOfflinePackId = packId
+        autoSwitchedMap = auto
         mapController = null
         offlineMapController = null
+    }
+
+    // Follows the phone across map coverage: outside the current offline pack → another installed
+    // pack that covers it (Taiwan first), else OSM; back inside a pack after an automatic switch →
+    // that pack. Low-frequency fixes are plenty for this; the map's own GPS dot uses its own feed.
+    val packCoverage = remember(packRevision) {
+        offlinePacks.filter { it.id in installedPackIds }.associate { it.id to mapsforgeDownloader.coverage(it) }
+    }
+    var phoneLocation by remember { mutableStateOf<android.location.Location?>(null) }
+    DisposableEffect(Unit) {
+        val fusedClient = LocationServices.getFusedLocationProviderClient(context)
+        val callback = object : LocationCallback() {
+            override fun onLocationResult(result: LocationResult) { phoneLocation = result.lastLocation ?: return }
+        }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            fusedClient.lastLocation.addOnSuccessListener { if (it != null && phoneLocation == null) phoneLocation = it }
+            fusedClient.requestLocationUpdates(
+                LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 15_000L).build(),
+                callback, Looper.getMainLooper(),
+            )
+        }
+        onDispose { fusedClient.removeLocationUpdates(callback) }
+    }
+    LaunchedEffect(phoneLocation, packCoverage) {
+        val loc = phoneLocation ?: return@LaunchedEffect
+        fun covers(packId: String) = packCoverage[packId]?.contains(loc.latitude, loc.longitude) == true
+        val coveringPack = offlinePacks
+            .filter { it.id in installedPackIds && covers(it.id) }
+            .minByOrNull { if (it.id == TAIWAN_PACK_ID) 0 else 1 }
+        val currentPackName = offlinePacks.firstOrNull { it.id == currentOfflinePackId }?.name
+        val onOfflinePack = currentMapSource == MapSource.OFFLINE && packCoverage.containsKey(currentOfflinePackId)
+        val mapKey = if (currentMapSource == MapSource.OFFLINE) currentOfflinePackId else "osm"
+        val insideCurrent = !onOfflinePack || covers(currentOfflinePackId)
+        val justLeft = lastCoverageCheck?.let { (key, wasInside) -> key == mapKey && wasInside && !insideCurrent } == true
+        lastCoverageCheck = mapKey to insideCurrent
+        when {
+            onOfflinePack && !insideCurrent && (autoSwitchedMap || justLeft) -> {
+                if (coveringPack != null) selectMapSource(MapSource.OFFLINE, coveringPack.id, auto = true)
+                else selectMapSource(MapSource.OPENSTREETMAP, auto = true)
+                Toast.makeText(
+                    context,
+                    "目前位置不在「$currentPackName」範圍，已自動切換到「${coveringPack?.name ?: "OpenStreetMap"}」",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+            currentMapSource == MapSource.OPENSTREETMAP && autoSwitchedMap && coveringPack != null -> {
+                selectMapSource(MapSource.OFFLINE, coveringPack.id, auto = true)
+                Toast.makeText(context, "已回到「${coveringPack.name}」範圍，自動切換回離線地圖", Toast.LENGTH_LONG).show()
+            }
+        }
     }
     var gpxMinIntervalSec by remember { mutableStateOf(prefs.gpxMinIntervalSec) }
     var gpxMinDistanceM by remember { mutableStateOf(prefs.gpxMinDistanceM) }
