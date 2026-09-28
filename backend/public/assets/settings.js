@@ -137,7 +137,9 @@ refreshTimeMode();
 
 // --- Track color ---
 const colorGrid = document.getElementById('colorGrid');
-let trackColor = localStorage.getItem('trackColor') || TRACK_COLORS[0];
+// Same default as the map page (app.js): blue, with the old red default treated as "never chosen".
+let trackColor = localStorage.getItem('trackColor');
+if (!trackColor || trackColor === '#e63946') trackColor = '#118ab2';
 
 function refreshColorGrid() {
   colorGrid.querySelectorAll('button').forEach((b) => {

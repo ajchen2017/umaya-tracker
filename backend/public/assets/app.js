@@ -22,35 +22,6 @@ const map = L.map('map', {
   maxBounds: RUDY_BOUNDS, maxBoundsViscosity: 1.0,
 }).setView([23.6, 121], 8);
 
-// Before the hiker's first point arrives there's nothing to center on — use the
-// guardian's own location as a more useful default than "all of Taiwan". Only
-// applies if a real point hasn't already centered the map first (hasCenteredOnStart).
-// Also drop a small person-icon marker at the guardian's own position, distinct
-// from the hiker's blue endpoint marker, so it's clear which dot is "me".
-const GUARDIAN_ICON_HTML =
-  '<div class="guardian-dot"><svg viewBox="0 0 24 24" width="16" height="16" fill="#fff">' +
-  '<path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>' +
-  '</svg></div>';
-
-if (navigator.geolocation) {
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      const guardianLatLng = [pos.coords.latitude, pos.coords.longitude];
-      if (!hasCenteredOnStart) {
-        if (currentMapLayer === 'rudy' && !RUDY_BOUNDS.contains(guardianLatLng)) switchLayer('osm');
-        map.setView(guardianLatLng, 16);
-      }
-      L.marker(guardianLatLng, {
-        icon: L.divIcon({ html: GUARDIAN_ICON_HTML, className: '', iconSize: [28, 28] }),
-      })
-        .bindTooltip('你的位置', { permanent: true, direction: 'right', offset: [14, 0], className: 'waypoint-label' })
-        .addTo(map);
-    },
-    () => {}, // denied/unavailable — keep the Taiwan-wide fallback view
-    { timeout: 10000 }
-  );
-}
-
 // bounds: Leaflet never requests tiles outside this box, so the coverage edge is
 // clean map background (ocean-blue), never a stray OpenStreetMap tile bleeding in.
 const rudyLayer = L.tileLayer(RUDY_TILE_URL, {
@@ -70,7 +41,11 @@ const TRACK_COLORS = [
 ];
 const PLANNED_ROUTE_COLOR = '#2d7dd2'; // uploaded GPX/KML route is always blue
 
-let trackColor = localStorage.getItem('trackColor') || TRACK_COLORS[0];
+// Blue by default. The old default (red) still stored from before is treated as "never chosen".
+const DEFAULT_TRACK_COLOR = '#118ab2';
+const OLD_DEFAULT_TRACK_COLOR = '#e63946';
+let trackColor = localStorage.getItem('trackColor');
+if (!trackColor || trackColor === OLD_DEFAULT_TRACK_COLOR) trackColor = DEFAULT_TRACK_COLOR;
 
 // Meters/second a mode is plausibly capable of — hiking tops out around a brisk walk/jog
 // (200m/min), cycling around 40km/h (700m/min). Set on the settings page, read here.
@@ -137,6 +112,9 @@ let sosLayer = L.layerGroup().addTo(map);
 let markerEventLayer = L.layerGroup().addTo(map); // "我很好" / "停駐中" icons — otherwise indistinguishable from normal points
 let pointsLayer = L.layerGroup().addTo(map);
 let plannedLayer = L.layerGroup().addTo(map);
+// Routes can be tens of thousands of points (a multi-day GPX set) — SVG, Leaflet's default,
+// turns that into one huge DOM path that freezes phone WebViews; canvas draws it cheaply.
+const canvasRenderer = L.canvas({ padding: 0.5 });
 let lastPointCount = 0;
 let hasCenteredOnStart = false;
 let startLatLng = null;
@@ -237,17 +215,34 @@ function fmtDateTime(iso, lng) {
 
 function addPlannedLine(latlngs) {
   if (latlngs.length > 0) {
-    L.polyline(latlngs, { color: PLANNED_ROUTE_COLOR, weight: 3, dashArray: '8,6' }).addTo(plannedLayer);
+    L.polyline(latlngs, { color: PLANNED_ROUTE_COLOR, weight: 3, dashArray: '8,6', renderer: canvasRenderer }).addTo(plannedLayer);
   }
 }
 
+// Waypoint names show only when zoomed in, and only near the view — a permanent tooltip is a DOM
+// node per waypoint, and hundreds of them (plus zoomed-out label pile-ups) choke phone WebViews.
+const WAYPOINT_LABEL_MIN_ZOOM = 13;
 function addPlannedWaypoint(lat, lon, name) {
-  L.circleMarker([lat, lon], {
-    radius: 5, color: PLANNED_ROUTE_COLOR, fillColor: '#fff', fillOpacity: 1, weight: 2,
-  })
-    .bindTooltip(name, { permanent: true, direction: 'top', offset: [0, -6], className: 'waypoint-label' })
-    .addTo(plannedLayer);
+  const marker = L.circleMarker([lat, lon], {
+    radius: 5, color: PLANNED_ROUTE_COLOR, fillColor: '#fff', fillOpacity: 1, weight: 2, renderer: canvasRenderer,
+  }).addTo(plannedLayer);
+  marker.waypointName = name;
 }
+
+function refreshWaypointLabels() {
+  const show = map.getZoom() >= WAYPOINT_LABEL_MIN_ZOOM;
+  const near = map.getBounds().pad(0.25);
+  plannedLayer.eachLayer((layer) => {
+    if (!layer.waypointName) return;
+    const want = show && near.contains(layer.getLatLng());
+    if (want && !layer.getTooltip()) {
+      layer.bindTooltip(layer.waypointName, { permanent: true, direction: 'top', offset: [0, -6], className: 'waypoint-label' });
+    } else if (!want && layer.getTooltip()) {
+      layer.unbindTooltip();
+    }
+  });
+}
+map.on('zoomend moveend', refreshWaypointLabels);
 
 function parseGpxRoute(xml) {
   // One line per <trkseg> — joining segments draws a straight line across the gap between them.
@@ -313,6 +308,7 @@ async function renderRoutes(routes) {
   }));
   plannedLayer.clearLayers();
   texts.filter(Boolean).forEach(renderPlannedRoute);
+  refreshWaypointLabels();
 }
 
 // Non-routine marker types get their own icon on the map — otherwise "我很好"
@@ -334,7 +330,7 @@ function drawTrack(points) {
   validPoints.forEach((p) => {
     const label = MARKER_EVENT_LABELS[p.marker_type];
     L.circleMarker([p.lat, p.lng], {
-      radius: 4, color: trackColor, fillColor: '#fff', fillOpacity: 1, weight: 2,
+      radius: 4, color: trackColor, fillColor: '#fff', fillOpacity: 1, weight: 2, renderer: canvasRenderer,
     })
       .bindPopup(
         `${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}<br>${fmtDateTime(p.recorded_at, p.lng)}` +
@@ -848,8 +844,15 @@ document.getElementById('btnMapLayer').addEventListener('click', () => {
   }
   switchLayer(next);
 });
+// 📍 always goes to the hiker's latest position — onto OSM first if RudyMap (view clamped to
+// Taiwan) can't reach it.
 document.getElementById('btnStart').addEventListener('click', () => {
-  if (lastLatLng) map.setView(lastLatLng, 18);
+  if (!lastLatLng) return;
+  if (currentMapLayer === 'rudy' && !RUDY_BOUNDS.contains(lastLatLng)) {
+    switchLayer('osm');
+    autoSwitchedToOsm = true;
+  }
+  map.setView(lastLatLng, Math.max(map.getZoom(), 16));
 });
 
 // render()'s "points.length === lastPointCount → nothing new" guard never runs
