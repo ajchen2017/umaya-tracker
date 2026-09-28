@@ -5,6 +5,10 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
 /** Fixed set of selectable GPS-fix intervals: seconds value paired with its display label. */
+/** GPX 記錄間隔 choices in seconds (0 = 持續記錄) and 最短紀錄長度 choices in meters. */
+val GPX_INTERVAL_OPTIONS = listOf(0, 5, 8, 10, 20, 60)
+val GPX_DISTANCE_OPTIONS = listOf(5, 10, 20)
+
 val INTERVAL_PRESETS = listOf(
     10 to "10 秒",
     20 to "20 秒",
@@ -82,17 +86,17 @@ class Prefs(context: Context) {
         get() = prefs.getString("gpx_file_path", null)
         set(value) = prefs.edit().putString("gpx_file_path", value).apply()
 
-    /** Minimum seconds between logged GPX points — a hard floor independent of how often the
-     *  underlying GPS callback actually fires. Range 1–20; default 5. */
+    /** GPX 記錄間隔 — minimum seconds between logged points, one of [GPX_INTERVAL_OPTIONS]; 0 =
+     *  continuous. Independent of the guardian 定位頻率 ([intervalSeconds]). */
     var gpxMinIntervalSec: Int
-        get() = prefs.getInt("gpx_min_interval_sec", 5)
-        set(value) = prefs.edit().putInt("gpx_min_interval_sec", value).apply()
+        get() = prefs.getInt("gpx_record_interval_sec", 10)
+        set(value) = prefs.edit().putInt("gpx_record_interval_sec", value).apply()
 
-    /** Minimum meters moved between logged GPX points — independent OR-condition alongside
-     *  [gpxMinIntervalSec] (whichever threshold is hit first triggers a log). Range 5–20; default 5. */
+    /** GPX 最短紀錄長度 — minimum meters moved before the next point is logged, one of
+     *  [GPX_DISTANCE_OPTIONS]; must be met together with [gpxMinIntervalSec]. */
     var gpxMinDistanceM: Int
-        get() = prefs.getInt("gpx_min_distance_m", 5)
-        set(value) = prefs.edit().putInt("gpx_min_distance_m", value).apply()
+        get() = prefs.getInt("gpx_min_record_distance_m", 20)
+        set(value) = prefs.edit().putInt("gpx_min_record_distance_m", value).apply()
 
     /** 地圖比例尺 開/關 — default off. */
     var showScaleBar: Boolean

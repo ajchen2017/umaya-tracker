@@ -80,6 +80,8 @@ import tw.umaya.tracker.data.ForgotPasswordRequest
 import tw.umaya.tracker.data.IntervalRequest
 import tw.umaya.tracker.data.HikeListItemDto
 import tw.umaya.tracker.data.INTERVAL_PRESETS
+import tw.umaya.tracker.data.GPX_DISTANCE_OPTIONS
+import tw.umaya.tracker.data.GPX_INTERVAL_OPTIONS
 import tw.umaya.tracker.data.LoginRequest
 import tw.umaya.tracker.data.MapsforgeDownloader
 import tw.umaya.tracker.data.Prefs
@@ -87,6 +89,10 @@ import tw.umaya.tracker.data.RegisterRequest
 import tw.umaya.tracker.data.TAIWAN_PACK_ID
 import tw.umaya.tracker.data.intervalLabel
 import tw.umaya.tracker.location.LocationForegroundService
+import tw.umaya.tracker.location.gpxToKml
+import tw.umaya.tracker.location.mergeGpx
+import tw.umaya.tracker.location.recordedTracks
+import tw.umaya.tracker.location.trackPointCount
 import tw.umaya.tracker.sync.HikeActionWorker
 import tw.umaya.tracker.widget.TrackerWidgetProvider
 import java.io.IOException
@@ -156,34 +162,27 @@ private fun requestBackgroundExecutionExemption(context: android.content.Context
     }
 }
 
-/** A labeled dropdown of integers — used by the 開始追蹤 dialog's 最短間隔時間/距離 pickers. */
-@OptIn(ExperimentalMaterial3Api::class)
+/** A row of selectable choices — used by the 軌跡記錄設定 dialog. */
 @Composable
-private fun NumberDropdown(
-    label: String,
-    value: Int,
-    range: IntRange,
-    unit: String,
-    onValueChange: (Int) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }, modifier = modifier) {
-        OutlinedTextField(
-            value = "$value$unit",
-            onValueChange = {},
-            readOnly = true,
-            label = { Text(label) },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier.menuAnchor().fillMaxWidth(),
-        )
-        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            range.forEach { v ->
-                DropdownMenuItem(text = { Text("$v$unit") }, onClick = { onValueChange(v); expanded = false })
-            }
+private fun OptionChips(options: List<Int>, selected: Int, label: (Int) -> String, onSelect: (Int) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+        options.forEach { v ->
+            OutlinedButton(
+                onClick = { onSelect(v) },
+                contentPadding = PaddingValues(horizontal = 6.dp),
+                modifier = Modifier.weight(1f),
+                colors = if (v == selected) {
+                    ButtonDefaults.outlinedButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    )
+                } else ButtonDefaults.outlinedButtonColors(),
+            ) { Text(label(v), fontSize = 12.sp, maxLines = 1, softWrap = false) }
         }
     }
 }
+
+private fun gpxIntervalLabel(seconds: Int) = if (seconds == 0) "持續" else "${seconds}秒"
 
 /** Snaps to the fixed [INTERVAL_PRESETS] list rather than any continuous value. */
 @Composable
@@ -525,6 +524,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var gpxRecording by remember { mutableStateOf(prefs.isGpxRecording) }
     var gpxPaused by remember { mutableStateOf(prefs.isGpxPaused) }
     var showGpxStartDialog by remember { mutableStateOf(false) }
+    var showTrackSettingsDialog by remember { mutableStateOf(false) }
     var showGpxStopDialog by remember { mutableStateOf(false) }
     var showLoadRouteDialog by remember { mutableStateOf(false) }
     var showMapSettingsDialog by remember { mutableStateOf(false) }
@@ -1520,22 +1520,137 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         )
     }
 
+    // ---- 軌跡記錄設定：記錄間隔／最短紀錄長度／匯出（可多選合併）----
+    val exportSelection = remember { mutableStateListOf<String>() }
+    var exportFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+    fun exportName(files: List<File>): String = when (files.size) {
+        1 -> files.first().nameWithoutExtension
+        else -> files.map { it.nameWithoutExtension }.sorted().let { "合併_${it.first()}_${it.last()}" }
+    }
+    fun writeExport(uri: Uri?, asKml: Boolean) {
+        val files = exportFiles
+        if (uri == null || files.isEmpty()) return
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val name = exportName(files)
+                    val gpx = if (files.size == 1) files.first().readText() else mergeGpx(files, name)
+                    val content = if (asKml) gpxToKml(gpx, name) else gpx
+                    context.contentResolver.openOutputStream(uri, "wt")!!.use { it.write(content.toByteArray()) }
+                }
+                Toast.makeText(context, "已匯出（${files.size} 筆記錄）", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "匯出失敗：${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val exportGpxLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/gpx+xml")) { writeExport(it, false) }
+    val exportKmlLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.google-earth.kml+xml")) { writeExport(it, true) }
+
+    if (showTrackSettingsDialog) {
+        val tracks = remember(showTrackSettingsDialog) { recordedTracks(context).map { it to trackPointCount(it) } }
+        fun applyToService() {
+            // Only a live recording needs its location rate re-requested for the new interval.
+            if (prefs.isGpxRecording) {
+                context.startService(
+                    Intent(context, LocationForegroundService::class.java).setAction(LocationForegroundService.ACTION_UPDATE_INTERVAL)
+                )
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { showTrackSettingsDialog = false },
+            title = { Text("軌跡記錄設定") },
+            text = {
+                Column(modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                    Text("記錄間隔", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    OptionChips(GPX_INTERVAL_OPTIONS, gpxMinIntervalSec, ::gpxIntervalLabel) {
+                        gpxMinIntervalSec = it; prefs.gpxMinIntervalSec = it; applyToService()
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Text("最短紀錄長度", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    OptionChips(GPX_DISTANCE_OPTIONS, gpxMinDistanceM, { "${it}米" }) {
+                        gpxMinDistanceM = it; prefs.gpxMinDistanceM = it
+                    }
+                    Text(
+                        "時間和距離都達到才記一點（持續 = 只看距離）。只影響 GPX 記錄；回報給留守人的定位頻率不變。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Text("匯出 GPX／KML", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    if (tracks.isEmpty()) {
+                        Text("還沒有記錄過軌跡。", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        Text(
+                            "勾選一筆或多筆；多筆會合併成一個檔案（各自一段，段與段之間不連線）。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        tracks.forEach { (file, count) ->
+                            val checked = file.absolutePath in exportSelection
+                            val recordingNow = file.absolutePath == prefs.gpxFilePath && prefs.isGpxRecording
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    if (checked) exportSelection.remove(file.absolutePath) else exportSelection.add(file.absolutePath)
+                                },
+                            ) {
+                                Checkbox(checked = checked, onCheckedChange = null)
+                                Text(
+                                    "${file.nameWithoutExtension}（$count 個點${if (recordingNow) "・記錄中" else ""}）",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                        val chosen = tracks.map { it.first }.filter { it.absolutePath in exportSelection }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(enabled = chosen.isNotEmpty(), onClick = {
+                                exportFiles = chosen; exportGpxLauncher.launch("${exportName(chosen)}.gpx")
+                            }) { Text(if (chosen.size > 1) "合併匯出 GPX" else "匯出 GPX") }
+                            OutlinedButton(enabled = chosen.isNotEmpty(), onClick = {
+                                exportFiles = chosen; exportKmlLauncher.launch("${exportName(chosen)}.kml")
+                            }) { Text(if (chosen.size > 1) "合併匯出 KML" else "匯出 KML") }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showTrackSettingsDialog = false }) { Text("關閉") } },
+        )
+    }
+
+    // The trail being recorded right now, re-read from its file every few seconds and drawn live.
+    var recordingTrack by remember { mutableStateOf<List<GeoPoint>>(emptyList()) }
+    LaunchedEffect(gpxRecording) {
+        if (!gpxRecording) { recordingTrack = emptyList(); return@LaunchedEffect }
+        while (true) {
+            val path = prefs.gpxFilePath
+            recordingTrack = withContext(Dispatchers.IO) {
+                path?.let { runCatching { parseRoute(File(it).readText()).segments.flatten() }.getOrNull() }.orEmpty()
+            }
+            delay(5_000)
+        }
+    }
+    LaunchedEffect(mapController, offlineMapController, recordingTrack) {
+        mapController?.setRecordingTrack(recordingTrack)
+        offlineMapController?.setRecordingTrack(recordingTrack)
+    }
+
     if (showGpxStartDialog) {
         AlertDialog(
             onDismissRequest = { showGpxStartDialog = false },
             title = { Text("開始記錄") },
             text = {
                 Column {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        NumberDropdown(
-                            label = "最短間隔時間", value = gpxMinIntervalSec, range = 1..20, unit = "秒",
-                            onValueChange = { gpxMinIntervalSec = it }, modifier = Modifier.weight(1f),
-                        )
-                        NumberDropdown(
-                            label = "最短間隔距離", value = gpxMinDistanceM, range = 5..20, unit = "公尺",
-                            onValueChange = { gpxMinDistanceM = it }, modifier = Modifier.weight(1f),
-                        )
-                    }
+                    Text(
+                        "記錄間隔：" + (if (gpxMinIntervalSec == 0) "持續記錄" else "$gpxMinIntervalSec 秒") +
+                            "・最短紀錄長度：$gpxMinDistanceM 米（兩個都達到才記一點）",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "要調整請到「☰ → 軌跡記錄設定」。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     if (!gpsHasFix) {
                         Spacer(Modifier.height(8.dp))
                         Text(
@@ -1855,6 +1970,10 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         showFunctionMenu = false
                         if (loadedRoutes.isEmpty()) routePickerLauncher.launch(arrayOf("*/*")) else showLoadRouteDialog = true
                     },
+                )
+                DropdownMenuItem(
+                    text = { Text("軌跡記錄設定（間隔／長度／匯出）") },
+                    onClick = { showFunctionMenu = false; exportSelection.clear(); showTrackSettingsDialog = true },
                 )
                 DropdownMenuItem(
                     text = { Text("地圖設定") },

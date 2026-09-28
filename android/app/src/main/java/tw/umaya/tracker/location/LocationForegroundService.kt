@@ -86,6 +86,7 @@ class LocationForegroundService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var lastLocation: Location? = null
     private var lastAcceptedLocation: Location? = null
+    private var lastReportedFixTime = 0L
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var pendingSpeech = false
@@ -96,7 +97,12 @@ class LocationForegroundService : Service() {
             lastLocation = location // kept unfiltered — SOS/markers favor recency over precision
             if (isPlausibleFix(location)) {
                 lastAcceptedLocation = location
-                recordPoint(location, "normal")
+                // Fixes can arrive faster than the guardian 定位頻率 while a GPX is recording at
+                // a finer interval — report at most once per 定位頻率 (80% tolerance for jitter).
+                if (location.time - lastReportedFixTime >= prefs.intervalSeconds * 800L) {
+                    lastReportedFixTime = location.time
+                    recordPoint(location, "normal")
+                }
                 if (prefs.isGpxRecording && !prefs.isGpxPaused) {
                     gpxRecorder.appendPoint(location, prefs.gpxMinIntervalSec, prefs.gpxMinDistanceM)
                 }
@@ -268,7 +274,10 @@ class LocationForegroundService : Service() {
     }
 
     private fun startLocationUpdates() {
-        val intervalMs = prefs.intervalSeconds * 1_000L
+        // The faster of the guardian 定位頻率 and the GPX 記錄間隔 (0 = continuous → every second).
+        val reportMs = prefs.intervalSeconds * 1_000L
+        val gpxMs = if (prefs.isGpxRecording && !prefs.isGpxPaused) maxOf(1_000L, prefs.gpxMinIntervalSec * 1_000L) else Long.MAX_VALUE
+        val intervalMs = minOf(reportMs, gpxMs)
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
             .setMinUpdateIntervalMillis(intervalMs / 2)
             .build()

@@ -8,6 +8,7 @@ import org.osmdroid.util.GeoPoint
 import org.xmlpull.v1.XmlPullParser
 
 const val LOADED_ROUTE_COLOR = 0xFF00008B.toInt() // dark blue, shared by both map engines
+const val RECORDING_TRACK_COLOR = 0xFFE65100.toInt() // orange — the trail being recorded now
 
 /** A route label drawn as a dot with its text to the right; the dot sits at ([dotX], [dotY]). */
 class RouteLabelBitmap(val bitmap: Bitmap, val dotX: Float, val dotY: Float)

@@ -23,6 +23,7 @@ import androidx.core.content.ContextCompat
 import org.mapsforge.core.graphics.Paint
 import org.mapsforge.core.graphics.Style
 import org.mapsforge.core.model.BoundingBox
+import org.osmdroid.util.GeoPoint
 import org.mapsforge.core.model.LatLong
 import org.mapsforge.map.android.graphics.AndroidGraphicFactory
 import org.mapsforge.map.android.util.AndroidUtil
@@ -414,6 +415,22 @@ class OfflineMapController internal constructor(
         loadedRoutePolylines[id] = added
         applyRouteLabelMode(force = true)
         added.forEach { layers.add(it) }
+    }
+
+    private var recordingLine: Polyline? = null
+    /** The GPX trail being recorded right now — its own layer, untouched by loaded-route redraws. */
+    fun setRecordingTrack(points: List<GeoPoint>) {
+        recordingLine?.let { layers.remove(it) }
+        recordingLine = null
+        if (points.size < 2) return
+        val paint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
+            setColor(RECORDING_TRACK_COLOR)
+            setStyle(Style.STROKE)
+            setStrokeWidth(7f)
+        }
+        recordingLine = Polyline(paint, AndroidGraphicFactory.INSTANCE).apply {
+            addPoints(points.map { LatLong(it.latitude, it.longitude) })
+        }.also { layers.add(it) }
     }
 
     fun removeLoadedRoute(id: String) {

@@ -40,7 +40,7 @@ class GpxRecorder(private val context: Context) {
     fun start(resumePath: String? = null): String {
         if (resumePath != null && File(resumePath).exists()) {
             file = File(resumePath)
-            pointCount = countExistingPoints(File(resumePath))
+            pointCount = trackPointCount(File(resumePath))
             return resumePath
         }
         val stamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(System.currentTimeMillis())
@@ -58,18 +58,10 @@ class GpxRecorder(private val context: Context) {
         return f.absolutePath
     }
 
-    private fun countExistingPoints(f: File): Int {
-        val text = f.readText()
-        var count = 0
-        var idx = text.indexOf("<trkpt")
-        while (idx >= 0) { count++; idx = text.indexOf("<trkpt", idx + 1) }
-        return count
-    }
-
     /**
-     * Appends one fix, but only if it clears the minimum-time-OR-minimum-distance threshold
-     * since the last logged point (whichever comes first) — the actual GPS callback can fire
-     * much more often than the hiker asked to log. No-op if [start] hasn't been called.
+     * Appends one fix, but only once BOTH the minimum time and the minimum distance since the
+     * last logged point are reached — so standing still doesn't pile up points at one spot.
+     * [minIntervalSec] 0 = no time limit (distance alone decides). No-op if [start] wasn't called.
      */
     fun appendPoint(location: Location, minIntervalSec: Int, minDistanceM: Int) {
         val f = file ?: return
@@ -77,7 +69,7 @@ class GpxRecorder(private val context: Context) {
         if (prev != null) {
             val elapsedSec = (location.time - prev.time) / 1000.0
             val distanceM = prev.distanceTo(location)
-            if (elapsedSec < minIntervalSec && distanceM < minDistanceM) return
+            if (elapsedSec < minIntervalSec || distanceM < minDistanceM) return
         }
         val ele = if (location.hasAltitude()) " <ele>%.1f</ele>".format(location.altitude) else ""
         val trkpt = "<trkpt lat=\"${location.latitude}\" lon=\"${location.longitude}\">$ele" +
@@ -93,8 +85,6 @@ class GpxRecorder(private val context: Context) {
         pointCount++
         lastLogged = location
     }
-
-    /** Deletes the in-progress file without keeping anything (放棄). */
 
     /**
      * Renames the finished trail to the hiker's chosen name, converting to KML too if asked.
@@ -119,20 +109,54 @@ class GpxRecorder(private val context: Context) {
         return gpxTarget.absolutePath to count
     }
 
-    private fun gpxToKml(gpxXml: String, name: String): String {
-        val coords = Regex("<trkpt lat=\"([^\"]+)\" lon=\"([^\"]+)\">(?:<ele>([^<]+)</ele>)?")
-            .findAll(gpxXml)
-            .joinToString(" ") { m ->
-                val lat = m.groupValues[1]; val lon = m.groupValues[2]
-                val ele = m.groupValues[3].ifBlank { "0" }
-                "$lon,$lat,$ele"
-            }
-        return """<?xml version="1.0" encoding="UTF-8"?>
+}
+
+/** GPX trails recorded on this phone (finished and in-progress), newest first. */
+fun recordedTracks(context: Context): List<File> =
+    File(context.getExternalFilesDir(null), "gpx").listFiles { f -> f.extension == "gpx" }
+        .orEmpty().sortedByDescending { it.lastModified() }
+
+private val trksegPattern = Regex("<trkseg>(.*?)</trkseg>", RegexOption.DOT_MATCHES_ALL)
+
+/**
+ * Merges several recorded trails into one GPX, oldest first, each kept as its own <trkseg> so no
+ * line is drawn across the gap between one recording and the next.
+ */
+fun mergeGpx(files: List<File>, name: String): String {
+    val segments = files.sortedBy { it.name }.flatMap { f ->
+        trksegPattern.findAll(f.readText()).map { it.groupValues[1].trim() }.filter { it.isNotEmpty() }.toList()
+    }
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="umaya-tracker" xmlns="http://www.topografix.com/GPX/1/1">
+<trk><name>$name</name>
+""" + segments.joinToString("") { "<trkseg>\n$it\n</trkseg>\n" } + "</trk></gpx>\n"
+}
+
+/** Converts a recorded (or merged) GPX trail to KML, one line per segment, keeping altitude. */
+fun gpxToKml(gpxXml: String, name: String): String {
+    // The recorder writes `...lon="x"> <ele>…` — whitespace before <ele> must be allowed, or every
+    // altitude silently comes out as 0.
+    val point = Regex("<trkpt lat=\"([^\"]+)\" lon=\"([^\"]+)\">\\s*(?:<ele>([^<]+)</ele>)?")
+    val lines = trksegPattern.findAll(gpxXml).map { seg ->
+        point.findAll(seg.groupValues[1]).joinToString(" ") { m ->
+            "${m.groupValues[2]},${m.groupValues[1]},${m.groupValues[3].ifBlank { "0" }}"
+        }
+    }.filter { it.isNotEmpty() }.joinToString("") {
+        "<LineString><tessellate>1</tessellate><altitudeMode>absolute</altitudeMode><coordinates>\n$it\n</coordinates></LineString>\n"
+    }
+    return """<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>$name</name>
-<Placemark><name>$name</name><LineString><tessellate>1</tessellate><coordinates>
-$coords
-</coordinates></LineString></Placemark>
+<Placemark><name>$name</name><MultiGeometry>
+$lines</MultiGeometry></Placemark>
 </Document></kml>
 """
-    }
+}
+
+/** Point count of a recorded trail, for listing it. */
+fun trackPointCount(f: File): Int {
+    val text = f.readText()
+    var count = 0
+    var idx = text.indexOf("<trkpt")
+    while (idx >= 0) { count++; idx = text.indexOf("<trkpt", idx + 1) }
+    return count
 }
