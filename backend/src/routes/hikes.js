@@ -65,7 +65,7 @@ router.patch('/:id/interval', requireAuth, async (req, res) => {
   }
 
   const { rows } = await pool.query(
-    'UPDATE hikes SET interval_seconds = $1 WHERE id = $2 AND user_id = $3 RETURNING id',
+    'UPDATE hikes SET interval_seconds = $1, interval_updated_at = now() WHERE id = $2 AND user_id = $3 RETURNING id',
     [intervalSeconds, req.params.id, req.userId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Hike not found' });

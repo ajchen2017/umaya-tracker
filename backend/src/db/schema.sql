@@ -39,6 +39,8 @@ ALTER TABLE hikes ADD COLUMN IF NOT EXISTS nickname TEXT;
 -- The phone's configured recording interval, so the family page can label its
 -- elevation-chart grid with the real value instead of inferring it from point gaps.
 ALTER TABLE hikes ADD COLUMN IF NOT EXISTS interval_seconds INTEGER;
+-- When the app last announced a 定位頻率 change (null = only the value set at hike start).
+ALTER TABLE hikes ADD COLUMN IF NOT EXISTS interval_updated_at TIMESTAMPTZ;
 -- Superseded by users.share_token (see above) — a hike-level token meant every
 -- new trip broke the family's saved link.
 ALTER TABLE hikes DROP COLUMN IF EXISTS share_token;

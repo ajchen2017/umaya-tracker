@@ -132,7 +132,6 @@ function filterPlausiblePoints(points) {
   return kept;
 }
 
-const polyline = L.polyline([], { color: trackColor, weight: 4 }).addTo(map);
 let lastMarker = null;
 let sosLayer = L.layerGroup().addTo(map);
 let markerEventLayer = L.layerGroup().addTo(map); // "我很好" / "停駐中" icons — otherwise indistinguishable from normal points
@@ -327,13 +326,10 @@ function drawTrack(points) {
   // newest point happened to look implausible.
   const last = points[points.length - 1];
   const validPoints = filterPlausiblePoints(points);
-  const latlngs = validPoints.map((p) => [p.lat, p.lng]);
   const sosPoints = points.filter((p) => p.marker_type === 'sos');
   const eventPoints = points.filter((p) => p.marker_type === 'safe' || p.marker_type === 'camping');
 
-  polyline.setStyle({ color: trackColor });
-  polyline.setLatLngs(latlngs);
-
+  // Points only, no connecting line (the hiker's request) — each dot is a real recorded fix.
   pointsLayer.clearLayers();
   validPoints.forEach((p) => {
     const label = MARKER_EVENT_LABELS[p.marker_type];
@@ -860,7 +856,6 @@ document.getElementById('btnStart').addEventListener('click', () => {
 // drawTrack() again once points goes back to 0, so clear the drawn layers here
 // directly instead of waiting on the next poll to do it.
 function clearMapVisuals() {
-  polyline.setLatLngs([]);
   pointsLayer.clearLayers();
   sosLayer.clearLayers();
   markerEventLayer.clearLayers();

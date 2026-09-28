@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../db/pool');
 const { computeAlertLevel, resolveConfig, RANGES } = require('../lib/alertLevel');
 const { checkAdminPassword } = require('../middleware/auth');
+const { effectiveIntervalSeconds } = require('../lib/intervalInference');
 
 const router = express.Router();
 
@@ -37,6 +38,7 @@ router.get('/:shareToken', async (req, res) => {
   );
 
   const alert = computeAlertLevel(pointsResult.rows, new Date(), hike.alert_config, hike.status === 'ended');
+  hike.interval_seconds = effectiveIntervalSeconds(hike, pointsResult.rows);
   // Route names/ids only — the page polls every 30s, so each file's content is fetched once
   // separately (GET /routes/:routeId) instead of re-sending every MB of it on every poll.
   const routesResult = await pool.query('SELECT id, name FROM hike_routes WHERE hike_id = $1 ORDER BY id', [hike.id]);
