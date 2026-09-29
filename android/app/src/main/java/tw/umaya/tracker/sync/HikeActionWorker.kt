@@ -5,14 +5,15 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import androidx.work.Constraints
+import androidx.work.Data
 import androidx.work.CoroutineWorker
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
-import androidx.work.workDataOf
 import androidx.work.WorkerParameters
 import tw.umaya.tracker.data.ApiClient
 import tw.umaya.tracker.data.PauseStateRequest
+import tw.umaya.tracker.data.WaypointRequest
 import tw.umaya.tracker.data.Prefs
 
 /**
@@ -35,6 +36,17 @@ class HikeActionWorker(context: Context, params: WorkerParameters) : CoroutineWo
                 ACTION_PAUSE -> ApiClient.service.setPauseState(bearer, hikeId, PauseStateRequest(true))
                 ACTION_RESUME -> ApiClient.service.setPauseState(bearer, hikeId, PauseStateRequest(false))
                 ACTION_END -> ApiClient.service.endHike(bearer, hikeId)
+                ACTION_WAYPOINT -> ApiClient.service.addWaypoint(
+                    bearer, hikeId,
+                    WaypointRequest(
+                        clientId = inputData.getString(KEY_WP_CLIENT_ID) ?: return Result.failure(),
+                        name = inputData.getString(KEY_WP_NAME) ?: return Result.failure(),
+                        lat = inputData.getDouble(KEY_WP_LAT, 0.0),
+                        lng = inputData.getDouble(KEY_WP_LNG, 0.0),
+                        altitude = inputData.getDouble(KEY_WP_ALT, Double.NaN).takeIf { !it.isNaN() },
+                        recordedAt = inputData.getString(KEY_WP_TIME) ?: return Result.failure(),
+                    ),
+                )
                 else -> return Result.failure()
             }
             when {
@@ -57,6 +69,7 @@ class HikeActionWorker(context: Context, params: WorkerParameters) : CoroutineWo
         ACTION_PAUSE -> "暫停"
         ACTION_RESUME -> "繼續"
         ACTION_END -> "結束行程"
+        ACTION_WAYPOINT -> "航點「${inputData.getString(KEY_WP_NAME)}」"
         else -> action
     }
 
@@ -68,13 +81,25 @@ class HikeActionWorker(context: Context, params: WorkerParameters) : CoroutineWo
         const val ACTION_PAUSE = "pause"
         const val ACTION_RESUME = "resume"
         const val ACTION_END = "end"
+        const val ACTION_WAYPOINT = "waypoint"
+        const val KEY_WP_CLIENT_ID = "wp_client_id"
+        const val KEY_WP_NAME = "wp_name"
+        const val KEY_WP_LAT = "wp_lat"
+        const val KEY_WP_LNG = "wp_lng"
+        const val KEY_WP_ALT = "wp_alt"
+        const val KEY_WP_TIME = "wp_time"
         private const val KEY_HIKE_ID = "hike_id"
         private const val KEY_ACTION = "action"
 
-        fun enqueue(context: Context, hikeId: Long, action: String) {
+        fun enqueue(context: Context, hikeId: Long, action: String, extra: Map<String, Any?> = emptyMap()) {
+            val data = Data.Builder()
+                .putAll(extra)
+                .putLong(KEY_HIKE_ID, hikeId)
+                .putString(KEY_ACTION, action)
+                .build()
             val request = OneTimeWorkRequestBuilder<HikeActionWorker>()
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-                .setInputData(workDataOf(KEY_HIKE_ID to hikeId, KEY_ACTION to action))
+                .setInputData(data)
                 .build()
             WorkManager.getInstance(context).enqueue(request)
         }

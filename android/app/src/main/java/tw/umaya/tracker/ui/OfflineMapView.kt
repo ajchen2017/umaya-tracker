@@ -420,7 +420,9 @@ class OfflineMapController internal constructor(
     private var recordingLines: List<Polyline> = emptyList()
     /** The GPX trail being recorded right now, one line per segment (pauses split it) — its own
      *  layers, untouched by loaded-route redraws. */
-    fun setRecordingTrack(segments: List<List<GeoPoint>>) {
+    fun setRecordingTrack(segments: List<List<GeoPoint>>, waypoints: List<RouteLabel> = emptyList()) {
+        if (waypoints.isEmpty()) removeLoadedRoute(RECORDING_WAYPOINTS_ID)
+        else addLoadedRoute(RECORDING_WAYPOINTS_ID, ParsedRoute(emptyList(), waypoints))
         recordingLines.forEach { layers.remove(it) }
         recordingLines = segments.filter { it.size >= 2 }.map { points ->
             val paint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
@@ -440,10 +442,9 @@ class OfflineMapController internal constructor(
         routeLabelMarkers.remove(id)
     }
 
+    /** Removes every loaded GPX/KML route — not the live recording's own waypoints. */
     fun clearAllLoadedRoutes() {
-        loadedRoutePolylines.values.forEach { polylines -> polylines.forEach { layers.remove(it) } }
-        loadedRoutePolylines.clear()
-        routeLabelMarkers.clear()
+        loadedRoutePolylines.keys.filter { it != RECORDING_WAYPOINTS_ID }.forEach { removeLoadedRoute(it) }
     }
 
     fun setLoraDevicePoints(points: List<LoraDevicePoint>) {

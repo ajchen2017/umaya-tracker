@@ -54,6 +54,8 @@ class LocationForegroundService : Service() {
         const val ACTION_MARK_SOS = "tw.umaya.tracker.action.MARK_SOS"
         const val ACTION_MARK_SAFE = "tw.umaya.tracker.action.MARK_SAFE"
         const val ACTION_MARK_CAMPING = "tw.umaya.tracker.action.MARK_CAMPING"
+        const val ACTION_ADD_WAYPOINT = "tw.umaya.tracker.action.ADD_WAYPOINT"
+        const val EXTRA_WAYPOINT_NAME = "waypoint_name"
         const val ACTION_UPDATE_INTERVAL = "tw.umaya.tracker.action.UPDATE_INTERVAL"
         const val ACTION_PAUSE = "tw.umaya.tracker.action.PAUSE"
         const val ACTION_RESUME = "tw.umaya.tracker.action.RESUME"
@@ -199,6 +201,7 @@ class LocationForegroundService : Service() {
             }
             ACTION_MARK_SAFE -> markPoint("safe")
             ACTION_MARK_CAMPING -> markPoint("camping")
+            ACTION_ADD_WAYPOINT -> addWaypoint(intent?.getStringExtra(EXTRA_WAYPOINT_NAME)?.ifBlank { null } ?: "航點")
             ACTION_GPX_START -> {
                 startForeground(NOTIFICATION_ID, buildNotification())
                 val resumeExisting = intent?.getBooleanExtra(EXTRA_GPX_RESUME_EXISTING, false) ?: false
@@ -297,14 +300,21 @@ class LocationForegroundService : Service() {
      * first periodic fix lands, which can be minutes away, so fall back to an on-demand fix and
      * always end in either a recorded point or a toast explaining why not.
      */
-    private fun markPoint(markerType: String) {
+    private fun markPoint(markerType: String) = withCurrentFix("標記") { recordPoint(it, markerType) }
+
+    /**
+     * Marker/waypoint buttons must never silently do nothing: [lastLocation] is only populated once
+     * the first periodic fix lands, which can be minutes away, so fall back to an on-demand fix and
+     * always end in either [onFix] or a toast explaining why not.
+     */
+    private fun withCurrentFix(what: String, onFix: (Location) -> Unit) {
         val cached = lastLocation
         if (cached != null) {
-            recordPoint(cached, markerType)
+            onFix(cached)
             return
         }
         if (!hasLocationPermission()) {
-            toast("沒有定位權限，無法標記")
+            toast("沒有定位權限，無法$what")
             return
         }
         val cancellationToken = CancellationTokenSource()
@@ -316,11 +326,33 @@ class LocationForegroundService : Service() {
                 toast("目前無法取得定位，請稍後再試")
             } else {
                 lastLocation = location
-                recordPoint(location, markerType)
+                onFix(location)
             }
         }.addOnFailureListener {
             toast("定位失敗：${it.message}")
         }
+    }
+
+    /** 航點: into the GPX being recorded, and to the guardian page (retried until delivered). */
+    private fun addWaypoint(name: String) = withCurrentFix("新增航點") { location ->
+        if (prefs.isGpxRecording) gpxRecorder.addWaypoint(name, location)
+        val hikeId = prefs.activeHikeId
+        if (hikeId != -1L) {
+            val iso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+                .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(location.time)
+            HikeActionWorker.enqueue(
+                applicationContext, hikeId, HikeActionWorker.ACTION_WAYPOINT,
+                mapOf(
+                    HikeActionWorker.KEY_WP_CLIENT_ID to java.util.UUID.randomUUID().toString(),
+                    HikeActionWorker.KEY_WP_NAME to name,
+                    HikeActionWorker.KEY_WP_LAT to location.latitude,
+                    HikeActionWorker.KEY_WP_LNG to location.longitude,
+                    HikeActionWorker.KEY_WP_ALT to if (location.hasAltitude()) location.altitude else Double.NaN,
+                    HikeActionWorker.KEY_WP_TIME to iso,
+                ),
+            )
+        }
+        toast("🚩 已新增航點「$name」")
     }
 
     private fun toast(message: String) {

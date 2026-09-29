@@ -42,7 +42,11 @@ router.get('/:shareToken', async (req, res) => {
   // Route names/ids only — the page polls every 30s, so each file's content is fetched once
   // separately (GET /routes/:routeId) instead of re-sending every MB of it on every poll.
   const routesResult = await pool.query('SELECT id, name FROM hike_routes WHERE hike_id = $1 ORDER BY id', [hike.id]);
-  res.json({ hike, points: pointsResult.rows, alert, routes: routesResult.rows });
+  const waypointsResult = await pool.query(
+    'SELECT name, lat, lng, altitude, recorded_at FROM hike_waypoints WHERE hike_id = $1 ORDER BY recorded_at',
+    [hike.id]
+  );
+  res.json({ hike, points: pointsResult.rows, alert, routes: routesResult.rows, waypoints: waypointsResult.rows });
 });
 
 router.get('/:shareToken/routes/:routeId', async (req, res) => {

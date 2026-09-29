@@ -188,7 +188,9 @@ class HikeMapController internal constructor(
     private var recordingLines: List<Polyline> = emptyList()
     /** The GPX trail being recorded right now, one line per segment (pauses split it) — its own
      *  overlays, untouched by loaded-route redraws. */
-    fun setRecordingTrack(segments: List<List<GeoPoint>>) {
+    fun setRecordingTrack(segments: List<List<GeoPoint>>, waypoints: List<RouteLabel> = emptyList()) {
+        if (waypoints.isEmpty()) removeLoadedRoute(RECORDING_WAYPOINTS_ID)
+        else addLoadedRoute(RECORDING_WAYPOINTS_ID, ParsedRoute(emptyList(), waypoints))
         recordingLines.forEach { mapView.overlays.remove(it) }
         recordingLines = segments.filter { it.size >= 2 }.map { points ->
             Polyline(mapView).apply {
@@ -207,9 +209,11 @@ class HikeMapController internal constructor(
         mapView.invalidate()
     }
 
+    /** Removes every loaded GPX/KML route — not the live recording's own waypoints. */
     fun clearAllLoadedRoutes() {
-        loadedRoutes.values.forEach { polylines -> polylines.forEach { mapView.overlays.remove(it) } }
-        loadedRoutes.clear()
+        loadedRoutes.keys.filter { it != RECORDING_WAYPOINTS_ID }.forEach { id ->
+            loadedRoutes.remove(id)?.forEach { mapView.overlays.remove(it) }
+        }
         mapView.invalidate()
     }
 

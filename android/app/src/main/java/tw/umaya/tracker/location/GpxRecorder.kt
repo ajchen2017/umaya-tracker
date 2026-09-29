@@ -87,6 +87,18 @@ class GpxRecorder(private val context: Context) {
         lastLogged = location
     }
 
+    /** Adds a named waypoint (航點) — before <trk>, as GPX 1.1 orders wpt first. No-op if not recording. */
+    fun addWaypoint(name: String, location: Location) {
+        val f = file ?: return
+        val text = f.readText()
+        val trkIdx = text.indexOf("<trk>")
+        if (trkIdx < 0) return
+        val ele = if (location.hasAltitude()) "<ele>%.1f</ele>".format(location.altitude) else ""
+        val wpt = "<wpt lat=\"${location.latitude}\" lon=\"${location.longitude}\">$ele" +
+            "<time>${isoNow(location.time)}</time><name>${xmlEscape(name)}</name></wpt>\n"
+        f.writeText(text.substring(0, trkIdx) + wpt + text.substring(trkIdx))
+    }
+
     /**
      * Closes the current <trkseg> and opens a new one, so the gap across a pause (or an app
      * restart) is not drawn as a straight line. No-op while the current segment is still empty.
@@ -131,6 +143,11 @@ fun recordedTracks(context: Context): List<File> =
     File(context.getExternalFilesDir(null), "gpx").listFiles { f -> f.extension == "gpx" }
         .orEmpty().sortedByDescending { it.lastModified() }
 
+private fun xmlEscape(s: String) =
+    s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+
+private val wptPattern = Regex("<wpt\\b.*?</wpt>", RegexOption.DOT_MATCHES_ALL)
+
 private val trksegPattern = Regex("<trkseg>(.*?)</trkseg>", RegexOption.DOT_MATCHES_ALL)
 
 /**
@@ -141,9 +158,10 @@ fun mergeGpx(files: List<File>, name: String): String {
     val segments = files.sortedBy { it.name }.flatMap { f ->
         trksegPattern.findAll(f.readText()).map { it.groupValues[1].trim() }.filter { it.isNotEmpty() }.toList()
     }
+    val waypoints = files.sortedBy { it.name }.flatMap { f -> wptPattern.findAll(f.readText()).map { it.value }.toList() }
     return """<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="umaya-tracker" xmlns="http://www.topografix.com/GPX/1/1">
-<trk><name>$name</name>
+""" + waypoints.joinToString("") { "$it\n" } + """<trk><name>$name</name>
 """ + segments.joinToString("") { "<trkseg>\n$it\n</trkseg>\n" } + "</trk></gpx>\n"
 }
 
@@ -159,11 +177,15 @@ fun gpxToKml(gpxXml: String, name: String): String {
     }.filter { it.isNotEmpty() }.joinToString("") {
         "<LineString><tessellate>1</tessellate><altitudeMode>absolute</altitudeMode><coordinates>\n$it\n</coordinates></LineString>\n"
     }
+    val wptPoint = Regex("<wpt lat=\"([^\"]+)\" lon=\"([^\"]+)\">\\s*(?:<ele>([^<]+)</ele>)?.*?<name>(.*?)</name>", RegexOption.DOT_MATCHES_ALL)
+    val placemarks = wptPattern.findAll(gpxXml).mapNotNull { w -> wptPoint.find(w.value) }.joinToString("") { m ->
+        "<Placemark><name>${m.groupValues[4]}</name><Point><coordinates>${m.groupValues[2]},${m.groupValues[1]},${m.groupValues[3].ifBlank { "0" }}</coordinates></Point></Placemark>\n"
+    }
     return """<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>$name</name>
 <Placemark><name>$name</name><MultiGeometry>
 $lines</MultiGeometry></Placemark>
-</Document></kml>
+$placemarks</Document></kml>
 """
 }
 
@@ -175,3 +197,40 @@ fun trackPointCount(f: File): Int {
     while (idx >= 0) { count++; idx = text.indexOf("<trkpt", idx + 1) }
     return count
 }
+
+data class TrackStats(val distanceM: Double, val ascentM: Double, val descentM: Double)
+
+/**
+ * Distance (per segment — not across pause gaps) and cumulative ascent/descent of a recorded
+ * trail. GPS altitude jitters by several meters even standing still, so a climb only counts once
+ * it moves [ALTITUDE_DEADBAND_M] away from the last counted altitude.
+ */
+fun trackStats(gpxXml: String): TrackStats {
+    val point = Regex("<trkpt lat=\"([^\"]+)\" lon=\"([^\"]+)\">\\s*(?:<ele>([^<]+)</ele>)?")
+    val result = FloatArray(1)
+    var distance = 0.0
+    var ascent = 0.0
+    var descent = 0.0
+    var refAlt: Double? = null
+    for (seg in Regex("<trkseg>(.*?)</trkseg>", RegexOption.DOT_MATCHES_ALL).findAll(gpxXml)) {
+        var prevLat = Double.NaN
+        var prevLon = Double.NaN
+        for (m in point.findAll(seg.groupValues[1])) {
+            val lat = m.groupValues[1].toDoubleOrNull() ?: continue
+            val lon = m.groupValues[2].toDoubleOrNull() ?: continue
+            if (!prevLat.isNaN()) {
+                Location.distanceBetween(prevLat, prevLon, lat, lon, result)
+                distance += result[0]
+            }
+            prevLat = lat; prevLon = lon
+            val alt = m.groupValues[3].toDoubleOrNull() ?: continue
+            val ref = refAlt
+            if (ref == null) refAlt = alt
+            else if (alt - ref >= ALTITUDE_DEADBAND_M) { ascent += alt - ref; refAlt = alt }
+            else if (ref - alt >= ALTITUDE_DEADBAND_M) { descent += ref - alt; refAlt = alt }
+        }
+    }
+    return TrackStats(distance, ascent, descent)
+}
+
+private const val ALTITUDE_DEADBAND_M = 8.0

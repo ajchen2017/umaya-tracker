@@ -119,3 +119,17 @@ CREATE TABLE IF NOT EXISTS app_metadata (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- Named waypoints the hiker marks during a hike (航點), shown on the guardian page.
+-- client_id makes the app's retried uploads idempotent.
+CREATE TABLE IF NOT EXISTS hike_waypoints (
+  id          SERIAL PRIMARY KEY,
+  hike_id     INTEGER NOT NULL REFERENCES hikes(id) ON DELETE CASCADE,
+  client_id   TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  lat         DOUBLE PRECISION NOT NULL,
+  lng         DOUBLE PRECISION NOT NULL,
+  altitude    DOUBLE PRECISION,
+  recorded_at TIMESTAMPTZ NOT NULL,
+  UNIQUE (hike_id, client_id)
+);

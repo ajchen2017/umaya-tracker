@@ -8,6 +8,8 @@ import androidx.security.crypto.MasterKey
 /** GPX 記錄間隔 choices in seconds (0 = 持續記錄) and 最短紀錄長度 choices in meters. */
 val GPX_INTERVAL_OPTIONS = listOf(0, 5, 8, 10, 20, 60)
 val GPX_DISTANCE_OPTIONS = listOf(5, 10, 20)
+val OFF_ROUTE_DISTANCE_OPTIONS = listOf(10, 20, 50, 100)
+val MAP_TEXT_SIZE_OPTIONS = listOf(8, 9, 10, 11, 12)
 
 val INTERVAL_PRESETS = listOf(
     10 to "10 秒",
@@ -85,6 +87,52 @@ class Prefs(context: Context) {
     var gpxFilePath: String?
         get() = prefs.getString("gpx_file_path", null)
         set(value) = prefs.edit().putString("gpx_file_path", value).apply()
+
+    /** Trip clock for the stats panel: start time (0 = no trip), total paused ms, and when the
+     *  current pause began (0 = not paused). */
+    var tripStartedAt: Long
+        get() = prefs.getLong("trip_started_at", 0L)
+        set(value) = prefs.edit().putLong("trip_started_at", value).apply()
+    var tripPausedTotalMs: Long
+        get() = prefs.getLong("trip_paused_total_ms", 0L)
+        set(value) = prefs.edit().putLong("trip_paused_total_ms", value).apply()
+    var tripPausedSince: Long
+        get() = prefs.getLong("trip_paused_since", 0L)
+        set(value) = prefs.edit().putLong("trip_paused_since", value).apply()
+
+    /** Step counter (TYPE_STEP_COUNTER counts since boot): value at trip start (-1 = take the next
+     *  reading), steps carried over a reboot, and the last reading seen. */
+    var stepBaseline: Float
+        get() = prefs.getFloat("step_baseline", -1f)
+        set(value) = prefs.edit().putFloat("step_baseline", value).apply()
+    var stepCarry: Float
+        get() = prefs.getFloat("step_carry", 0f)
+        set(value) = prefs.edit().putFloat("step_carry", value).apply()
+    var stepLast: Float
+        get() = prefs.getFloat("step_last", 0f)
+        set(value) = prefs.edit().putFloat("step_last", value).apply()
+
+    /** Loaded route files the hiker hid from the map (kept, just not drawn / not used for 偏離航道). */
+    var hiddenRouteFiles: Set<String>
+        get() = prefs.getStringSet("hidden_route_files", emptySet()) ?: emptySet()
+        set(value) = prefs.edit().putStringSet("hidden_route_files", value).apply()
+
+    /** 偏離航道提醒: on/off and the distance from the nearest visible route that counts as off-route. */
+    var offRouteAlertEnabled: Boolean
+        get() = prefs.getBoolean("off_route_alert_enabled", true)
+        set(value) = prefs.edit().putBoolean("off_route_alert_enabled", value).apply()
+    var offRouteDistanceM: Int
+        get() = prefs.getInt("off_route_distance_m", 20)
+        set(value) = prefs.edit().putInt("off_route_distance_m", value).apply()
+
+    /** 地圖文字大小 (px, one of [MAP_TEXT_SIZE_OPTIONS]) for the offline map's own labels. */
+    var mapTextSizePx: Int
+        get() = prefs.getInt("map_text_size_px", 10)
+        set(value) = prefs.edit().putInt("map_text_size_px", value).apply()
+
+    var statsPanelExpanded: Boolean
+        get() = prefs.getBoolean("stats_panel_expanded", true)
+        set(value) = prefs.edit().putBoolean("stats_panel_expanded", value).apply()
 
     /** The trail saved when the last trip ended — 接續舊行程 keeps writing to it. */
     var lastFinishedGpxPath: String?

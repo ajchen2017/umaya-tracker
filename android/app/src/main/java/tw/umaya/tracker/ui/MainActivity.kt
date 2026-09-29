@@ -33,6 +33,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -82,6 +84,8 @@ import tw.umaya.tracker.data.HikeListItemDto
 import tw.umaya.tracker.data.INTERVAL_PRESETS
 import tw.umaya.tracker.data.GPX_DISTANCE_OPTIONS
 import tw.umaya.tracker.data.GPX_INTERVAL_OPTIONS
+import tw.umaya.tracker.data.MAP_TEXT_SIZE_OPTIONS
+import tw.umaya.tracker.data.OFF_ROUTE_DISTANCE_OPTIONS
 import tw.umaya.tracker.data.LoginRequest
 import tw.umaya.tracker.data.MapsforgeDownloader
 import tw.umaya.tracker.data.Prefs
@@ -93,6 +97,8 @@ import tw.umaya.tracker.location.gpxToKml
 import tw.umaya.tracker.location.mergeGpx
 import tw.umaya.tracker.location.recordedTracks
 import tw.umaya.tracker.location.trackPointCount
+import tw.umaya.tracker.location.trackStats
+import tw.umaya.tracker.location.TrackStats
 import tw.umaya.tracker.sync.HikeActionWorker
 import tw.umaya.tracker.widget.TrackerWidgetProvider
 import java.io.IOException
@@ -183,6 +189,65 @@ private fun OptionChips(options: List<Int>, selected: Int, label: (Int) -> Strin
 }
 
 private fun gpxIntervalLabel(seconds: Int) = if (seconds == 0) "持續" else "${seconds}秒"
+
+@Composable
+private fun StatRow(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
+        Text(label, color = Color.White.copy(alpha = 0.75f), fontSize = 12.sp, modifier = Modifier.weight(1f))
+        Text(value, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** Small compass: the card rotates so its red N points to real north. */
+@Composable
+private fun MiniCompass(azimuthDeg: Float, modifier: Modifier = Modifier) {
+    androidx.compose.foundation.Canvas(modifier) {
+        val r = size.minDimension / 2f
+        drawCircle(Color(0xFF424242), radius = r)
+        drawCircle(Color.White, radius = r, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f))
+        rotate(-azimuthDeg) {
+            val c = center
+            val north = androidx.compose.ui.graphics.Path().apply {
+                moveTo(c.x, c.y - r * 0.8f); lineTo(c.x - r * 0.22f, c.y); lineTo(c.x + r * 0.22f, c.y); close()
+            }
+            val south = androidx.compose.ui.graphics.Path().apply {
+                moveTo(c.x, c.y + r * 0.8f); lineTo(c.x - r * 0.22f, c.y); lineTo(c.x + r * 0.22f, c.y); close()
+            }
+            drawPath(north, Color(0xFFE53935))
+            drawPath(south, Color(0xFFEEEEEE))
+        }
+    }
+}
+
+private fun compassDirection(deg: Float): String =
+    listOf("北", "東北", "東", "東南", "南", "西南", "西", "西北")[(((deg + 22.5f) % 360f) / 45f).toInt()]
+
+private fun formatDuration(ms: Long): String {
+    val s = ms / 1000
+    return "%d:%02d:%02d".format(s / 3600, (s % 3600) / 60, s % 60)
+}
+
+/** Shortest distance (m) from a point to any of the given polylines — local equirectangular
+ *  projection, accurate to well under a meter at route scale. Null when there are no lines. */
+private fun distanceToLinesM(lat: Double, lon: Double, lines: List<List<GeoPoint>>): Double? {
+    val mPerDegLat = 111_320.0
+    val mPerDegLon = 111_320.0 * Math.cos(Math.toRadians(lat))
+    var best = Double.MAX_VALUE
+    for (line in lines) {
+        for (i in 0 until line.size - 1) {
+            val ax = (line[i].longitude - lon) * mPerDegLon; val ay = (line[i].latitude - lat) * mPerDegLat
+            val bx = (line[i + 1].longitude - lon) * mPerDegLon; val by = (line[i + 1].latitude - lat) * mPerDegLat
+            val dx = bx - ax; val dy = by - ay
+            val len2 = dx * dx + dy * dy
+            val t = if (len2 == 0.0) 0.0 else (-(ax * dx + ay * dy) / len2).coerceIn(0.0, 1.0)
+            val px = ax + t * dx; val py = ay + t * dy
+            best = minOf(best, px * px + py * py)
+        }
+    }
+    return if (best == Double.MAX_VALUE) null else Math.sqrt(best)
+}
+
+private fun formatDistance(m: Double): String = if (m < 1000) "${m.toInt()} m" else "%.2f km".format(m / 1000)
 
 /** Snaps to the fixed [INTERVAL_PRESETS] list rather than any continuous value. */
 @Composable
@@ -566,6 +631,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var packPendingDelete by remember { mutableStateOf<MapsforgeDownloader.OfflinePack?>(null) }
     val mapsforgeActive = currentMapSource == MapSource.OFFLINE && currentOfflinePackId in installedPackIds
     var showMapPicker by remember { mutableStateOf(false) }
+    var mapTextSizePx by remember { mutableStateOf(prefs.mapTextSizePx) }
     var showShareLinkDialog by remember { mutableStateOf(false) }
     // True while the current map was picked automatically (the startup default, or a switch because
     // the phone left the previous map's coverage). A manual pick sticks — e.g. browsing 安娜普納
@@ -587,7 +653,9 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         offlinePacks.filter { it.id in installedPackIds }.associate { it.id to mapsforgeDownloader.coverage(it) }
     }
     var phoneLocation by remember { mutableStateOf<android.location.Location?>(null) }
-    DisposableEffect(Unit) {
+    // Precise and frequent while 偏離航道 is being watched (set further down); otherwise coarse and cheap.
+    var watchOffRoute by remember { mutableStateOf(false) }
+    DisposableEffect(watchOffRoute) {
         val fusedClient = LocationServices.getFusedLocationProviderClient(context)
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) { phoneLocation = result.lastLocation ?: return }
@@ -595,7 +663,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             fusedClient.lastLocation.addOnSuccessListener { if (it != null && phoneLocation == null) phoneLocation = it }
             fusedClient.requestLocationUpdates(
-                LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 15_000L).build(),
+                if (watchOffRoute) LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5_000L).build()
+                else LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 15_000L).build(),
                 callback, Looper.getMainLooper(),
             )
         }
@@ -729,10 +798,33 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
 
     // Redraws every loaded route whenever the map instance or the route list changes — switching
     // maps (or offline packs) creates a brand-new map view that has no overlays of its own.
-    val loadedRouteKeys = loadedRoutes.joinToString("\n") { it.file }
+    val hiddenRoutes = remember { mutableStateListOf<String>().apply { addAll(prefs.hiddenRouteFiles) } }
+    val visibleRoutes = loadedRoutes.filter { it.file !in hiddenRoutes }
+    val loadedRouteKeys = visibleRoutes.joinToString("\n") { it.file }
     LaunchedEffect(mapController, offlineMapController, loadedRouteKeys) {
-        mapController?.let { c -> c.clearAllLoadedRoutes(); loadedRoutes.forEach { c.addLoadedRoute(it.file, it.route) } }
-        offlineMapController?.let { c -> c.clearAllLoadedRoutes(); loadedRoutes.forEach { c.addLoadedRoute(it.file, it.route) } }
+        mapController?.let { c -> c.clearAllLoadedRoutes(); visibleRoutes.forEach { c.addLoadedRoute(it.file, it.route) } }
+        offlineMapController?.let { c -> c.clearAllLoadedRoutes(); visibleRoutes.forEach { c.addLoadedRoute(it.file, it.route) } }
+    }
+
+    // ---- 偏離航道：distance from the phone to the nearest visible route line ----
+    var offRouteEnabled by remember { mutableStateOf(prefs.offRouteAlertEnabled) }
+    var offRouteThresholdM by remember { mutableStateOf(prefs.offRouteDistanceM) }
+    var distanceToRouteM by remember { mutableStateOf<Double?>(null) }
+    var wasOffRoute by remember { mutableStateOf(false) }
+    val onTrip = hasActiveHike || gpxRecording
+    SideEffect { watchOffRoute = onTrip && offRouteEnabled && visibleRoutes.isNotEmpty() }
+    LaunchedEffect(phoneLocation, loadedRouteKeys, offRouteEnabled, onTrip) {
+        val loc = phoneLocation
+        if (!offRouteEnabled || !onTrip || loc == null || visibleRoutes.isEmpty()) { distanceToRouteM = null; wasOffRoute = false; return@LaunchedEffect }
+        val segments = visibleRoutes.flatMap { it.route.segments }
+        val d = withContext(Dispatchers.Default) { distanceToLinesM(loc.latitude, loc.longitude, segments) }
+        distanceToRouteM = d
+        val off = d != null && d > offRouteThresholdM
+        if (off && !wasOffRoute) {
+            val vibrator = context.getSystemService(android.os.Vibrator::class.java)
+            vibrator?.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 300, 200, 300), -1))
+        }
+        wasOffRoute = off
     }
 
     var importingMap by remember { mutableStateOf(false) }
@@ -796,7 +888,33 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             gpxPaused = pause; prefs.isGpxPaused = pause
             gpxServiceAction(if (pause) LocationForegroundService.ACTION_GPX_PAUSE else LocationForegroundService.ACTION_GPX_RESUME)
         }
+        val now = System.currentTimeMillis()
+        if (pause) {
+            if (prefs.tripPausedSince == 0L) prefs.tripPausedSince = now
+        } else if (prefs.tripPausedSince != 0L) {
+            prefs.tripPausedTotalMs += now - prefs.tripPausedSince
+            prefs.tripPausedSince = 0L
+        }
         Toast.makeText(context, if (pause) "⏸ 行程已暫停（再按一次繼續）" else "▶ 行程繼續", Toast.LENGTH_SHORT).show()
+    }
+
+    // Trip clock + step baseline start when a trip begins (any path) and reset when it ends.
+    val stepPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(tripActive) {
+        if (tripActive) {
+            if (prefs.tripStartedAt == 0L) {
+                prefs.tripStartedAt = System.currentTimeMillis()
+                prefs.tripPausedTotalMs = 0L
+                prefs.tripPausedSince = 0L
+                prefs.stepBaseline = -1f
+                prefs.stepCarry = 0f
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED
+            ) stepPermissionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+        } else {
+            prefs.tripStartedAt = 0L
+        }
     }
 
     fun endTrip() {
@@ -849,7 +967,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     if (showLoadRouteDialog) {
         AlertDialog(
             onDismissRequest = { showLoadRouteDialog = false },
-            title = { Text("GPX/KML 路線") },
+            title = { Text("軌跡檔管理") },
             text = {
                 Column(modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
                     Text(
@@ -857,6 +975,21 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         else "目前沒有進行中的行程，路線只顯示在這支手機；開始新行程時可以勾選要同步給留守人的路線。",
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            offRouteEnabled = !offRouteEnabled; prefs.offRouteAlertEnabled = offRouteEnabled
+                        },
+                    ) {
+                        Checkbox(checked = offRouteEnabled, onCheckedChange = null)
+                        Text("偏離航道提醒（行程中，離顯示中的路線超過下列距離就提醒並震動）", style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (offRouteEnabled) {
+                        OptionChips(OFF_ROUTE_DISTANCE_OPTIONS, offRouteThresholdM, { "${it}米" }) {
+                            offRouteThresholdM = it; prefs.offRouteDistanceM = it
+                        }
+                    }
                     if (importingRoutes) {
                         Spacer(Modifier.height(8.dp))
                         Text("載入中…", style = MaterialTheme.typography.bodySmall)
@@ -864,11 +997,21 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     }
                     loadedRoutes.forEach { route ->
                         Spacer(Modifier.height(8.dp))
-                        Text(
-                            "✅ ${route.name}（${route.summary}）" + if (route.serverId != null) "・已同步給留守人" else "",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
+                        val shown = route.file !in hiddenRoutes
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                if (shown) hiddenRoutes.add(route.file) else hiddenRoutes.remove(route.file)
+                                prefs.hiddenRouteFiles = hiddenRoutes.toSet()
+                            },
+                        ) {
+                            Checkbox(checked = shown, onCheckedChange = null)
+                            Text(
+                                "${route.name}（${route.summary}）" + if (route.serverId != null) "・已同步給留守人" else "",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (shown) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = {
                                 if (mapsforgeActive) {
@@ -943,6 +1086,16 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             title = { Text("地圖設定") },
             text = {
                 Column(modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                    Text("地圖文字大小", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    OptionChips(MAP_TEXT_SIZE_OPTIONS, mapTextSizePx, { "${it}px" }) {
+                        mapTextSizePx = it; prefs.mapTextSizePx = it
+                    }
+                    Text(
+                        "套用在離線地圖的地名、步道等文字；線上地圖（OpenStreetMap）的文字大小無法調整。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
                     Text("離線地圖包", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     Text(
                         "每個地圖包各自獨立，沒有網路也能用；下載或匯入後，到地圖頁右上角的地圖選單選用。",
@@ -1708,19 +1861,107 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
 
     // The trail being recorded right now, re-read from its file every few seconds and drawn live.
     var recordingTrack by remember { mutableStateOf<List<List<GeoPoint>>>(emptyList()) }
+    var recordingWaypoints by remember { mutableStateOf<List<RouteLabel>>(emptyList()) }
+    var tripStats by remember { mutableStateOf<TrackStats?>(null) }
     LaunchedEffect(gpxRecording) {
-        if (!gpxRecording) { recordingTrack = emptyList(); return@LaunchedEffect }
+        if (!gpxRecording) { recordingTrack = emptyList(); recordingWaypoints = emptyList(); tripStats = null; return@LaunchedEffect }
         while (true) {
             val path = prefs.gpxFilePath
-            recordingTrack = withContext(Dispatchers.IO) {
-                path?.let { runCatching { parseRoute(File(it).readText()).segments }.getOrNull() }.orEmpty()
+            val (parsed, stats) = withContext(Dispatchers.IO) {
+                path?.let { p ->
+                    runCatching { File(p).readText().let { text -> parseRoute(text) to trackStats(text) } }.getOrNull()
+                } ?: (ParsedRoute(emptyList(), emptyList()) to null)
             }
+            recordingTrack = parsed.segments
+            recordingWaypoints = parsed.labels.filter { it.isWaypoint }
+            tripStats = stats
             delay(5_000)
         }
     }
-    LaunchedEffect(mapController, offlineMapController, recordingTrack) {
-        mapController?.setRecordingTrack(recordingTrack)
-        offlineMapController?.setRecordingTrack(recordingTrack)
+    LaunchedEffect(mapController, offlineMapController, recordingTrack, recordingWaypoints) {
+        mapController?.setRecordingTrack(recordingTrack, recordingWaypoints)
+        offlineMapController?.setRecordingTrack(recordingTrack, recordingWaypoints)
+    }
+
+    // Steps since the trip started: TYPE_STEP_COUNTER counts since boot, so only a baseline is kept.
+    var tripSteps by remember { mutableStateOf<Int?>(null) }
+    DisposableEffect(tripActive) {
+        val sm = context.getSystemService(android.content.Context.SENSOR_SERVICE) as android.hardware.SensorManager
+        val sensor = sm.getDefaultSensor(android.hardware.Sensor.TYPE_STEP_COUNTER)
+        if (!tripActive || sensor == null) { tripSteps = null; return@DisposableEffect onDispose {} }
+        val listener = object : android.hardware.SensorEventListener {
+            override fun onSensorChanged(event: android.hardware.SensorEvent) {
+                val value = event.values[0]
+                if (prefs.stepBaseline < 0f) prefs.stepBaseline = value
+                if (value < prefs.stepBaseline) { // phone rebooted mid-trip: counter restarted at 0
+                    prefs.stepCarry += prefs.stepLast - prefs.stepBaseline
+                    prefs.stepBaseline = 0f
+                }
+                prefs.stepLast = value
+                tripSteps = (prefs.stepCarry + value - prefs.stepBaseline).toInt()
+            }
+            override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) {}
+        }
+        sm.registerListener(listener, sensor, android.hardware.SensorManager.SENSOR_DELAY_NORMAL)
+        onDispose { sm.unregisterListener(listener) }
+    }
+
+    // Compass heading for the stats panel's small compass.
+    var showStatsPanel by remember { mutableStateOf(prefs.statsPanelExpanded) }
+    var compassAzimuth by remember { mutableStateOf(0f) }
+    DisposableEffect(tripActive && showStatsPanel) {
+        val sm = context.getSystemService(android.content.Context.SENSOR_SERVICE) as android.hardware.SensorManager
+        val sensor = sm.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR)
+        if (!(tripActive && showStatsPanel) || sensor == null) return@DisposableEffect onDispose {}
+        val listener = object : android.hardware.SensorEventListener {
+            private val rotation = FloatArray(9)
+            private val orientation = FloatArray(3)
+            override fun onSensorChanged(event: android.hardware.SensorEvent) {
+                android.hardware.SensorManager.getRotationMatrixFromVector(rotation, event.values)
+                android.hardware.SensorManager.getOrientation(rotation, orientation)
+                compassAzimuth = ((Math.toDegrees(orientation[0].toDouble()).toFloat()) + 360f) % 360f
+            }
+            override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) {}
+        }
+        sm.registerListener(listener, sensor, android.hardware.SensorManager.SENSOR_DELAY_UI)
+        onDispose { sm.unregisterListener(listener) }
+    }
+
+    // Once-a-second tick for the trip clock.
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(tripActive) {
+        while (tripActive) { nowMs = System.currentTimeMillis(); delay(1_000) }
+    }
+
+    // 航點 name dialog (top bar 🚩).
+    var showWaypointDialog by remember { mutableStateOf(false) }
+    var waypointName by remember { mutableStateOf("") }
+    if (showWaypointDialog) {
+        AlertDialog(
+            onDismissRequest = { showWaypointDialog = false },
+            title = { Text("新增航點") },
+            text = {
+                Column {
+                    Text("以目前位置新增航點" + if (hasActiveHike) "，並同步給留守人。" else "。", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = waypointName, onValueChange = { waypointName = it },
+                        label = { Text("名稱") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = waypointName.isNotBlank(), onClick = {
+                    context.startService(
+                        Intent(context, LocationForegroundService::class.java)
+                            .setAction(LocationForegroundService.ACTION_ADD_WAYPOINT)
+                            .putExtra(LocationForegroundService.EXTRA_WAYPOINT_NAME, waypointName.trim())
+                    )
+                    showWaypointDialog = false
+                }) { Text("新增") }
+            },
+            dismissButton = { TextButton(onClick = { showWaypointDialog = false }) { Text("取消") } },
+        )
     }
 
     // "Connecting" (no fix yet) resets every time GPS is turned back on — polls rather than
@@ -1798,9 +2039,11 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     Box(modifier = Modifier.fillMaxSize()) {
         when {
             mapsforgeActive && currentOfflinePack != null -> {
-                key(enabledLayerIds, currentOfflinePackId) {
+                key(enabledLayerIds, currentOfflinePackId, mapTextSizePx) {
                     OfflineMapView(
                         modifier = Modifier.fillMaxSize(),
+                        // 10px = the existing default scale (theme's text-scale 1.4, doubled).
+                        fontScale = 2.8f * mapTextSizePx / 10f,
                         downloader = mapsforgeDownloader,
                         pack = currentOfflinePack,
                         hillshadingEnabled = hillshadingEnabled,
@@ -1858,6 +2101,16 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 }
             }
 
+            // (2) 航點 — 以目前位置新增，輸入名稱
+            TopBarIconButton("🚩") {
+                if (!tripActive) {
+                    Toast.makeText(context, "請先開始行程，才能新增航點", Toast.LENGTH_SHORT).show()
+                } else {
+                    waypointName = "航點 ${recordingWaypoints.size + 1}"
+                    showWaypointDialog = true
+                }
+            }
+
             // (4) 打開/關閉 GPS — 搜尋中（還沒拿到第一個定位）琥珀底＋閃爍；定位就緒綠底＋✓
             TopBarIconButton(
                 label = if (gpsFollowing) "🛰️" else "🚫",
@@ -1907,11 +2160,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             MapCircleButton("☰", size = 40.dp) { showFunctionMenu = true }
             DropdownMenu(expanded = showFunctionMenu, onDismissRequest = { showFunctionMenu = false }) {
                 DropdownMenuItem(
-                    text = { Text("載入 GPX/KML" + if (loadedRoutes.isNotEmpty()) "（已載入 ${loadedRoutes.size}）" else "") },
-                    onClick = {
-                        showFunctionMenu = false
-                        if (loadedRoutes.isEmpty()) routePickerLauncher.launch(arrayOf("*/*")) else showLoadRouteDialog = true
-                    },
+                    text = { Text("軌跡檔管理（匯入／顯示／偏離提醒）" + if (loadedRoutes.isNotEmpty()) "・${loadedRoutes.size}" else "") },
+                    onClick = { showFunctionMenu = false; showLoadRouteDialog = true },
                 )
                 DropdownMenuItem(
                     text = { Text("軌跡記錄設定（間隔／長度／匯出）") },
@@ -2025,6 +2275,61 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     .padding(horizontal = 8.dp, vertical = 2.dp),
             )
             MapCircleButton("－") { if (mapsforgeActive) offlineMapController?.zoomOut() else mapController?.zoomOut() }
+        }
+
+        // ---- 偏離航道提示 ----
+        distanceToRouteM?.let { d ->
+            val off = d > offRouteThresholdM
+            Text(
+                if (off) "⚠️ 偏離航道 ${formatDistance(d)}" else "✅ 在航道上（${formatDistance(d)}）",
+                color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 64.dp)
+                    .background(if (off) Color(0xEEC62828) else Color(0xCC2E7D32), RoundedCornerShape(16.dp))
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
+
+        // ---- 5. 右下：可收合的行程統計（時間、里程、步數、爬升/下降、指北針）----
+        if (tripActive) {
+            Box(modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 52.dp)) {
+                if (!showStatsPanel) {
+                    MapCircleButton("📊", size = 44.dp) { showStatsPanel = true; prefs.statsPanelExpanded = true }
+                } else {
+                    val startedAt = prefs.tripStartedAt
+                    val totalMs = if (startedAt == 0L) 0L else (nowMs - startedAt).coerceAtLeast(0L)
+                    val pausedMs = prefs.tripPausedTotalMs + (if (prefs.tripPausedSince != 0L) nowMs - prefs.tripPausedSince else 0L)
+                    val movingMs = (totalMs - pausedMs).coerceAtLeast(0L)
+                    val stats = tripStats
+                    Column(
+                        modifier = Modifier
+                            .background(Color(0xE6202020), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                            .width(168.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            MiniCompass(compassAzimuth, Modifier.size(40.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("方位 ${compassDirection(compassAzimuth)} ${compassAzimuth.toInt()}°", color = Color.White, fontSize = 12.sp)
+                                Text("行程統計", color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp)
+                            }
+                            Text(
+                                "✕", color = Color.White, fontSize = 16.sp,
+                                modifier = Modifier.clickable { showStatsPanel = false; prefs.statsPanelExpanded = false }.padding(4.dp),
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        StatRow("總時間", formatDuration(totalMs))
+                        StatRow("移動時間", formatDuration(movingMs))
+                        StatRow("總里程", stats?.let { formatDistance(it.distanceM) } ?: "—（未記錄 GPX）")
+                        StatRow("步數", tripSteps?.let { "%,d".format(it) } ?: "—")
+                        StatRow("累積爬升", stats?.let { "↑ ${it.ascentM.toInt()} m" } ?: "—")
+                        StatRow("累積下降", stats?.let { "↓ ${it.descentM.toInt()} m" } ?: "—")
+                    }
+                }
+            }
         }
 
         // ---- 狀態列／錯誤訊息（原本頁面上的伺服器狀態、行程狀態，移到底部一條窄列）----

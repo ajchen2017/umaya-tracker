@@ -8,6 +8,8 @@ import org.osmdroid.util.GeoPoint
 import org.xmlpull.v1.XmlPullParser
 
 const val LOADED_ROUTE_COLOR = 0xFF00008B.toInt() // dark blue, shared by both map engines
+/** Map-overlay id for the waypoints of the GPX being recorded. */
+const val RECORDING_WAYPOINTS_ID = "__recording_waypoints__"
 const val RECORDING_TRACK_COLOR = 0xFFE65100.toInt() // orange — the trail being recorded now
 
 /** A route label drawn as a dot with its text to the right; the dot sits at ([dotX], [dotY]). */
@@ -66,7 +68,7 @@ fun routeLabelBitmap(context: Context, text: String): RouteLabelBitmap {
 
 /** A text annotation from a route file, drawn as a labeled dot: a waypoint (<wpt>, KML Point
  *  Placemark) or a track's own name at its first point. [text] may span several lines. */
-data class RouteLabel(val point: GeoPoint, val text: String)
+data class RouteLabel(val point: GeoPoint, val text: String, val isWaypoint: Boolean = false)
 
 data class ParsedRoute(val segments: List<List<GeoPoint>>, val labels: List<RouteLabel>)
 
@@ -148,7 +150,7 @@ private fun parseGpx(p: XmlPullParser): ParsedRoute {
                 "trkpt" -> inTrkpt = false
                 "trkseg" -> { seg?.takeIf { it.size >= 2 }?.let(segments::add); seg = null }
                 "trk" -> { val first = trkFirst; val name = trkName; if (first != null && !name.isNullOrBlank()) labels += RouteLabel(first, name) }
-                "wpt" -> { val pt = wpt; labelText(wptName, wptDesc, wptCmt)?.let { if (pt != null) labels += RouteLabel(pt, it) }; wpt = null }
+                "wpt" -> { val pt = wpt; labelText(wptName, wptDesc, wptCmt)?.let { if (pt != null) labels += RouteLabel(pt, it, isWaypoint = true) }; wpt = null }
             }
         }
     }

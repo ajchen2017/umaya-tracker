@@ -109,6 +109,19 @@ function filterPlausiblePoints(points) {
 
 let lastMarker = null;
 let sosLayer = L.layerGroup().addTo(map);
+// Hiker-marked waypoints (航點) — few, so their names always show.
+const waypointLayer = L.layerGroup().addTo(map);
+let lastWaypointKey = undefined;
+const WAYPOINT_FLAG_ICON = L.divIcon({ html: '<div style="font-size:22px;line-height:22px">🚩</div>', className: '', iconSize: [22, 22], iconAnchor: [4, 21] });
+function renderWaypoints(waypoints) {
+  waypointLayer.clearLayers();
+  waypoints.forEach((w) => {
+    L.marker([w.lat, w.lng], { icon: WAYPOINT_FLAG_ICON })
+      .bindTooltip(w.name, { permanent: true, direction: 'right', offset: [8, -12], className: 'waypoint-label' })
+      .bindPopup(`🚩 ${w.name}<br>${fmtDateTime(w.recorded_at, w.lng)}` + (w.altitude != null ? `<br>海拔 ${Math.round(w.altitude)}m` : ''))
+      .addTo(waypointLayer);
+  });
+}
 let markerEventLayer = L.layerGroup().addTo(map); // "我很好" / "停駐中" icons — otherwise indistinguishable from normal points
 let pointsLayer = L.layerGroup().addTo(map);
 let plannedLayer = L.layerGroup().addTo(map);
@@ -755,6 +768,11 @@ function render(data) {
 
   // Re-check every poll, not just once: routes can be added or removed from the
   // phone/settings page mid-hike, and the map needs to follow.
+  const waypointKey = JSON.stringify(data.waypoints || []);
+  if (waypointKey !== lastWaypointKey) {
+    lastWaypointKey = waypointKey;
+    renderWaypoints(data.waypoints || []);
+  }
   const routeIds = (data.routes || []).map((r) => r.id).join(',');
   if (routeIds !== lastRouteIds) {
     lastRouteIds = routeIds;

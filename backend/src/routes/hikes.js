@@ -108,6 +108,22 @@ router.delete('/:id/routes/:routeId', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// A named waypoint (航點). Idempotent on clientId, since the app retries until delivered.
+router.post('/:id/waypoints', requireAuth, async (req, res) => {
+  const { clientId, name, lat, lng, altitude, recordedAt } = req.body || {};
+  if (!clientId || !name || typeof lat !== 'number' || typeof lng !== 'number' || !recordedAt) {
+    return res.status(400).json({ error: 'clientId, name, lat, lng, recordedAt are required' });
+  }
+  const owns = await pool.query('SELECT id FROM hikes WHERE id = $1 AND user_id = $2', [req.params.id, req.userId]);
+  if (!owns.rows[0]) return res.status(404).json({ error: 'Hike not found' });
+  await pool.query(
+    `INSERT INTO hike_waypoints (hike_id, client_id, name, lat, lng, altitude, recorded_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (hike_id, client_id) DO NOTHING`,
+    [req.params.id, String(clientId), String(name).slice(0, 200), lat, lng, altitude ?? null, recordedAt]
+  );
+  res.status(201).json({ ok: true });
+});
+
 function isRouteDocument(content) {
   return typeof content === 'string' && (content.includes('<gpx') || content.includes('<kml'));
 }

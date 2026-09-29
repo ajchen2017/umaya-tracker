@@ -42,6 +42,10 @@ data class UploadPointsResponse(val inserted: Int, val skipped: Int)
 
 data class PauseStateRequest(val paused: Boolean)
 data class HikeRouteDto(val id: Long, val name: String)
+data class WaypointRequest(
+    val clientId: String, val name: String, val lat: Double, val lng: Double,
+    val altitude: Double?, val recordedAt: String,
+)
 
 interface ApiService {
     @POST("auth/register")
@@ -102,6 +106,13 @@ interface ApiService {
         @Header("Authorization") bearer: String,
         @Path("id") hikeId: Long,
         @Body body: PauseStateRequest,
+    ): Response<Unit>
+
+    @POST("hikes/{id}/waypoints")
+    suspend fun addWaypoint(
+        @Header("Authorization") bearer: String,
+        @Path("id") hikeId: Long,
+        @Body body: WaypointRequest,
     ): Response<Unit>
 
     @DELETE("hikes/{id}/routes/{routeId}")
