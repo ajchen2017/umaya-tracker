@@ -88,14 +88,16 @@ class GpxRecorder(private val context: Context) {
     }
 
     /** Adds a named waypoint (航點) — before <trk>, as GPX 1.1 orders wpt first. No-op if not recording. */
-    fun addWaypoint(name: String, location: Location) {
+    fun addWaypoint(name: String, location: Location, photo: String? = null) {
         val f = file ?: return
         val text = f.readText()
         val trkIdx = text.indexOf("<trk>")
         if (trkIdx < 0) return
         val ele = if (location.hasAltitude()) "<ele>%.1f</ele>".format(location.altitude) else ""
         val wpt = "<wpt lat=\"${location.latitude}\" lon=\"${location.longitude}\">$ele" +
-            "<time>${isoNow(location.time)}</time><name>${xmlEscape(name)}</name></wpt>\n"
+            "<time>${isoNow(location.time)}</time><name>${xmlEscape(name)}</name>" +
+            (photo?.let { "<link href=\"${xmlEscape(it)}\"><text>照片</text><type>image/jpeg</type></link>" } ?: "") +
+            "</wpt>\n"
         f.writeText(text.substring(0, trkIdx) + wpt + text.substring(trkIdx))
     }
 

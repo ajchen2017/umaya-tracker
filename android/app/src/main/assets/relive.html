@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>3D 飛行回放</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1117; color: #fff; font-family: system-ui, "Noto Sans TC", sans-serif; overflow: hidden; }
+  #stage { position: absolute; inset: 0; overflow: hidden; }
+  #map { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+  #overlay { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+  #controls { position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    background: linear-gradient(transparent, rgba(0,0,0,.75) 40%); display: flex; flex-direction: column; gap: 6px; }
+  #controls .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  #controls button, #controls select { background: rgba(255,255,255,.14); color: #fff; border: 1px solid rgba(255,255,255,.25);
+    border-radius: 8px; padding: 6px 10px; font-size: 14px; }
+  #controls button.primary { background: #ff6d00; border-color: #ff6d00; font-weight: bold; }
+  #seek { flex: 1; min-width: 120px; accent-color: #ff6d00; }
+  #loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column;
+    gap: 10px; background: #0d1117; font-size: 15px; z-index: 5; text-align: center; padding: 20px; }
+  #loading input { color: #fff; }
+  body.recording #controls { display: none; }
+  #recBadge { display: none; position: absolute; top: 10px; right: 10px; background: #c62828; padding: 4px 10px; border-radius: 12px;
+    font-weight: bold; font-size: 13px; z-index: 6; }
+  body.recording #recBadge { display: block; }
+  .maplibregl-ctrl-attrib { font-size: 10px; }
+</style>
+</head>
+<body>
+<div id="stage"><div id="map"></div><canvas id="overlay"></canvas></div>
+<div id="recBadge">● 錄影中</div>
+<div id="loading"><div id="loadingText">載入中…</div></div>
+<div id="controls">
+  <div class="row">
+    <button id="btnRestart" title="從頭播放">⏮</button>
+    <button id="btnPlay" class="primary">▶</button>
+    <input id="seek" type="range" min="0" max="1000" value="0">
+  </div>
+  <div class="row">
+    <select id="speed"><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option></select>
+    <select id="style"><option value="sat" selected>衛星</option><option value="topo">地形圖</option><option value="osm">街道</option></select>
+    <select id="res"><option value="720">720p</option><option value="1080" selected>1080p</option><option value="2160">4K</option></select>
+    <button id="btnRecord">🎬 錄製影片</button>
+  </div>
+</div>
+<script>
+'use strict';
+// ---------- data in ----------
+const bridge = window.Android || null;
+const TERRAIN_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+const STYLES = {
+  sat: { tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], maxzoom: 19,
+         attribution: 'Imagery © Esri, Maxar, Earthstar Geographics' },
+  topo: { tiles: ['https://a.tile.opentopomap.org/{z}/{x}/{y}.png', 'https://b.tile.opentopomap.org/{z}/{x}/{y}.png', 'https://c.tile.opentopomap.org/{z}/{x}/{y}.png'],
+          maxzoom: 17, attribution: '© OpenStreetMap contributors, SRTM | © OpenTopoMap (CC-BY-SA)' },
+  osm: { tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], maxzoom: 19, attribution: '© OpenStreetMap contributors' },
+};
+const DEADBAND_M = 8;
+
+function haversine(a, b) {
+  const R = 6371000, toRad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * toRad, dLon = (b.lon - a.lon) * toRad;
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * toRad) * Math.cos(b.lat * toRad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+function bearingDeg(a, b) {
+  const toRad = Math.PI / 180;
+  const y = Math.sin((b.lon - a.lon) * toRad) * Math.cos(b.lat * toRad);
+  const x = Math.cos(a.lat * toRad) * Math.sin(b.lat * toRad) - Math.sin(a.lat * toRad) * Math.cos(b.lat * toRad) * Math.cos((b.lon - a.lon) * toRad);
+  return (Math.atan2(y, x) / toRad + 360) % 360;
+}
+
+let T = null; // prepared track
+
+function prepare(track) {
+  // Downsample to <= 4000 animation points, keeping each segment's ends.
+  const segs = (track.segments || []).filter((s) => s.length >= 2);
+  const total = segs.reduce((n, s) => n + s.length, 0);
+  const step = Math.max(1, Math.ceil(total / 4000));
+  const pts = [];      // flat animation points
+  const segStarts = []; // index in pts where each segment begins
+  for (const s of segs) {
+    segStarts.push(pts.length);
+    s.forEach((p, i) => { if (i % step === 0 || i === s.length - 1) pts.push(p); });
+  }
+  // Cumulative distance (not across segment gaps) and ascent/descent with a deadband.
+  const cum = new Array(pts.length).fill(0), asc = new Array(pts.length).fill(0);
+  let d = 0, up = 0, down = 0, ref = null;
+  for (let i = 0; i < pts.length; i++) {
+    if (i > 0 && !segStarts.includes(i)) d += haversine(pts[i - 1], pts[i]);
+    cum[i] = d;
+    const e = pts[i].ele;
+    if (e != null) {
+      if (ref == null) ref = e;
+      else if (e - ref >= DEADBAND_M) { up += e - ref; ref = e; }
+      else if (ref - e >= DEADBAND_M) { down += ref - e; ref = e; }
+    }
+    asc[i] = up;
+  }
+  // Playback progress follows the hiker's own time, so the on-foot part gets the screen time: each
+  // step weighs its duration (long stops capped at 60 s), scaled down when faster than walking
+  // (> 2 m/s, i.e. a bus/jeep transfer). Without timestamps: mostly sample count, a bit of distance.
+  const n = pts.length;
+  const w = new Array(n).fill(0);
+  const timed = pts.every((p) => p.t != null);
+  for (let i = 1; i < n; i++) {
+    if (segStarts.includes(i)) continue;
+    const dist = cum[i] - cum[i - 1];
+    if (timed) {
+      const dt = Math.max(0, (pts[i].t - pts[i - 1].t) / 1000);
+      const speed = dt > 0 ? dist / dt : 0;
+      w[i] = Math.min(dt, 60) * Math.min(1, Math.max(0.08, 2 / Math.max(speed, 0.01)));
+    } else {
+      w[i] = 0.8 / Math.max(1, n - 1) + 0.2 * (d > 0 ? dist / d : 0);
+    }
+  }
+  let acc = 0;
+  const wsum = w.reduce((a, b) => a + b, 0) || 1;
+  const prog = w.map((x) => (acc += x) / wsum);
+  const hasEle = pts.some((p) => p.ele != null);
+  const hasTime = pts.length > 1 && pts[0].t != null && pts[pts.length - 1].t != null;
+  const lats = pts.map((p) => p.lat), lons = pts.map((p) => p.lon);
+  const bounds = [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]];
+  const eles = pts.map((p) => p.ele).filter((e) => e != null);
+  // Each waypoint's position along the track = nearest animation point.
+  const waypoints = (track.waypoints || []).map((w) => {
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < pts.length; i++) { const dd = haversine(w, pts[i]); if (dd < bestD) { bestD = dd; best = i; } }
+    return { ...w, s: cum[best], u: prog[best], img: null, shown: false };
+  }).sort((a, b) => a.u - b.u);
+  return { title: track.title || '軌跡', pts, segStarts, cum, prog, asc, total: d, totalUp: up, totalDown: down, hasEle, hasTime,
+    bounds, minEle: eles.length ? Math.min(...eles) : 0, maxEle: eles.length ? Math.max(...eles) : 0, waypoints };
+}
+
+function distAtU(u) { // playback progress (0..1) -> distance along the track
+  const g = T.prog; let lo = 0, hi = g.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (g[mid] <= u) lo = mid; else hi = mid - 1; }
+  if (lo >= g.length - 1) return T.total;
+  const f = g[lo + 1] > g[lo] ? (u - g[lo]) / (g[lo + 1] - g[lo]) : 0;
+  return T.cum[lo] + f * (T.cum[lo + 1] - T.cum[lo]);
+}
+function indexAt(s) { // last index with cum <= s
+  const c = T.cum; let lo = 0, hi = c.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (c[mid] <= s) lo = mid; else hi = mid - 1; }
+  return lo;
+}
+function pointAt(s) {
+  const i = indexAt(s), p = T.pts[i];
+  if (i >= T.pts.length - 1) return { ...p, i };
+  const q = T.pts[i + 1], span = T.cum[i + 1] - T.cum[i];
+  const f = span > 0 ? (s - T.cum[i]) / span : 0;
+  return { lat: p.lat + (q.lat - p.lat) * f, lon: p.lon + (q.lon - p.lon) * f,
+    ele: p.ele != null && q.ele != null ? p.ele + (q.ele - p.ele) * f : p.ele,
+    t: p.t != null && q.t != null ? p.t + (q.t - p.t) * f : p.t, i };
+}
+
+// ---------- map ----------
+let map = null;
+function styleFor(key) {
+  const s = STYLES[key];
+  return {
+    version: 8,
+    sources: {
+      base: { type: 'raster', tiles: s.tiles, tileSize: 256, maxzoom: s.maxzoom, attribution: s.attribution },
+      dem: { type: 'raster-dem', tiles: [TERRAIN_URL], tileSize: 256, maxzoom: 15, encoding: 'terrarium', attribution: 'Terrain: Mapzen/AWS' },
+    },
+    layers: [
+      { id: 'sky', type: 'background', paint: { 'background-color': '#9fc6e6' } },
+      { id: 'base', type: 'raster', source: 'base' },
+    ],
+    terrain: { source: 'dem', exaggeration: 1.4 },
+  };
+}
+function lineGeo(upToIndex, tail) {
+  const lines = [];
+  for (let k = 0; k < T.segStarts.length; k++) {
+    const a = T.segStarts[k], b = k + 1 < T.segStarts.length ? T.segStarts[k + 1] : T.pts.length;
+    if (upToIndex != null && a > upToIndex) break;
+    const end = upToIndex == null ? b : Math.min(b, upToIndex + 1);
+    const coords = T.pts.slice(a, end).map((p) => [p.lon, p.lat]);
+    if (upToIndex != null && upToIndex < b && tail) coords.push([tail.lon, tail.lat]);
+    if (coords.length >= 2) lines.push(coords);
+  }
+  return { type: 'Feature', geometry: { type: 'MultiLineString', coordinates: lines }, properties: {} };
+}
+function addTrackLayers() {
+  map.addSource('full', { type: 'geojson', data: lineGeo(null) });
+  map.addSource('done', { type: 'geojson', data: lineGeo(0, T.pts[0]) });
+  map.addSource('head', { type: 'geojson', data: { type: 'Point', coordinates: [T.pts[0].lon, T.pts[0].lat] } });
+  map.addSource('wps', { type: 'geojson', data: { type: 'FeatureCollection', features: T.waypoints.map((w) => ({
+    type: 'Feature', geometry: { type: 'Point', coordinates: [w.lon, w.lat] }, properties: { photo: w.photo >= 0 ? 1 : 0 } })) } });
+  map.addLayer({ id: 'full', type: 'line', source: 'full', layout: { 'line-join': 'round', 'line-cap': 'round' },
+    paint: { 'line-color': '#ffffff', 'line-opacity': 0.55, 'line-width': 4 } });
+  map.addLayer({ id: 'done', type: 'line', source: 'done', layout: { 'line-join': 'round', 'line-cap': 'round' },
+    paint: { 'line-color': '#ff6d00', 'line-width': 6 } });
+  map.addLayer({ id: 'wps', type: 'circle', source: 'wps', paint: { 'circle-radius': 7, 'circle-color': ['case', ['==', ['get', 'photo'], 1], '#2d7dd2', '#e53935'],
+    'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
+  map.addLayer({ id: 'head', type: 'circle', source: 'head', paint: { 'circle-radius': 9, 'circle-color': '#ff6d00', 'circle-stroke-color': '#fff', 'circle-stroke-width': 3 } });
+}
+
+// ---------- playback ----------
+const state = { u: 0, s: 0, playing: false, phase: 'idle', bearing: 0, holdUntil: 0, card: null, lastFrame: 0, speed: 1, frame: 0 };
+function baseDurationSec() { return Math.max(30, Math.min(90, 20 + T.total / 1000 * 3)); }
+function followZoom() { return T.total < 5000 ? 15.2 : T.total < 40000 ? 14.3 : 13.6; }
+function lookAhead() { return Math.max(150, T.total * 0.015); }
+function lerpAngle(a, b, f) { const d = ((b - a + 540) % 360) - 180; return (a + d * f + 360) % 360; }
+
+function overview(pitch, bearing, duration) {
+  const cam = map.cameraForBounds(T.bounds, { padding: 60, bearing, pitch });
+  map.easeTo({ ...cam, pitch, bearing, duration });
+}
+function startIntro() {
+  state.phase = 'intro'; state.u = 0; state.s = 0; state.card = null; T.waypoints.forEach((w) => (w.shown = false));
+  const p0 = T.pts[0];
+  state.bearing = bearingDeg(p0, pointAt(Math.min(T.total, lookAhead())));
+  map.jumpTo({ ...map.cameraForBounds(T.bounds, { padding: 60 }), pitch: 40, bearing: 0 });
+  setTimeout(() => {
+    map.flyTo({ center: [p0.lon, p0.lat], zoom: followZoom(), pitch: 65, bearing: state.bearing, duration: 3500, essential: true });
+    setTimeout(() => { if (state.phase === 'intro') state.phase = 'follow'; }, 3600);
+  }, 1500);
+}
+function startOutro() {
+  state.phase = 'outro';
+  overview(50, state.bearing, 4000);
+  setTimeout(() => { map.easeTo({ bearing: state.bearing + 120, duration: 7000, easing: (t) => t }); }, 4100);
+  setTimeout(() => { state.phase = 'done'; setPlaying(false); if (rec.active) stopRecording(); }, 11500);
+}
+
+function tick(ts) {
+  const dt = state.lastFrame ? Math.min(0.1, (ts - state.lastFrame) / 1000) : 0;
+  state.lastFrame = ts;
+  if (T && map && state.playing && state.phase === 'follow') {
+    const now = performance.now();
+    if (now >= state.holdUntil) {
+      state.card = null;
+      state.u = Math.min(1, state.u + dt / (baseDurationSec() / state.speed));
+      state.s = distAtU(state.u);
+      const wp = T.waypoints.find((w) => !w.shown && w.u <= state.u);
+      if (wp) { wp.shown = true; state.card = wp; state.holdUntil = now + (wp.photo >= 0 ? 3000 : 1800); }
+    }
+    const p = pointAt(state.s);
+    const ahead = pointAt(Math.min(T.total, state.s + lookAhead()));
+    if (ahead.lat !== p.lat || ahead.lon !== p.lon) state.bearing = lerpAngle(state.bearing, bearingDeg(p, ahead), 1 - Math.exp(-dt * 1.8));
+    map.jumpTo({ center: [p.lon, p.lat], bearing: state.bearing, pitch: 65, zoom: followZoom() });
+    if ((state.frame++ & 1) === 0) {
+      map.getSource('done').setData(lineGeo(p.i, p));
+      map.getSource('head').setData({ type: 'Point', coordinates: [p.lon, p.lat] });
+    }
+    seekEl.value = Math.round(state.u * 1000);
+    if (state.u >= 1 && now >= state.holdUntil) startOutro();
+  }
+  drawOverlay(ovCtx, ovCanvas.width, ovCanvas.height, devicePixelRatio);
+  if (rec.active) composite();
+  requestAnimationFrame(tick);
+}
+
+// ---------- overlay (drawn on screen and into the video) ----------
+const ovCanvas = document.getElementById('overlay'), ovCtx = ovCanvas.getContext('2d');
+function sizeOverlay() {
+  const r = document.getElementById('map').getBoundingClientRect();
+  ovCanvas.width = Math.round(r.width * devicePixelRatio); ovCanvas.height = Math.round(r.height * devicePixelRatio);
+}
+function fmtKm(m) { return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(2)} km`; }
+function fmtDur(ms) { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 3600)}:${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}`; }
+function fmtClock(t) { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
+function roundRect(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+
+function drawOverlay(ctx, W, H, scaleHint) {
+  ctx.clearRect(0, 0, W, H);
+  if (!T) return;
+  const u = Math.min(W, H) / 360; // layout unit, resolution independent
+  const p = pointAt(state.s);
+  // Title + stats card (top-left)
+  const stats = [
+    ['距離', `${fmtKm(state.s)} / ${fmtKm(T.total)}`],
+    ['海拔', p.ele != null ? `${Math.round(p.ele)} m` : '—'],
+    ['爬升', T.hasEle ? `↑ ${Math.round(T.asc[p.i])} m` : '—'],
+    ['時間', T.hasTime && p.t != null ? `${fmtDur(p.t - T.pts[0].t)}（${fmtClock(p.t)}）` : '—'],
+  ];
+  const cw = 150 * u, ch = (26 + stats.length * 17) * u, x0 = 10 * u, y0 = 10 * u;
+  ctx.fillStyle = 'rgba(13,17,23,0.72)'; roundRect(ctx, x0, y0, cw, ch, 8 * u); ctx.fill();
+  ctx.fillStyle = '#ff9e40'; ctx.font = `bold ${12 * u}px system-ui, sans-serif`; ctx.textBaseline = 'top';
+  ctx.fillText(T.title.length > 18 ? T.title.slice(0, 18) + '…' : T.title, x0 + 8 * u, y0 + 7 * u);
+  stats.forEach(([k, v], i) => {
+    const y = y0 + (26 + i * 17) * u;
+    ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = `${10 * u}px system-ui, sans-serif`; ctx.fillText(k, x0 + 8 * u, y);
+    ctx.fillStyle = '#fff'; ctx.font = `bold ${11 * u}px system-ui, sans-serif`; ctx.fillText(v, x0 + 38 * u, y - 0.5 * u);
+  });
+  // Elevation profile (bottom) — above the on-screen controls, or at the very bottom in the video
+  if (T.hasEle && T.maxEle > T.minEle) {
+    const bottomPad = rec.active ? 8 * u : 110 * scaleHint;
+    const pw = W - 20 * u, ph = 42 * u, px = 10 * u, py = H - bottomPad - ph;
+    ctx.fillStyle = 'rgba(13,17,23,0.6)'; roundRect(ctx, px, py, pw, ph, 6 * u); ctx.fill();
+    const X = (s) => px + 4 * u + (pw - 8 * u) * s / T.total;
+    const Y = (e) => py + ph - 4 * u - (ph - 8 * u) * (e - T.minEle) / (T.maxEle - T.minEle);
+    const drawProfile = (upTo, fill) => {
+      ctx.beginPath(); let started = false, lastX = X(0);
+      for (let i = 0; i < T.pts.length && T.cum[i] <= upTo; i++) {
+        const e = T.pts[i].ele; if (e == null) continue;
+        const x = X(T.cum[i]); if (!started) { ctx.moveTo(x, py + ph - 4 * u); started = true; } ctx.lineTo(x, Y(e)); lastX = x;
+      }
+      if (!started) return; ctx.lineTo(lastX, py + ph - 4 * u); ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+    };
+    drawProfile(T.total, 'rgba(255,255,255,0.35)');
+    drawProfile(state.s, 'rgba(255,109,0,0.85)');
+    ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.font = `${8 * u}px system-ui, sans-serif`; ctx.textBaseline = 'top';
+    ctx.fillText(`${Math.round(T.maxEle)} m`, px + 6 * u, py + 3 * u);
+    ctx.fillText(`↑${Math.round(T.totalUp)} m ↓${Math.round(T.totalDown)} m`, px + pw - 80 * u, py + 3 * u);
+  }
+  // Waypoint / photo card
+  const c = state.card;
+  if (c) {
+    const hasImg = c.img && c.img.complete && c.img.naturalWidth > 0;
+    const maxW = W * 0.62, maxH = H * 0.55;
+    let iw = 0, ih = 0;
+    if (hasImg) { const r = Math.min(maxW / c.img.naturalWidth, maxH / c.img.naturalHeight); iw = c.img.naturalWidth * r; ih = c.img.naturalHeight * r; }
+    const bw = Math.max(iw, 120 * u) + 12 * u, bh = ih + 30 * u;
+    const bx = (W - bw) / 2, by = (H - bh) / 2;
+    ctx.fillStyle = 'rgba(255,255,255,0.95)'; roundRect(ctx, bx, by, bw, bh, 8 * u); ctx.fill();
+    if (hasImg) ctx.drawImage(c.img, bx + (bw - iw) / 2, by + 6 * u, iw, ih);
+    ctx.fillStyle = '#111'; ctx.font = `bold ${12 * u}px system-ui, sans-serif`; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+    ctx.fillText((c.photo >= 0 ? '📷 ' : '🚩 ') + c.name, W / 2, by + bh - 12 * u);
+    ctx.textAlign = 'left';
+  }
+}
+
+// ---------- recording ----------
+const rec = { active: false, recorder: null, canvas: null, ctx: null, W: 0, H: 0, chunks: [], queue: Promise.resolve(), mime: '' };
+const REC_CSS_W = 960, REC_CSS_H = 540; // map drawn at this CSS size × pixelRatio → exact output resolution
+function pickMime() {
+  for (const m of ['video/mp4;codecs=avc1.640028', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return '';
+}
+function fitStage() {
+  const mapEl = document.getElementById('map');
+  if (!rec.active) { mapEl.style.width = '100%'; mapEl.style.height = '100%'; mapEl.style.transform = ''; return; }
+  const s = Math.min(innerWidth / REC_CSS_W, innerHeight / REC_CSS_H);
+  mapEl.style.width = REC_CSS_W + 'px'; mapEl.style.height = REC_CSS_H + 'px';
+  mapEl.style.transformOrigin = '0 0';
+  mapEl.style.transform = `translate(${(innerWidth - REC_CSS_W * s) / 2}px, ${(innerHeight - REC_CSS_H * s) / 2}px) scale(${s})`;
+}
+function composite() {
+  const ctx = rec.ctx;
+  ctx.drawImage(map.getCanvas(), 0, 0, rec.W, rec.H);
+  drawOverlay(ctx, rec.W, rec.H, 1);
+  ctx.font = `${rec.H / 60}px system-ui, sans-serif`; ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.textBaseline = 'bottom';
+  ctx.fillText(STYLES[styleEl.value].attribution + ' | Terrain: AWS', 8, rec.H - 4);
+}
+function b64(buf) {
+  const bytes = new Uint8Array(buf); let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+function startRecording() {
+  const mime = pickMime();
+  if (!mime || !HTMLCanvasElement.prototype.captureStream) { alert('這支手機的瀏覽器元件不支援錄影'); return; }
+  const H = parseInt(document.getElementById('res').value, 10), W = Math.round(H * 16 / 9);
+  if (H === 2160 && !confirm('4K 在手機上很吃效能，畫面可能會掉格、錄影時間較長。確定要錄 4K？')) return;
+  rec.active = true; rec.W = W; rec.H = H; rec.mime = mime; rec.chunks = []; rec.queue = Promise.resolve();
+  document.body.classList.add('recording');
+  fitStage();
+  map.setPixelRatio(H / REC_CSS_H);
+  map.resize();
+  rec.canvas = document.createElement('canvas'); rec.canvas.width = W; rec.canvas.height = H; rec.ctx = rec.canvas.getContext('2d');
+  const bitrate = H >= 2160 ? 20e6 : H >= 1080 ? 8e6 : 5e6;
+  rec.recorder = new MediaRecorder(rec.canvas.captureStream(30), { mimeType: mime, videoBitsPerSecond: bitrate });
+  if (bridge) bridge.videoBegin(mime);
+  rec.recorder.ondataavailable = (e) => {
+    if (!e.data || !e.data.size) return;
+    if (bridge) rec.queue = rec.queue.then(() => e.data.arrayBuffer()).then((buf) => bridge.videoChunk(b64(buf)));
+    else rec.chunks.push(e.data);
+  };
+  rec.recorder.onstop = () => {
+    rec.queue.then(() => {
+      if (bridge) bridge.videoEnd();
+      else { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(rec.chunks, { type: mime })); a.download = `飛行回放.${mime.includes('mp4') ? 'mp4' : 'webm'}`; a.click(); }
+    });
+  };
+  composite();
+  rec.recorder.start(1000);
+  restart(true);
+}
+function stopRecording() {
+  if (!rec.active) return;
+  rec.active = false;
+  rec.recorder.stop();
+  document.body.classList.remove('recording');
+  map.setPixelRatio(devicePixelRatio);
+  fitStage(); map.resize(); sizeOverlay();
+}
+
+// ---------- controls ----------
+const seekEl = document.getElementById('seek'), styleEl = document.getElementById('style'), playBtn = document.getElementById('btnPlay');
+function setPlaying(on) { state.playing = on; playBtn.textContent = on ? '⏸' : '▶'; }
+function restart(play) { setPlaying(play); startIntro(); }
+playBtn.onclick = () => {
+  if (state.phase === 'idle' || state.phase === 'done') { restart(true); return; }
+  setPlaying(!state.playing);
+};
+document.getElementById('btnRestart').onclick = () => restart(true);
+document.getElementById('speed').onchange = (e) => { state.speed = parseFloat(e.target.value); };
+seekEl.oninput = () => {
+  state.u = seekEl.value / 1000; state.s = distAtU(state.u); state.phase = 'follow'; state.card = null; state.holdUntil = 0;
+  T.waypoints.forEach((w) => (w.shown = w.u < state.u));
+  const p = pointAt(state.s);
+  map.getSource('done').setData(lineGeo(p.i, p));
+  map.getSource('head').setData({ type: 'Point', coordinates: [p.lon, p.lat] });
+  map.jumpTo({ center: [p.lon, p.lat], bearing: state.bearing, pitch: 65, zoom: followZoom() });
+};
+styleEl.onchange = () => {
+  const src = STYLES[styleEl.value];
+  map.removeLayer('base'); map.removeSource('base');
+  map.addSource('base', { type: 'raster', tiles: src.tiles, tileSize: 256, maxzoom: src.maxzoom, attribution: src.attribution });
+  map.addLayer({ id: 'base', type: 'raster', source: 'base' }, 'full');
+};
+document.getElementById('btnRecord').onclick = startRecording;
+addEventListener('resize', () => { fitStage(); sizeOverlay(); });
+
+// ---------- boot ----------
+function boot(track) {
+  if (typeof maplibregl === 'undefined') {
+    document.getElementById('loadingText').textContent = '無法載入 3D 地圖元件：3D 回放需要網路，請確認連線後再開一次。';
+    return;
+  }
+  T = prepare(track);
+  if (T.pts.length < 2) { document.getElementById('loadingText').textContent = '這個軌跡沒有足夠的點可以回放'; return; }
+  T.waypoints.forEach((w) => {
+    if (w.photo >= 0 && bridge) { const img = new Image(); img.src = bridge.getPhoto(w.photo); w.img = img; }
+    else if (w.photoUrl) { const img = new Image(); img.src = w.photoUrl; w.img = img; }
+  });
+  map = new maplibregl.Map({
+    container: 'map', style: styleFor('sat'), bounds: T.bounds, fitBoundsOptions: { padding: 60 },
+    pitch: 40, maxPitch: 75, preserveDrawingBuffer: true, attributionControl: { compact: true }, interactive: true,
+  });
+  map.on('load', () => {
+    addTrackLayers();
+    sizeOverlay();
+    document.getElementById('loading').style.display = 'none';
+    setTimeout(() => restart(true), 800);
+  });
+  map.on('error', (e) => console.warn('map error', e && e.error && e.error.message));
+  setTimeout(() => {
+    if (!map.loaded() && document.getElementById('loading').style.display !== 'none') {
+      document.getElementById('loadingText').textContent = '地圖載入失敗或太慢：3D 回放需要網路（地形與衛星影像），請確認連線後再開一次。';
+    }
+  }, 25000);
+  requestAnimationFrame(tick);
+}
+window.loadTrack = boot; // for testing in a desktop browser
+
+if (bridge) {
+  try { boot(JSON.parse(bridge.getTrackJson())); }
+  catch (e) { document.getElementById('loadingText').textContent = '讀取軌跡失敗：' + e.message; }
+} else {
+  document.getElementById('loadingText').innerHTML = '選擇 GPX 檔測試回放<br><input type="file" id="gpxFile" accept=".gpx">';
+  document.getElementById('gpxFile').onchange = async (e) => boot(parseGpxText(await e.target.files[0].text(), e.target.files[0].name));
+}
+function parseGpxText(text, name) {
+  const xml = new DOMParser().parseFromString(text, 'application/xml');
+  const num = (el, tag) => { const n = el.getElementsByTagName(tag)[0]; return n ? parseFloat(n.textContent) : null; };
+  const segments = [...xml.getElementsByTagName('trkseg')].map((seg) => [...seg.getElementsByTagName('trkpt')].map((p) => {
+    const t = p.getElementsByTagName('time')[0];
+    return { lat: +p.getAttribute('lat'), lon: +p.getAttribute('lon'), ele: num(p, 'ele'), t: t ? Date.parse(t.textContent) : null };
+  }));
+  const waypoints = [...xml.getElementsByTagName('wpt')].map((w) => ({ lat: +w.getAttribute('lat'), lon: +w.getAttribute('lon'),
+    ele: num(w, 'ele'), name: (w.getElementsByTagName('name')[0] || {}).textContent || '航點', photo: -1 }));
+  return { title: name.replace(/\.gpx$/i, ''), segments, waypoints };
+}
+</script>
+</body>
+</html>

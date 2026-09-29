@@ -56,6 +56,8 @@ class LocationForegroundService : Service() {
         const val ACTION_MARK_CAMPING = "tw.umaya.tracker.action.MARK_CAMPING"
         const val ACTION_ADD_WAYPOINT = "tw.umaya.tracker.action.ADD_WAYPOINT"
         const val EXTRA_WAYPOINT_NAME = "waypoint_name"
+        /** Photo path relative to the gpx folder (e.g. "photos/IMG_….jpg"), linked from the 航點. */
+        const val EXTRA_WAYPOINT_PHOTO = "waypoint_photo"
         const val ACTION_UPDATE_INTERVAL = "tw.umaya.tracker.action.UPDATE_INTERVAL"
         const val ACTION_PAUSE = "tw.umaya.tracker.action.PAUSE"
         const val ACTION_RESUME = "tw.umaya.tracker.action.RESUME"
@@ -201,7 +203,10 @@ class LocationForegroundService : Service() {
             }
             ACTION_MARK_SAFE -> markPoint("safe")
             ACTION_MARK_CAMPING -> markPoint("camping")
-            ACTION_ADD_WAYPOINT -> addWaypoint(intent?.getStringExtra(EXTRA_WAYPOINT_NAME)?.ifBlank { null } ?: "航點")
+            ACTION_ADD_WAYPOINT -> addWaypoint(
+                intent?.getStringExtra(EXTRA_WAYPOINT_NAME)?.ifBlank { null } ?: "航點",
+                intent?.getStringExtra(EXTRA_WAYPOINT_PHOTO),
+            )
             ACTION_GPX_START -> {
                 startForeground(NOTIFICATION_ID, buildNotification())
                 val resumeExisting = intent?.getBooleanExtra(EXTRA_GPX_RESUME_EXISTING, false) ?: false
@@ -334,8 +339,8 @@ class LocationForegroundService : Service() {
     }
 
     /** 航點: into the GPX being recorded, and to the guardian page (retried until delivered). */
-    private fun addWaypoint(name: String) = withCurrentFix("新增航點") { location ->
-        if (prefs.isGpxRecording) gpxRecorder.addWaypoint(name, location)
+    private fun addWaypoint(name: String, photo: String?) = withCurrentFix("新增航點") { location ->
+        if (prefs.isGpxRecording) gpxRecorder.addWaypoint(name, location, photo)
         val hikeId = prefs.activeHikeId
         if (hikeId != -1L) {
             val iso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
@@ -352,7 +357,7 @@ class LocationForegroundService : Service() {
                 ),
             )
         }
-        toast("🚩 已新增航點「$name」")
+        toast((if (photo != null) "📷" else "🚩") + " 已新增航點「$name」")
     }
 
     private fun toast(message: String) {

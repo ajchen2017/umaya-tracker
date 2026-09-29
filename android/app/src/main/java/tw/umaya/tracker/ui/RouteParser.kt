@@ -130,6 +130,7 @@ private fun parseGpx(p: XmlPullParser): ParsedRoute {
     var seg: MutableList<GeoPoint>? = null
     var wpt: GeoPoint? = null
     var wptName: String? = null; var wptDesc: String? = null; var wptCmt: String? = null
+    var wptHasPhoto = false
     var inTrkpt = false
     while (true) {
         when (p.next()) {
@@ -138,7 +139,8 @@ private fun parseGpx(p: XmlPullParser): ParsedRoute {
                 "trk" -> { trkName = null; trkFirst = null }
                 "trkseg" -> seg = mutableListOf()
                 "trkpt" -> { inTrkpt = true; p.latLon()?.let { pt -> seg?.add(pt); if (trkFirst == null) trkFirst = pt } }
-                "wpt" -> { wpt = p.latLon(); wptName = null; wptDesc = null; wptCmt = null }
+                "wpt" -> { wpt = p.latLon(); wptName = null; wptDesc = null; wptCmt = null; wptHasPhoto = false }
+                "link" -> if (wpt != null && p.getAttributeValue(null, "href")?.matches(Regex("(?i).*\\.(jpe?g|png|webp)$")) == true) wptHasPhoto = true
                 "name" -> when {
                     wpt != null -> wptName = p.readText()
                     seg == null && !inTrkpt -> trkName = p.readText()
@@ -150,7 +152,11 @@ private fun parseGpx(p: XmlPullParser): ParsedRoute {
                 "trkpt" -> inTrkpt = false
                 "trkseg" -> { seg?.takeIf { it.size >= 2 }?.let(segments::add); seg = null }
                 "trk" -> { val first = trkFirst; val name = trkName; if (first != null && !name.isNullOrBlank()) labels += RouteLabel(first, name) }
-                "wpt" -> { val pt = wpt; labelText(wptName, wptDesc, wptCmt)?.let { if (pt != null) labels += RouteLabel(pt, it, isWaypoint = true) }; wpt = null }
+                "wpt" -> {
+                    val pt = wpt
+                    labelText(wptName, wptDesc, wptCmt)?.let { if (pt != null) labels += RouteLabel(pt, (if (wptHasPhoto) "📷 " else "") + it, isWaypoint = true) }
+                    wpt = null
+                }
             }
         }
     }

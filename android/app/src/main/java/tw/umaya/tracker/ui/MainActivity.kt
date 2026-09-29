@@ -106,6 +106,8 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.text.SimpleDateFormat
 import java.io.File
+import androidx.compose.ui.graphics.asImageBitmap
+import android.graphics.BitmapFactory
 import java.util.Locale
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -1933,21 +1935,66 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         while (tripActive) { nowMs = System.currentTimeMillis(); delay(1_000) }
     }
 
-    // 航點 name dialog (top bar 🚩).
+    // 航點 dialog (top bar 🚩, or right after a 📷 photo).
     var showWaypointDialog by remember { mutableStateOf(false) }
     var waypointName by remember { mutableStateOf("") }
+    var waypointPhoto by remember { mutableStateOf<String?>(null) } // relative to the gpx folder, e.g. "photos/IMG_….jpg"
+    var pendingPhoto by remember { mutableStateOf<File?>(null) }
+    val gpxFolder = remember { File(context.getExternalFilesDir(null), "gpx") }
+    val takePhotoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val f = pendingPhoto
+        pendingPhoto = null
+        if (ok && f != null && f.length() > 0) {
+            waypointPhoto = "photos/${f.name}"
+            if (waypointName.isBlank()) waypointName = "照片 " + SimpleDateFormat("HH:mm", Locale.TAIWAN).format(System.currentTimeMillis())
+            showWaypointDialog = true
+        } else {
+            f?.delete()
+        }
+    }
+    fun takeWaypointPhoto() {
+        val dir = File(gpxFolder, "photos").apply { mkdirs() }
+        val f = File(dir, "IMG_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis()) + ".jpg")
+        pendingPhoto = f
+        val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", f)
+        try {
+            takePhotoLauncher.launch(uri)
+        } catch (e: ActivityNotFoundException) {
+            pendingPhoto = null
+            Toast.makeText(context, "找不到相機 App", Toast.LENGTH_LONG).show()
+        }
+    }
     if (showWaypointDialog) {
+        val thumb = remember(waypointPhoto) {
+            waypointPhoto?.let { rel ->
+                runCatching {
+                    BitmapFactory.decodeFile(File(gpxFolder, rel).path, BitmapFactory.Options().apply { inSampleSize = 8 })?.asImageBitmap()
+                }.getOrNull()
+            }
+        }
         AlertDialog(
             onDismissRequest = { showWaypointDialog = false },
             title = { Text("新增航點") },
             text = {
                 Column {
-                    Text("以目前位置新增航點" + if (hasActiveHike) "，並同步給留守人。" else "。", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "以目前位置新增航點" + (if (hasActiveHike) "，名稱會同步給留守人" else "") +
+                            (if (gpxRecording) "；照片存在手機並連結到 GPX 航點。" else "。"),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = waypointName, onValueChange = { waypointName = it },
                         label = { Text("名稱") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                     )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (thumb != null) {
+                            androidx.compose.foundation.Image(thumb, contentDescription = "航點照片", modifier = Modifier.size(72.dp))
+                        }
+                        OutlinedButton(onClick = { takeWaypointPhoto() }) { Text(if (waypointPhoto == null) "📷 拍照" else "📷 重拍") }
+                        if (waypointPhoto != null) TextButton(onClick = { waypointPhoto = null }) { Text("不附照片") }
+                    }
                 }
             },
             confirmButton = {
@@ -1956,11 +2003,64 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         Intent(context, LocationForegroundService::class.java)
                             .setAction(LocationForegroundService.ACTION_ADD_WAYPOINT)
                             .putExtra(LocationForegroundService.EXTRA_WAYPOINT_NAME, waypointName.trim())
+                            .apply { waypointPhoto?.let { putExtra(LocationForegroundService.EXTRA_WAYPOINT_PHOTO, it) } }
                     )
                     showWaypointDialog = false
+                    waypointPhoto = null
                 }) { Text("新增") }
             },
-            dismissButton = { TextButton(onClick = { showWaypointDialog = false }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { showWaypointDialog = false; waypointPhoto = null }) { Text("取消") } },
+        )
+    }
+
+    // ---- 3D 飛行回放：pick recorded trails and/or loaded route files, one or several merged ----
+    var showReliveDialog by remember { mutableStateOf(false) }
+    val reliveSelection = remember { mutableStateListOf<String>() }
+    if (showReliveDialog) {
+        val recorded = remember(showReliveDialog) { recordedTracks(context) }
+        AlertDialog(
+            onDismissRequest = { showReliveDialog = false },
+            title = { Text("3D 飛行回放") },
+            text = {
+                Column(modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+                    Text(
+                        "3D 地形飛行回放，經過航點時會跳出照片；可錄成 720p／1080p／4K 影片。需要網路（地形與衛星影像）。可勾選多筆合併回放。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    @Composable
+                    fun pick(path: String, label: String) {
+                        val checked = path in reliveSelection
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable { if (checked) reliveSelection.remove(path) else reliveSelection.add(path) },
+                        ) {
+                            Checkbox(checked = checked, onCheckedChange = null)
+                            Text(label, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    if (recorded.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("我記錄的軌跡", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                        recorded.forEach { pick(it.absolutePath, it.nameWithoutExtension) }
+                    }
+                    if (loadedRoutes.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("匯入的軌跡檔", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                        loadedRoutes.forEach { pick(it.file, it.name) }
+                    }
+                    if (recorded.isEmpty() && loadedRoutes.isEmpty()) Text("還沒有可以回放的軌跡。", style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = reliveSelection.isNotEmpty(), onClick = {
+                    val files = reliveSelection.map(::File)
+                    val names = files.map { f -> loadedRoutes.firstOrNull { it.file == f.absolutePath }?.name?.substringBeforeLast('.') ?: f.nameWithoutExtension }
+                    ReliveActivity.start(context, files, if (names.size == 1) names.first() else "${names.first()} 等 ${names.size} 筆")
+                    showReliveDialog = false
+                }) { Text("開始回放") }
+            },
+            dismissButton = { TextButton(onClick = { showReliveDialog = false }) { Text("關閉") } },
         )
     }
 
@@ -2107,7 +2207,19 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     Toast.makeText(context, "請先開始行程，才能新增航點", Toast.LENGTH_SHORT).show()
                 } else {
                     waypointName = "航點 ${recordingWaypoints.size + 1}"
+                    waypointPhoto = null
                     showWaypointDialog = true
+                }
+            }
+
+            // (3) 即時拍照 → 航點
+            TopBarIconButton("📷") {
+                if (!tripActive) {
+                    Toast.makeText(context, "請先開始行程，才能拍照建立航點", Toast.LENGTH_SHORT).show()
+                } else {
+                    waypointName = ""
+                    waypointPhoto = null
+                    takeWaypointPhoto()
                 }
             }
 
@@ -2162,6 +2274,10 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 DropdownMenuItem(
                     text = { Text("軌跡檔管理（匯入／顯示／偏離提醒）" + if (loadedRoutes.isNotEmpty()) "・${loadedRoutes.size}" else "") },
                     onClick = { showFunctionMenu = false; showLoadRouteDialog = true },
+                )
+                DropdownMenuItem(
+                    text = { Text("3D 飛行回放（Relive）") },
+                    onClick = { showFunctionMenu = false; reliveSelection.clear(); showReliveDialog = true },
                 )
                 DropdownMenuItem(
                     text = { Text("軌跡記錄設定（間隔／長度／匯出）") },

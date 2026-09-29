@@ -40,6 +40,24 @@
             android:label="登山留守人"
             android:theme="@style/Theme.Guardian" />
 
+        <!-- 3D 飛行回放: rotating the phone must not reload the WebView mid-playback/recording. -->
+        <activity
+            android:name=".ui.ReliveActivity"
+            android:exported="false"
+            android:label="3D 飛行回放"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
+
+        <!-- Hands the camera app a file to write the 航點 photo into. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <service
             android:name=".location.LocationForegroundService"
             android:exported="false"
