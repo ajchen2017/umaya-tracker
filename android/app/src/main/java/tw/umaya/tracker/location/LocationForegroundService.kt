@@ -202,10 +202,11 @@ class LocationForegroundService : Service() {
             ACTION_GPX_START -> {
                 startForeground(NOTIFICATION_ID, buildNotification())
                 val resumeExisting = intent?.getBooleanExtra(EXTRA_GPX_RESUME_EXISTING, false) ?: false
-                // 重新開始 explicitly means "not that one" — abandon any dangling unfinished
-                // file rather than leaving it orphaned on disk forever.
-                if (!resumeExisting) prefs.gpxFilePath?.let { java.io.File(it).delete() }
-                val path = gpxRecorder.start(if (resumeExisting) prefs.gpxFilePath else null)
+                // 接續舊行程 keeps writing the trail it recorded last time (unfinished, or the one
+                // saved when it ended); a new trip starts a new file. Nothing is ever deleted — an
+                // older file stays listed under 軌跡記錄設定 → 匯出.
+                val resumePath = if (resumeExisting) prefs.gpxFilePath ?: prefs.lastFinishedGpxPath else null
+                val path = gpxRecorder.start(resumePath)
                 prefs.gpxFilePath = path
                 prefs.isGpxRecording = true
                 prefs.isGpxPaused = false
@@ -218,6 +219,7 @@ class LocationForegroundService : Service() {
                 updateNotification()
             }
             ACTION_GPX_RESUME -> {
+                gpxRecorder.newSegment() // don't draw a line across the pause
                 prefs.isGpxPaused = false
                 refreshLocationUpdates()
                 updateNotification()
@@ -227,10 +229,11 @@ class LocationForegroundService : Service() {
                 val format = intent?.getStringExtra(EXTRA_GPX_FORMAT) ?: "gpx"
                 val outputUri = intent?.getStringExtra(EXTRA_GPX_OUTPUT_URI)?.let(android.net.Uri::parse)
                 val saved = gpxRecorder.finalize(name, format)
+                if (saved != null) prefs.lastFinishedGpxPath = saved.first
                 toast(
                     when {
                         saved == null -> "沒有正在記錄的軌跡"
-                        outputUri == null -> "已儲存（${saved.second} 個點）：${saved.first}"
+                        outputUri == null -> "軌跡已保留在 App 內（${saved.second} 個點），可到「軌跡記錄設定」匯出"
                         copyToUri(java.io.File(saved.first), outputUri) -> "已儲存到選擇的位置（${saved.second} 個點）"
                         else -> "無法寫入選擇的位置，已改存在：${saved.first}"
                     }

@@ -417,20 +417,22 @@ class OfflineMapController internal constructor(
         added.forEach { layers.add(it) }
     }
 
-    private var recordingLine: Polyline? = null
-    /** The GPX trail being recorded right now — its own layer, untouched by loaded-route redraws. */
-    fun setRecordingTrack(points: List<GeoPoint>) {
-        recordingLine?.let { layers.remove(it) }
-        recordingLine = null
-        if (points.size < 2) return
-        val paint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
-            setColor(RECORDING_TRACK_COLOR)
-            setStyle(Style.STROKE)
-            setStrokeWidth(7f)
+    private var recordingLines: List<Polyline> = emptyList()
+    /** The GPX trail being recorded right now, one line per segment (pauses split it) — its own
+     *  layers, untouched by loaded-route redraws. */
+    fun setRecordingTrack(segments: List<List<GeoPoint>>) {
+        recordingLines.forEach { layers.remove(it) }
+        recordingLines = segments.filter { it.size >= 2 }.map { points ->
+            val paint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
+                setColor(RECORDING_TRACK_COLOR)
+                setStyle(Style.STROKE)
+                setStrokeWidth(7f)
+            }
+            Polyline(paint, AndroidGraphicFactory.INSTANCE).apply {
+                addPoints(points.map { LatLong(it.latitude, it.longitude) })
+            }
         }
-        recordingLine = Polyline(paint, AndroidGraphicFactory.INSTANCE).apply {
-            addPoints(points.map { LatLong(it.latitude, it.longitude) })
-        }.also { layers.add(it) }
+        recordingLines.forEach { layers.add(it) }
     }
 
     fun removeLoadedRoute(id: String) {

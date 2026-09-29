@@ -34,13 +34,14 @@ class GpxRecorder(private val context: Context) {
 
     /**
      * Starts a new trail file, or — if [resumePath] names a file that still exists — resumes
-     * appending to it instead (繼續, after the process died mid-recording). Returns the path
-     * actually in use.
+     * appending to it in a new segment (接續舊行程, or after the process died mid-recording).
+     * Returns the path actually in use.
      */
     fun start(resumePath: String? = null): String {
         if (resumePath != null && File(resumePath).exists()) {
             file = File(resumePath)
             pointCount = trackPointCount(File(resumePath))
+            newSegment()
             return resumePath
         }
         val stamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(System.currentTimeMillis())
@@ -84,6 +85,20 @@ class GpxRecorder(private val context: Context) {
         f.writeText(body + trkpt + "</trkseg></trk></gpx>\n")
         pointCount++
         lastLogged = location
+    }
+
+    /**
+     * Closes the current <trkseg> and opens a new one, so the gap across a pause (or an app
+     * restart) is not drawn as a straight line. No-op while the current segment is still empty.
+     */
+    fun newSegment() {
+        val f = file ?: return
+        val text = f.readText()
+        val footerIdx = text.lastIndexOf("</trkseg>")
+        if (footerIdx < 0) return
+        if (text.indexOf("<trkpt", text.lastIndexOf("<trkseg>")) < 0) return
+        f.writeText(text.substring(0, footerIdx) + "</trkseg>\n<trkseg>\n</trkseg></trk></gpx>\n")
+        lastLogged = null
     }
 
     /**

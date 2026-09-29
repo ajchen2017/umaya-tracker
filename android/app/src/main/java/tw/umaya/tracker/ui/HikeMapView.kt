@@ -185,21 +185,20 @@ class HikeMapController internal constructor(
         mapView.invalidate()
     }
 
-    private var recordingLine: Polyline? = null
-    /** The GPX trail being recorded right now — its own overlay, untouched by loaded-route redraws. */
-    fun setRecordingTrack(points: List<GeoPoint>) {
-        if (points.size < 2) {
-            recordingLine?.let { mapView.overlays.remove(it) }
-            recordingLine = null
-        } else {
-            val line = recordingLine ?: Polyline(mapView).apply {
+    private var recordingLines: List<Polyline> = emptyList()
+    /** The GPX trail being recorded right now, one line per segment (pauses split it) — its own
+     *  overlays, untouched by loaded-route redraws. */
+    fun setRecordingTrack(segments: List<List<GeoPoint>>) {
+        recordingLines.forEach { mapView.overlays.remove(it) }
+        recordingLines = segments.filter { it.size >= 2 }.map { points ->
+            Polyline(mapView).apply {
                 outlinePaint.color = RECORDING_TRACK_COLOR
                 outlinePaint.strokeWidth = 8f
-                val arrowIndex = mapView.overlays.indexOf(directionArrow)
-                if (arrowIndex >= 0) mapView.overlays.add(arrowIndex, this) else mapView.overlays.add(this)
-            }.also { recordingLine = it }
-            line.setPoints(points)
+                setPoints(points)
+            }
         }
+        val arrowIndex = mapView.overlays.indexOf(directionArrow)
+        if (arrowIndex >= 0) mapView.overlays.addAll(arrowIndex, recordingLines) else mapView.overlays.addAll(recordingLines)
         mapView.invalidate()
     }
 

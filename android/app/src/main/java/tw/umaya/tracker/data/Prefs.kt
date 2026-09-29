@@ -86,6 +86,11 @@ class Prefs(context: Context) {
         get() = prefs.getString("gpx_file_path", null)
         set(value) = prefs.edit().putString("gpx_file_path", value).apply()
 
+    /** The trail saved when the last trip ended — 接續舊行程 keeps writing to it. */
+    var lastFinishedGpxPath: String?
+        get() = prefs.getString("last_finished_gpx_path", null)
+        set(value) = prefs.edit().putString("last_finished_gpx_path", value).apply()
+
     /** GPX 記錄間隔 — minimum seconds between logged points, one of [GPX_INTERVAL_OPTIONS]; 0 =
      *  continuous. Independent of the guardian 定位頻率 ([intervalSeconds]). */
     var gpxMinIntervalSec: Int
