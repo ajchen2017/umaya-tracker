@@ -31,8 +31,31 @@ import tw.umaya.tracker.guardian.GuardianActivity
  * own 🏠 button that calls finish() to land back here.
  */
 class HomeActivity : ComponentActivity() {
+
+    /** After a crash, offer to share its stack trace (e.g. by email/LINE) so it can be diagnosed remotely. */
+    private fun offerCrashReport() {
+        val file = tw.umaya.tracker.crashFile(this)
+        if (!file.exists()) return
+        val report = file.readText()
+        file.delete()
+        android.app.AlertDialog.Builder(this)
+            .setTitle("上次 App 異常結束")
+            .setMessage("要把錯誤資訊傳給開發者嗎？（只有錯誤記錄，不含位置或個人資料）")
+            .setPositiveButton("分享") { _, _ ->
+                startActivity(Intent.createChooser(
+                    Intent(Intent.ACTION_SEND).setType("text/plain")
+                        .putExtra(Intent.EXTRA_EMAIL, arrayOf("ws.chen2011@gmail.com"))
+                        .putExtra(Intent.EXTRA_SUBJECT, "登山健行定位追蹤 當機記錄")
+                        .putExtra(Intent.EXTRA_TEXT, report),
+                    "分享錯誤記錄",
+                ))
+            }
+            .setNegativeButton("不用", null)
+            .show()
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        offerCrashReport()
         setContent {
             MaterialTheme {
                 RoleTile(

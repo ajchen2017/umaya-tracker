@@ -823,8 +823,11 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         distanceToRouteM = d
         val off = d != null && d > offRouteThresholdM
         if (off && !wasOffRoute) {
-            val vibrator = context.getSystemService(android.os.Vibrator::class.java)
-            vibrator?.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 300, 200, 300), -1))
+            // A vibration failure must never take the map screen down with it.
+            runCatching {
+                context.getSystemService(android.os.Vibrator::class.java)
+                    ?.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 300, 200, 300), -1))
+            }
         }
         wasOffRoute = off
     }
