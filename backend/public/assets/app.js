@@ -90,19 +90,25 @@ const MIN_ACCURACY_MARGIN_M = 20; // baseline slack even when accuracy is missin
 function filterPlausiblePoints(points) {
   const speedLimit = TRAVEL_MODE_SPEED_MPS[travelMode] || TRAVEL_MODE_SPEED_MPS.hiking;
   const hopCap = MAX_SINGLE_HOP_M[travelMode] || MAX_SINGLE_HOP_M.hiking;
+  const plausible = (a, b) => {
+    const dtSec = (new Date(b.recorded_at) - new Date(a.recorded_at)) / 1000;
+    if (dtSec <= 0) return false; // duplicate/out-of-order timestamp — no speed can be computed
+    const distM = haversineMeters(a.lat, a.lng, b.lat, b.lng);
+    if (distM > hopCap) return false; // no elapsed time makes this plausible for the mode
+    const accuracyFloor = (a.accuracy || 0) + (b.accuracy || 0) + MIN_ACCURACY_MARGIN_M;
+    return distM <= Math.max(speedLimit * dtSec, accuracyFloor); // allowing for GPS noise
+  };
   const kept = [];
   let last = null;
+  let candidate = null; // latest point rejected against `last`
   points.forEach((p) => {
-    if (!last) { kept.push(p); last = p; return; }
-    const dtSec = (new Date(p.recorded_at) - new Date(last.recorded_at)) / 1000;
-    if (dtSec <= 0) return; // duplicate/out-of-order timestamp — no speed can be computed
-    const distM = haversineMeters(last.lat, last.lng, p.lat, p.lng);
-    if (distM > hopCap) return; // no elapsed time makes this plausible for the mode — drop unconditionally
-    const accuracyFloor = (p.accuracy || 0) + (last.accuracy || 0) + MIN_ACCURACY_MARGIN_M;
-    const allowedM = Math.max(speedLimit * dtSec, accuracyFloor);
-    if (distM > allowedM) return; // implausible for this mode even accounting for GPS noise — drop
-    kept.push(p);
-    last = p;
+    if (!last || plausible(last, p)) { kept.push(p); last = p; candidate = null; return; }
+    // Not reachable from the last kept point. A lone GPS spike is followed by fixes back near
+    // `last`; a real relocation (a jeep/bus ride, a long signal gap) is followed by fixes that
+    // agree with each other at the new place. Once two in a row agree, re-anchor there —
+    // otherwise every point after a ride stays compared to where it started and is dropped forever.
+    if (candidate && plausible(candidate, p)) { kept.push(candidate, p); last = p; candidate = null; return; }
+    candidate = p;
   });
   return kept;
 }

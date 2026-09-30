@@ -48,7 +48,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -1913,6 +1915,10 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
 
     // Compass heading for the stats panel's small compass.
     var showStatsPanel by remember { mutableStateOf(prefs.statsPanelExpanded) }
+    // The bottom status bar wraps to 2–3 lines (long 行程名稱, 伺服器離線, an error message, large
+    // system font) — the stats panel sits on top of its measured height, not a fixed guess.
+    var statusBarHeight by remember { mutableStateOf(44.dp) }
+    val density = LocalDensity.current
     var compassAzimuth by remember { mutableStateOf(0f) }
     DisposableEffect(tripActive && showStatsPanel) {
         val sm = context.getSystemService(android.content.Context.SENSOR_SERVICE) as android.hardware.SensorManager
@@ -2412,7 +2418,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
 
         // ---- 5. 右下：可收合的行程統計（時間、里程、步數、爬升/下降、指北針）----
         if (tripActive) {
-            Box(modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 52.dp)) {
+            Box(modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = statusBarHeight + 8.dp)) {
                 if (!showStatsPanel) {
                     MapCircleButton("📊", size = 44.dp) { showStatsPanel = true; prefs.statsPanelExpanded = true }
                 } else {
@@ -2456,6 +2462,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
+                .onSizeChanged { statusBarHeight = with(density) { it.height.toDp() } }
                 .background(Color(0xFF202020))
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         ) {

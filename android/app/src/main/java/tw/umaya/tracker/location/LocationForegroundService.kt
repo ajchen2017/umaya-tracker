@@ -97,15 +97,18 @@ class LocationForegroundService : Service() {
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
-            val location = result.lastLocation ?: return
-            lastLocation = location // kept unfiltered — SOS/markers favor recency over precision
-            if (isPlausibleFix(location)) {
+            // While the phone throttles the app (screen off, 飛航模式/no signal, power saving) the
+            // GPS keeps fixing and the OS hands the buffered fixes over in one batch afterwards —
+            // taking only lastLocation dropped all of them and joined the gap with a straight line.
+            for (location in result.locations.sortedBy { it.time }) {
+                lastLocation = location // kept unfiltered — SOS/markers favor recency over precision
+                if (!isPlausibleFix(location)) continue
                 lastAcceptedLocation = location
                 // Fixes can arrive faster than the guardian 定位頻率 while a GPX is recording at
                 // a finer interval — report at most once per 定位頻率 (80% tolerance for jitter).
                 if (location.time - lastReportedFixTime >= prefs.intervalSeconds * 800L) {
                     lastReportedFixTime = location.time
-                    recordPoint(location, "normal")
+                    recordPoint(location, "normal", location.time) // a batched fix keeps its own time
                 }
                 if (prefs.isGpxRecording && !prefs.isGpxPaused) {
                     gpxRecorder.appendPoint(location, prefs.gpxMinIntervalSec, prefs.gpxMinDistanceM)
@@ -364,7 +367,7 @@ class LocationForegroundService : Service() {
         mainHandler.post { Toast.makeText(applicationContext, message, Toast.LENGTH_LONG).show() }
     }
 
-    private fun recordPoint(location: Location, markerType: String) {
+    private fun recordPoint(location: Location, markerType: String, atMillis: Long = System.currentTimeMillis()) {
         val hikeId = prefs.activeHikeId
         if (hikeId == -1L) return
 
@@ -378,7 +381,7 @@ class LocationForegroundService : Service() {
                     accuracy = if (location.hasAccuracy()) location.accuracy else null,
                     markerType = markerType,
                     batteryPct = currentBatteryPct(),
-                    recordedAtIso = isoNow(),
+                    recordedAtIso = isoAt(atMillis),
                 )
             )
             SyncWorker.enqueue(applicationContext)
@@ -396,10 +399,10 @@ class LocationForegroundService : Service() {
         return if (pct in 0..100) pct else null
     }
 
-    private fun isoNow(): String {
+    private fun isoAt(millis: Long): String {
         val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
         fmt.timeZone = TimeZone.getTimeZone("UTC")
-        return fmt.format(System.currentTimeMillis())
+        return fmt.format(millis)
     }
 
     private fun buildNotification(): Notification {
