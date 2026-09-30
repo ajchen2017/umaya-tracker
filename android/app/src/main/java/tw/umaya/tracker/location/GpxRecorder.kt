@@ -23,7 +23,9 @@ class GpxRecorder(private val context: Context) {
     private var lastFixTime = 0L // latest fix handed to appendPoint, logged or not
 
     private companion object {
-        const val GAP_MIN_MS = 120_000L       // no fix for this long = reception was lost
+        // No usable fix for this long = reception was lost. Above the service's 2-minute rough-fix
+        // spacing (poor sky view), so a coarse stretch stays one line instead of being chopped up.
+        const val GAP_MIN_MS = 300_000L
         const val GAP_MIN_DISTANCE_M = 100f   // …and the next fix is this far away → new segment
     }
 

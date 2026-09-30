@@ -80,6 +80,11 @@ class LocationForegroundService : Service() {
         // structures) looks the same on the map either way: the track snaps out to a
         // wrong point and back, over and over. Reject both rather than plotting them.
         private const val MAX_ACCEPTABLE_ACCURACY_M = 50f
+        // Deep gorges and forest (e.g. ABC 2600–2900 m) keep GPS at 50–150 m error for an hour at a
+        // time; rejecting all of it left that whole stretch empty. After this long with nothing
+        // better, a rough fix is taken — a coarse track beats a straight line.
+        private const val ROUGH_ACCURACY_M = 150f
+        private const val ROUGH_AFTER_MS = 120_000L
         private const val MAX_PLAUSIBLE_SPEED_MPS = 15f // ~54 km/h — generous for a hiker, rejects GPS teleports
     }
 
@@ -119,7 +124,10 @@ class LocationForegroundService : Service() {
     }
 
     private fun isPlausibleFix(location: Location): Boolean {
-        if (location.hasAccuracy() && location.accuracy > MAX_ACCEPTABLE_ACCURACY_M) return false
+        if (location.hasAccuracy() && location.accuracy > MAX_ACCEPTABLE_ACCURACY_M) {
+            val sinceLastMs = location.time - (lastAcceptedLocation?.time ?: 0L)
+            if (location.accuracy > ROUGH_ACCURACY_M || sinceLastMs < ROUGH_AFTER_MS) return false
+        }
         val prev = lastAcceptedLocation ?: return true
         val elapsedSec = (location.time - prev.time) / 1000.0
         // A same-or-earlier fix time than the last accepted fix means this is a duplicate or
