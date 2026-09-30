@@ -2222,16 +2222,50 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         ) {
             // (1) 回到現在手機 GPS 位置
             TopBarIconButton("📍") {
-                if (mapsforgeActive) {
-                    val fix = offlineMapController?.currentFix()
-                    offlineMapController?.recenterOnGps()
+                val hasFix = if (mapsforgeActive) offlineMapController?.currentFix() != null else mapController?.currentFix() != null
+                if (hasFix) {
+                    if (mapsforgeActive) {
+                        val fix = offlineMapController?.currentFix()
+                        offlineMapController?.recenterOnGps()
+                        Toast.makeText(context, "定位座標：${fix?.latitude}, ${fix?.longitude}", Toast.LENGTH_LONG).show()
+                    } else {
+                        mapController?.recenterOnGps()
+                    }
+                } else if (!gpsFollowing) {
+                    Toast.makeText(context, "GPS 已關閉，請先按上方 🚫 打開 GPS", Toast.LENGTH_LONG).show()
+                } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                    // The map hasn't had a fix yet — typical with no phone signal: without network
+                    // assistance the GPS needs a cold start (30 s to a couple of minutes under open sky).
+                    // Ask for one directly instead of silently leaving the map where it is.
                     Toast.makeText(
                         context,
-                        if (fix != null) "定位座標：${fix.latitude}, ${fix.longitude}" else "尚無定位資料",
+                        "正在搜尋 GPS 衛星…沒有手機訊號時，第一次定位可能要 1～2 分鐘，請在空曠處稍候",
                         Toast.LENGTH_LONG,
                     ).show()
+                    LocationServices.getFusedLocationProviderClient(context).getCurrentLocation(
+                        com.google.android.gms.location.CurrentLocationRequest.Builder()
+                            .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+                            .setMaxUpdateAgeMillis(60_000) // a fix from the last minute is good enough
+                            .setDurationMillis(180_000)
+                            .build(),
+                        com.google.android.gms.tasks.CancellationTokenSource().token,
+                    ).addOnSuccessListener { loc ->
+                        if (loc == null) {
+                            Toast.makeText(context, "還找不到 GPS 訊號，請移到空曠處再按一次 📍", Toast.LENGTH_LONG).show()
+                        } else {
+                            if (mapsforgeActive) {
+                                offlineMapController?.updateGpsFix(loc.latitude, loc.longitude, loc.accuracy)
+                                offlineMapController?.recenterOnGps()
+                            } else {
+                                mapController?.animateTo(GeoPoint(loc.latitude, loc.longitude), 17.0)
+                            }
+                            Toast.makeText(context, "已定位（誤差約 ±${loc.accuracy.toInt()} m）", Toast.LENGTH_SHORT).show()
+                        }
+                    }.addOnFailureListener {
+                        Toast.makeText(context, "定位失敗：${it.message}", Toast.LENGTH_LONG).show()
+                    }
                 } else {
-                    mapController?.recenterOnGps()
+                    Toast.makeText(context, "沒有定位權限", Toast.LENGTH_LONG).show()
                 }
             }
 
