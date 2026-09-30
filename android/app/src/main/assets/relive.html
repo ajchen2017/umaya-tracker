@@ -26,6 +26,21 @@
     font-weight: bold; font-size: 13px; z-index: 6; }
   body.recording #recBadge { display: block; }
   .maplibregl-ctrl-attrib { font-size: 10px; }
+  #btnBack { margin-left: auto; }
+  #btnRecBack { display: none; position: absolute; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 6;
+    background: rgba(0,0,0,.6); color: #fff; border: 1px solid rgba(255,255,255,.35); border-radius: 8px; padding: 8px 14px; font-size: 15px; }
+  body.recording #btnRecBack { display: block; }
+  .dialog { display: none; position: absolute; inset: 0; background: rgba(0,0,0,.55); z-index: 10; align-items: center; justify-content: center; padding: 16px; }
+  .dialog.open { display: flex; }
+  .dialog .box { background: #1c2128; border-radius: 12px; padding: 16px; width: min(360px, 100%); display: flex; flex-direction: column; gap: 12px; }
+  .dialog h3 { margin: 0; font-size: 17px; }
+  .dialog label { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 15px; }
+  .dialog .hint { font-size: 13px; color: #aab; line-height: 1.4; }
+  .dialog .actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .dialog .actions.col { flex-direction: column; align-items: stretch; }
+  .dialog button, .dialog select { background: rgba(255,255,255,.14); color: #fff; border: 1px solid rgba(255,255,255,.25);
+    border-radius: 8px; padding: 8px 12px; font-size: 15px; }
+  .dialog button.primary { background: #ff6d00; border-color: #ff6d00; font-weight: bold; }
 </style>
 </head>
 <body>
@@ -41,10 +56,27 @@
   <div class="row">
     <select id="speed"><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option></select>
     <select id="style"><option value="sat" selected>衛星</option><option value="topo">地形圖</option><option value="osm">街道</option></select>
-    <select id="res"><option value="720">720p</option><option value="1080" selected>1080p</option><option value="2160">4K</option></select>
     <button id="btnRecord">🎬 錄製影片</button>
+    <button id="btnBack">↩ 返回</button>
   </div>
 </div>
+<button id="btnRecBack">↩ 返回</button>
+<div id="recDialog" class="dialog"><div class="box">
+  <h3>🎬 錄製影片</h3>
+  <label>解析度 <select id="recRes"><option value="720">720p</option><option value="1080" selected>1080p</option><option value="2160">4K</option></select></label>
+  <label>播放速度 <select id="recSpeed"><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option></select></label>
+  <div id="recEstimate" class="hint"></div>
+  <div class="hint">錄影時會一格一格算圖，手機上花的時間會比影片長度久（4K 更久）。錄影中請保持螢幕開啟、不要切換 App。</div>
+  <div class="actions"><button id="recCancel">取消</button><button id="recGo" class="primary">開始錄製</button></div>
+</div></div>
+<div id="stopDialog" class="dialog"><div class="box">
+  <h3>停止錄影？</h3>
+  <div class="actions col">
+    <button id="stopSave" class="primary">停止並儲存已錄的部分</button>
+    <button id="stopDiscard">放棄這段錄影</button>
+    <button id="stopResume">繼續錄影</button>
+  </div>
+</div></div>
 <script>
 'use strict';
 // ---------- data in ----------
@@ -205,7 +237,8 @@ function addTrackLayers() {
 }
 
 // ---------- playback ----------
-const state = { u: 0, s: 0, playing: false, phase: 'idle', bearing: 0, pitch: MAX_PITCH, holdUntil: 0, card: null, lastFrame: 0, speed: 1, frame: 0 };
+const state = { u: 0, s: 0, playing: false, phase: 'idle', bearing: 0, pitch: MAX_PITCH, holdUntil: 0, card: null, lastFrame: 0, speed: 1, frame: 0,
+  clock: 0, t: 0, camFrom: null, camTo: null };
 function baseDurationSec() { return Math.max(30, Math.min(90, 20 + T.total / 1000 * 3)); }
 function followZoom() { return T.total < 5000 ? 15.2 : T.total < 40000 ? 14.3 : 13.6; }
 function lookAhead() { return Math.max(150, T.total * 0.015); }
@@ -266,54 +299,78 @@ function updatePitch(p, dt) {
 
 function lerpAngle(a, b, f) { const d = ((b - a + 540) % 360) - 180; return (a + d * f + 360) % 360; }
 
-function overview(pitch, bearing, duration) {
-  const cam = map.cameraForBounds(T.bounds, { padding: 60, bearing, pitch });
-  map.easeTo({ ...cam, pitch, bearing, duration });
+// Everything on the camera path runs on one virtual clock advanced by advance(dt): the live view
+// feeds it real frame time, the video recorder a fixed 1/FPS per frame — so a recording matches
+// playback exactly no matter how slowly the phone renders each frame.
+const INTRO_HOLD = 1.5, INTRO_FLY = 3.5, OUTRO_EASE = 4, OUTRO_SPIN = 7, OUTRO_END = 11.5; // seconds
+function camOverview(pitch, bearing) {
+  const c = map.cameraForBounds(T.bounds, { padding: 60, bearing, pitch });
+  return { center: [c.center.lng, c.center.lat], zoom: c.zoom, pitch, bearing };
+}
+function camFollow(p) { return { center: [p.lon, p.lat], zoom: followZoom(), pitch: state.pitch, bearing: state.bearing }; }
+function camNow() { const c = map.getCenter(); return { center: [c.lng, c.lat], zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing() }; }
+function camLerp(a, b, f) {
+  const e = f < 0.5 ? 2 * f * f : 1 - (-2 * f + 2) ** 2 / 2; // ease in-out
+  return { center: [a.center[0] + (b.center[0] - a.center[0]) * e, a.center[1] + (b.center[1] - a.center[1]) * e],
+    zoom: a.zoom + (b.zoom - a.zoom) * e, pitch: a.pitch + (b.pitch - a.pitch) * e, bearing: lerpAngle(a.bearing, b.bearing, e) };
 }
 function startIntro() {
-  state.phase = 'intro'; state.u = 0; state.s = 0; state.card = null; T.waypoints.forEach((w) => (w.shown = false));
+  state.phase = 'intro'; state.t = 0; state.clock = 0; state.holdUntil = 0; state.u = 0; state.s = 0; state.card = null;
+  T.waypoints.forEach((w) => (w.shown = false));
   const p0 = T.pts[0];
   state.bearing = bearingDeg(p0, pointAt(Math.min(T.total, lookAhead())));
-  map.jumpTo({ ...map.cameraForBounds(T.bounds, { padding: 60 }), pitch: 40, bearing: 0 });
-  setTimeout(() => {
-    state.pitch = safePitch(p0, state.bearing, followZoom()) ?? MIN_PITCH;
-    map.flyTo({ center: [p0.lon, p0.lat], zoom: followZoom(), pitch: state.pitch, bearing: state.bearing, duration: 3500, essential: true });
-    setTimeout(() => { if (state.phase === 'intro') state.phase = 'follow'; }, 3600);
-  }, 1500);
+  state.pitch = safePitch(p0, state.bearing, followZoom()) ?? MIN_PITCH;
+  map.getSource('done').setData(lineGeo(0, p0));
+  map.getSource('head').setData({ type: 'Point', coordinates: [p0.lon, p0.lat] });
+  seekEl.value = 0;
+  state.camFrom = camOverview(40, 0);
+  map.jumpTo(state.camFrom);
 }
-function startOutro() {
-  state.phase = 'outro';
-  overview(50, state.bearing, 4000);
-  setTimeout(() => { map.easeTo({ bearing: state.bearing + 120, duration: 7000, easing: (t) => t }); }, 4100);
-  setTimeout(() => { state.phase = 'done'; setPlaying(false); if (rec.active) stopRecording(); }, 11500);
+function startOutro() { state.phase = 'outro'; state.t = 0; state.camFrom = camNow(); state.camTo = camOverview(50, state.bearing); }
+
+function advance(dt) {
+  state.clock += dt; state.t += dt;
+  if (state.phase === 'intro') {
+    if (state.t < INTRO_HOLD) return;
+    const f = Math.min(1, (state.t - INTRO_HOLD) / INTRO_FLY);
+    map.jumpTo(camLerp(state.camFrom, camFollow(T.pts[0]), f));
+    if (f >= 1) state.phase = 'follow';
+    return;
+  }
+  if (state.phase === 'outro') {
+    if (state.t <= OUTRO_EASE) map.jumpTo(camLerp(state.camFrom, state.camTo, state.t / OUTRO_EASE));
+    else map.jumpTo({ ...state.camTo, bearing: state.camTo.bearing + 120 * Math.min(1, (state.t - OUTRO_EASE) / OUTRO_SPIN) });
+    if (state.t >= OUTRO_END) { state.phase = 'done'; setPlaying(false); }
+    return;
+  }
+  if (state.phase !== 'follow') return;
+  const now = state.clock;
+  if (now >= state.holdUntil) {
+    state.card = null;
+    state.u = Math.min(1, state.u + dt / (baseDurationSec() / state.speed));
+    state.s = distAtU(state.u);
+    const wp = T.waypoints.find((w) => !w.shown && w.u <= state.u);
+    if (wp) { wp.shown = true; state.card = wp; state.holdUntil = now + (wp.photo >= 0 ? 3 : 1.8); }
+  }
+  const p = pointAt(state.s);
+  const ahead = pointAt(Math.min(T.total, state.s + lookAhead()));
+  if (ahead.lat !== p.lat || ahead.lon !== p.lon) state.bearing = lerpAngle(state.bearing, bearingDeg(p, ahead), 1 - Math.exp(-dt * 1.8));
+  updatePitch(p, dt);
+  map.jumpTo(camFollow(p));
+  if (rec.active || (state.frame++ & 1) === 0) {
+    map.getSource('done').setData(lineGeo(p.i, p));
+    map.getSource('head').setData({ type: 'Point', coordinates: [p.lon, p.lat] });
+  }
+  seekEl.value = Math.round(state.u * 1000);
+  if (state.u >= 1 && now >= state.holdUntil) startOutro();
 }
 
 function tick(ts) {
   const dt = state.lastFrame ? Math.min(0.1, (ts - state.lastFrame) / 1000) : 0;
   state.lastFrame = ts;
-  if (T && map && state.playing && state.phase === 'follow') {
-    const now = performance.now();
-    if (now >= state.holdUntil) {
-      state.card = null;
-      state.u = Math.min(1, state.u + dt / (baseDurationSec() / state.speed));
-      state.s = distAtU(state.u);
-      const wp = T.waypoints.find((w) => !w.shown && w.u <= state.u);
-      if (wp) { wp.shown = true; state.card = wp; state.holdUntil = now + (wp.photo >= 0 ? 3000 : 1800); }
-    }
-    const p = pointAt(state.s);
-    const ahead = pointAt(Math.min(T.total, state.s + lookAhead()));
-    if (ahead.lat !== p.lat || ahead.lon !== p.lon) state.bearing = lerpAngle(state.bearing, bearingDeg(p, ahead), 1 - Math.exp(-dt * 1.8));
-    updatePitch(p, dt);
-    map.jumpTo({ center: [p.lon, p.lat], bearing: state.bearing, pitch: state.pitch, zoom: followZoom() });
-    if ((state.frame++ & 1) === 0) {
-      map.getSource('done').setData(lineGeo(p.i, p));
-      map.getSource('head').setData({ type: 'Point', coordinates: [p.lon, p.lat] });
-    }
-    seekEl.value = Math.round(state.u * 1000);
-    if (state.u >= 1 && now >= state.holdUntil) startOutro();
-  }
+  if (T && map && state.playing && !rec.active) advance(dt); // while recording, the recorder steps the clock
+  ovCtx.clearRect(0, 0, ovCanvas.width, ovCanvas.height);
   drawOverlay(ovCtx, ovCanvas.width, ovCanvas.height, devicePixelRatio);
-  if (rec.active) composite();
   requestAnimationFrame(tick);
 }
 
@@ -328,8 +385,7 @@ function fmtDur(ms) { const s = Math.max(0, Math.round(ms / 1000)); return `${Ma
 function fmtClock(t) { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
 function roundRect(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
 
-function drawOverlay(ctx, W, H, scaleHint) {
-  ctx.clearRect(0, 0, W, H);
+function drawOverlay(ctx, W, H, scaleHint) { // draws on top — the video frame already holds the map
   if (!T) return;
   const u = Math.min(W, H) / 360; // layout unit, resolution independent
   const p = pointAt(state.s);
@@ -388,14 +444,15 @@ function drawOverlay(ctx, W, H, scaleHint) {
 }
 
 // ---------- recording ----------
-const rec = { active: false, recorder: null, canvas: null, ctx: null, W: 0, H: 0, chunks: [], queue: Promise.resolve(), mime: '' };
+// Offline, frame by frame: step the virtual clock 1/FPS, wait until that view's tiles are in,
+// draw, hand the frame to the H.264 encoder (WebCodecs) and mux it into a regular MP4. Slower than
+// real time on a phone (much slower at 4K), but no frame is dropped and any player opens the file —
+// the old real-time MediaRecorder lost frames whenever rendering lagged and wrote fragmented MP4s.
+const MUXER_URL = 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.min.js';
+const FPS = 30;
+const rec = { active: false, paused: false, canvas: null, ctx: null, W: 0, H: 0, encoder: null, muxer: null, parts: [], error: null, frames: 0, total: 1 };
 const REC_CSS_W = 960, REC_CSS_H = 540; // map drawn at this CSS size × pixelRatio → exact output resolution
-function pickMime() {
-  for (const m of ['video/mp4;codecs=avc1.640028', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']) {
-    if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
-  }
-  return '';
-}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function fitStage() {
   const mapEl = document.getElementById('map');
   if (!rec.active) { mapEl.style.width = '100%'; mapEl.style.height = '100%'; mapEl.style.transform = ''; return; }
@@ -411,47 +468,108 @@ function composite() {
   ctx.font = `${rec.H / 60}px system-ui, sans-serif`; ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.textBaseline = 'bottom';
   ctx.fillText(STYLES[styleEl.value].attribution + ' | Terrain: AWS', 8, rec.H - 4);
 }
-function b64(buf) {
-  const bytes = new Uint8Array(buf); let bin = '';
+function b64(bytes) {
+  let bin = '';
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   return btoa(bin);
 }
-function startRecording() {
-  const mime = pickMime();
-  if (!mime || !HTMLCanvasElement.prototype.captureStream) { alert('這支手機的瀏覽器元件不支援錄影'); return; }
-  const H = parseInt(document.getElementById('res').value, 10), W = Math.round(H * 16 / 9);
-  if (H === 2160 && !confirm('4K 在手機上很吃效能，畫面可能會掉格、錄影時間較長。確定要錄 4K？')) return;
-  rec.active = true; rec.W = W; rec.H = H; rec.mime = mime; rec.chunks = []; rec.queue = Promise.resolve();
-  document.body.classList.add('recording');
-  fitStage();
-  map.setPixelRatio(H / REC_CSS_H);
-  map.resize();
-  rec.canvas = document.createElement('canvas'); rec.canvas.width = W; rec.canvas.height = H; rec.ctx = rec.canvas.getContext('2d');
-  const bitrate = H >= 2160 ? 20e6 : H >= 1080 ? 8e6 : 5e6;
-  rec.recorder = new MediaRecorder(rec.canvas.captureStream(30), { mimeType: mime, videoBitsPerSecond: bitrate });
-  if (bridge) bridge.videoBegin(mime);
-  rec.recorder.ondataavailable = (e) => {
-    if (!e.data || !e.data.size) return;
-    if (bridge) rec.queue = rec.queue.then(() => e.data.arrayBuffer()).then((buf) => bridge.videoChunk(b64(buf)));
-    else rec.chunks.push(e.data);
-  };
-  rec.recorder.onstop = () => {
-    rec.queue.then(() => {
-      if (bridge) bridge.videoEnd();
-      else { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(rec.chunks, { type: mime })); a.download = `飛行回放.${mime.includes('mp4') ? 'mp4' : 'webm'}`; a.click(); }
-    });
-  };
-  composite();
-  rec.recorder.start(1000);
-  restart(true);
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement('script'); el.src = src; el.onload = resolve; el.onerror = reject; document.head.appendChild(el);
+  });
 }
-function stopRecording() {
+function estimatedVideoSec(speed) {
+  const holds = T.waypoints.reduce((a, w) => a + (w.photo >= 0 ? 3 : 1.8), 0);
+  return INTRO_HOLD + INTRO_FLY + baseDurationSec() / speed + holds + OUTRO_END;
+}
+async function pickEncoderConfig(W, H) {
+  const level = H >= 2160 ? '33' : H >= 1080 ? '2a' : '1f'; // H.264 level 5.1 / 4.2 / 3.1
+  const bitrate = H >= 2160 ? 30e6 : H >= 1080 ? 10e6 : 5e6;
+  for (const profile of ['6400', '4d00', '4200']) { // High, Main, Baseline
+    const cfg = { codec: `avc1.${profile}${level}`, width: W, height: H, bitrate, framerate: FPS };
+    try { if ((await VideoEncoder.isConfigSupported(cfg)).supported) return cfg; } catch (_) { /* try the next profile */ }
+  }
+  return null;
+}
+function setRecBadge(text) { document.getElementById('recBadge').textContent = text; }
+
+async function startRecording(H, speed) {
+  if (!window.VideoEncoder || !window.VideoFrame) {
+    alert('這支手機的瀏覽器元件（Android System WebView）版本太舊，不支援錄影。請到 Play 商店更新後再試。'); return;
+  }
+  const W = Math.round(H * 16 / 9);
+  const cfg = await pickEncoderConfig(W, H);
+  if (!cfg) { alert(`這支手機無法把影片編碼成 ${H === 2160 ? '4K' : H + 'p'}，請改選較低的解析度。`); return; }
+  try { if (!window.Mp4Muxer) await loadScript(MUXER_URL); } catch (_) { alert('無法載入錄影元件，請確認網路連線後再試。'); return; }
+  state.speed = speed; document.getElementById('speed').value = String(speed);
+  Object.assign(rec, { active: true, paused: false, W, H, parts: [], error: null, frames: 0, total: Math.ceil(estimatedVideoSec(speed) * FPS) });
+  document.body.classList.add('recording'); setRecBadge('● 錄影準備中…');
+  fitStage(); map.setPixelRatio(H / REC_CSS_H); map.resize();
+  rec.canvas = document.createElement('canvas'); rec.canvas.width = W; rec.canvas.height = H; rec.ctx = rec.canvas.getContext('2d');
+  rec.muxer = new Mp4Muxer.Muxer({
+    // Written out as it goes (a 4K video doesn't fit in phone memory); the moov index goes at the
+    // end and the mdat size is patched at its earlier position, so the sink writes at `position`.
+    target: new Mp4Muxer.StreamTarget({
+      chunked: true, chunkSize: 4 * 1024 * 1024,
+      onData: (data, position) => { if (bridge) bridge.videoChunk(b64(data), position); else rec.parts.push({ data: data.slice(), position }); },
+    }),
+    video: { codec: 'avc', width: W, height: H, frameRate: FPS },
+    fastStart: false, firstTimestampBehavior: 'offset',
+  });
+  rec.encoder = new VideoEncoder({ output: (chunk, meta) => rec.muxer.addVideoChunk(chunk, meta), error: (e) => { rec.error = e; } });
+  rec.encoder.configure(cfg);
+  if (bridge) bridge.videoBegin('video/mp4');
+  setPlaying(true); startIntro();
+  recordLoop().catch((e) => { alert('錄影中斷：' + e.message); finishRecording(false); });
+}
+async function renderSettled() {
+  map.redraw();
+  const t0 = performance.now();
+  while (!map.areTilesLoaded() && performance.now() - t0 < 5000) await sleep(40);
+  map.redraw();
+}
+async function recordLoop() {
+  while (rec.active && state.phase !== 'done' && !rec.error) {
+    while (rec.paused && rec.active) await sleep(100);
+    if (!rec.active) return; // ended from the stop dialog
+    advance(1 / FPS);
+    await renderSettled();
+    composite();
+    const frame = new VideoFrame(rec.canvas, { timestamp: Math.round(rec.frames * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
+    rec.encoder.encode(frame, { keyFrame: rec.frames % (FPS * 2) === 0 });
+    frame.close();
+    rec.frames++;
+    while (rec.encoder.encodeQueueSize > 2 && !rec.error) await sleep(5);
+    if (rec.frames % 10 === 0) { setRecBadge(`● 錄影中 ${Math.min(99, Math.floor(rec.frames / rec.total * 100))}%`); await sleep(0); }
+  }
   if (!rec.active) return;
-  rec.active = false;
-  rec.recorder.stop();
+  if (rec.error) { alert('影片編碼失敗：' + rec.error.message + '\n請改選較低的解析度再試。'); finishRecording(false); return; }
+  finishRecording(true);
+}
+async function finishRecording(save) {
+  if (!rec.active) return;
+  rec.active = false; rec.paused = false;
+  if (save && rec.frames > 0) {
+    setRecBadge('● 影片存檔中…');
+    try {
+      await rec.encoder.flush();
+      rec.muxer.finalize();
+      if (bridge) bridge.videoEnd();
+      else {
+        const size = rec.parts.reduce((m, p) => Math.max(m, p.position + p.data.length), 0);
+        const out = new Uint8Array(size); rec.parts.forEach((p) => out.set(p.data, p.position));
+        const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([out], { type: 'video/mp4' })); a.download = '飛行回放.mp4'; a.click();
+      }
+    } catch (e) {
+      alert('影片存檔失敗：' + e.message);
+      if (bridge) bridge.videoCancel();
+    }
+  } else if (bridge) bridge.videoCancel();
+  try { rec.encoder.close(); } catch (_) { /* already closed after an error */ }
   document.body.classList.remove('recording');
   map.setPixelRatio(devicePixelRatio);
   fitStage(); map.resize(); sizeOverlay();
+  setPlaying(false);
 }
 
 // ---------- controls ----------
@@ -479,7 +597,39 @@ styleEl.onchange = () => {
   map.addSource('base', { type: 'raster', tiles: src.tiles, tileSize: 256, maxzoom: src.maxzoom, attribution: src.attribution });
   map.addLayer({ id: 'base', type: 'raster', source: 'base' }, 'full');
 };
-document.getElementById('btnRecord').onclick = startRecording;
+const $ = (id) => document.getElementById(id);
+function openDialog(id, on) { $(id).classList.toggle('open', on); }
+function updateEstimate() {
+  const sec = Math.round(estimatedVideoSec(parseFloat($('recSpeed').value)));
+  $('recEstimate').textContent = `影片長度約 ${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
+}
+$('btnRecord').onclick = () => {
+  if (!T || !map || !map.getSource('done')) return; // map not loaded yet (tiles may still stream in later — that's fine)
+  setPlaying(false);
+  $('recSpeed').value = String(state.speed); updateEstimate(); openDialog('recDialog', true);
+};
+$('recSpeed').onchange = updateEstimate;
+$('recCancel').onclick = () => openDialog('recDialog', false);
+$('recGo').onclick = () => {
+  const H = parseInt($('recRes').value, 10);
+  if (H === 2160 && !confirm('4K 在手機上算圖很慢，錄影時間可能是影片長度的好幾倍，檔案也很大。確定要錄 4K？')) return;
+  openDialog('recDialog', false);
+  startRecording(H, parseFloat($('recSpeed').value));
+};
+function askStop() { rec.paused = true; openDialog('stopDialog', true); }
+$('btnRecBack').onclick = askStop;
+$('stopSave').onclick = () => { openDialog('stopDialog', false); finishRecording(true); };
+$('stopDiscard').onclick = () => { openDialog('stopDialog', false); finishRecording(false); };
+$('stopResume').onclick = () => { openDialog('stopDialog', false); rec.paused = false; };
+function goBack() { if (bridge) bridge.close(); else history.back(); }
+$('btnBack').onclick = goBack;
+// The phone's back key/gesture (ReliveActivity forwards it here): close a dialog, offer to stop a
+// recording, otherwise leave.
+window.onAndroidBack = () => {
+  if ($('stopDialog').classList.contains('open')) { $('stopResume').onclick(); return; }
+  if ($('recDialog').classList.contains('open')) { openDialog('recDialog', false); return; }
+  if (rec.active) askStop(); else goBack();
+};
 addEventListener('resize', () => { fitStage(); sizeOverlay(); });
 
 // ---------- boot ----------
@@ -496,8 +646,9 @@ function boot(track) {
   });
   map = new maplibregl.Map({
     container: 'map', style: styleFor('sat'), bounds: T.bounds, fitBoundsOptions: { padding: 60 },
-    pitch: 40, maxPitch: 75, preserveDrawingBuffer: true, attributionControl: { compact: true }, interactive: true,
+    pitch: 40, maxPitch: 75, preserveDrawingBuffer: true, attributionControl: false, interactive: true,
   });
+  map.addControl(new maplibregl.AttributionControl({ compact: true }), 'top-right'); // bottom-right holds ↩ 返回
   map.on('load', () => {
     addTrackLayers();
     sizeOverlay();

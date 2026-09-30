@@ -62,6 +62,13 @@ class ReliveActivity : ComponentActivity() {
         val html = assets.open("relive.html").bufferedReader().use { it.readText() }
         // An https base (not file://) so MapLibre's workers and tile fetches behave like a normal site.
         webView.loadDataWithBaseURL("https://relive.umaya.local/", html, "text/html", "utf-8", null)
+        // Back key/gesture goes to the page first: it closes a dialog or offers to stop a recording
+        // instead of silently throwing the recording away; it calls Android.close() to leave.
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                webView.evaluateJavascript("window.onAndroidBack ? (onAndroidBack(), 'ok') : 'none'") { if (it != "\"ok\"") finish() }
+            }
+        })
     }
 
     override fun onDestroy() {
@@ -101,9 +108,19 @@ class ReliveActivity : ComponentActivity() {
             videoTemp = File(cacheDir, "relive-recording.tmp").apply { delete() }
         }
 
-        @JavascriptInterface fun videoChunk(base64: String) {
+        /** Bytes at a file offset — the MP4 muxer patches its header after the data, so not append-only. */
+        @JavascriptInterface fun videoChunk(base64: String, position: Double) {
             val f = videoTemp ?: return
-            FileOutputStream(f, true).use { it.write(Base64.decode(base64, Base64.DEFAULT)) }
+            java.io.RandomAccessFile(f, "rw").use { it.seek(position.toLong()); it.write(Base64.decode(base64, Base64.DEFAULT)) }
+        }
+
+        @JavascriptInterface fun videoCancel() {
+            videoTemp?.delete()
+            videoTemp = null
+        }
+
+        @JavascriptInterface fun close() {
+            runOnUiThread { finish() }
         }
 
         @JavascriptInterface fun videoEnd() {
@@ -123,7 +140,7 @@ class ReliveActivity : ComponentActivity() {
         runCatching {
             contentResolver.openOutputStream(uri, "wt")!!.use { out -> tmp.inputStream().use { it.copyTo(out) } }
         }.onSuccess {
-            Toast.makeText(this, "影片已儲存（${tmp.length() / 1_000_000} MB）", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "影片已儲存（%.1f MB）".format(tmp.length() / 1_000_000.0), Toast.LENGTH_LONG).show()
             tmp.delete()
         }.onFailure {
             Toast.makeText(this, "儲存失敗：${it.message}", Toast.LENGTH_LONG).show()
