@@ -48,6 +48,8 @@ private val OSM_SOURCE = XYTileSource("OSM", 2, 19, 256, ".png", arrayOf("https:
 private const val ONLINE_INITIAL_ZOOM = 8.0
 private const val ONLINE_MAX_ZOOM = 21.0
 private const val ONLINE_DEFAULT_ZOOM = 19.0
+/** GPS 永遠置中 pauses this long after the hiker pans/zooms the map by hand (both map types). */
+internal const val RESUME_CENTER_AFTER_TOUCH_MS = 10_000L
 private const val LORA_MARKER_SIZE_PX = 64
 
 /** OFFLINE = one of MapsforgeDownloader's offline packs (which one is tracked separately). */
@@ -94,6 +96,29 @@ class HikeMapController internal constructor(
     private val locationOverlay: MyLocationNewOverlay,
     private val directionArrow: Marker,
 ) {
+    private var followEnabledByUs = false
+    private var followPausedAt = 0L
+
+    /**
+     * GPS 永遠置中, called about once a second. osmdroid's follow mode keeps the map centered on
+     * each fix and switches itself off when the hiker drags the map; it's switched back on
+     * [RESUME_CENTER_AFTER_TOUCH_MS] later so looking around doesn't fight the GPS.
+     */
+    fun keepCenteredTick(on: Boolean) {
+        if (!on) {
+            if (followEnabledByUs) locationOverlay.disableFollowLocation()
+            followEnabledByUs = false
+            return
+        }
+        if (locationOverlay.isFollowLocationEnabled) return
+        val now = android.os.SystemClock.uptimeMillis()
+        if (followEnabledByUs && followPausedAt == 0L) { followPausedAt = now; return } // the hiker dragged the map
+        if (followEnabledByUs && now - followPausedAt < RESUME_CENTER_AFTER_TOUCH_MS) return
+        locationOverlay.enableFollowLocation()
+        followEnabledByUs = true
+        followPausedAt = 0L
+    }
+
     fun zoomIn() = mapView.controller.zoomIn()
     fun zoomOut() = mapView.controller.zoomOut()
     /** Null while GPS is still acquiring a fix (or turned off) — drives the top bar's

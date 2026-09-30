@@ -130,6 +130,11 @@ class Prefs(context: Context) {
         get() = prefs.getInt("map_text_size_px", 10)
         set(value) = prefs.edit().putInt("map_text_size_px", value).apply()
 
+    /** GPS 永遠置中 — the map scrolls so the hiker's position stays in the middle (default on). */
+    var keepGpsCentered: Boolean
+        get() = prefs.getBoolean("keep_gps_centered", true)
+        set(value) = prefs.edit().putBoolean("keep_gps_centered", value).apply()
+
     var statsPanelExpanded: Boolean
         get() = prefs.getBoolean("stats_panel_expanded", true)
         set(value) = prefs.edit().putBoolean("stats_panel_expanded", value).apply()

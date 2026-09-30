@@ -636,6 +636,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     val mapsforgeActive = currentMapSource == MapSource.OFFLINE && currentOfflinePackId in installedPackIds
     var showMapPicker by remember { mutableStateOf(false) }
     var mapTextSizePx by remember { mutableStateOf(prefs.mapTextSizePx) }
+    var keepGpsCentered by remember { mutableStateOf(prefs.keepGpsCentered) }
     var showShareLinkDialog by remember { mutableStateOf(false) }
     // True while the current map was picked automatically (the startup default, or a switch because
     // the phone left the previous map's coverage). A manual pick sticks — e.g. browsing 安娜普納
@@ -1093,6 +1094,18 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             title = { Text("地圖設定") },
             text = {
                 Column(modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("GPS 位置永遠置中", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Text(
+                                "地圖跟著你的位置移動，讓你一直在畫面正中間；手動拖動地圖後 10 秒會自動回到置中。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(checked = keepGpsCentered, onCheckedChange = { keepGpsCentered = it; prefs.keepGpsCentered = it })
+                    }
+                    Spacer(Modifier.height(12.dp))
                     Text("地圖文字大小", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     OptionChips(MAP_TEXT_SIZE_OPTIONS, mapTextSizePx, { "${it}px" }) {
                         mapTextSizePx = it; prefs.mapTextSizePx = it
@@ -2091,6 +2104,17 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 break
             }
             delay(500)
+        }
+    }
+    // GPS 永遠置中 (☰ → 地圖設定): only while GPS is on. The offline map centers inside its own fix
+    // handler; osmdroid's follow mode needs re-arming after a drag, hence the 1-second tick.
+    LaunchedEffect(keepGpsCentered, gpsFollowing, mapController, offlineMapController, mapsforgeActive) {
+        val on = keepGpsCentered && gpsFollowing
+        offlineMapController?.keepCentered = on && mapsforgeActive
+        while (true) {
+            mapController?.keepCenteredTick(on && !mapsforgeActive)
+            if (!on) break
+            delay(1_000)
         }
     }
     // Mapsforge has no built-in location provider (unlike osmdroid's MyLocationNewOverlay, which

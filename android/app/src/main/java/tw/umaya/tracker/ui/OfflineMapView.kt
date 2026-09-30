@@ -199,6 +199,11 @@ class OfflineMapController internal constructor(
 ) {
     private val layers get() = mapView.layerManager.layers
 
+    /** GPS 永遠置中: each fix moves the map under it; a touch pauses that for [RESUME_CENTER_AFTER_TOUCH_MS]. */
+    var keepCentered = false
+    private var lastTouchMs = 0L
+    internal fun onUserTouch() { lastTouchMs = android.os.SystemClock.uptimeMillis() }
+
     private var gpsMarker: Marker? = null
     private var gpsAccuracyCircle: Circle? = null
     private var lastFix: LatLong? = null
@@ -339,6 +344,11 @@ class OfflineMapController internal constructor(
     fun updateGpsFix(lat: Double, lon: Double, accuracyMeters: Float) {
         val point = LatLong(lat, lon)
         lastFix = point
+        if (keepCentered && covers(lat, lon) &&
+            android.os.SystemClock.uptimeMillis() - lastTouchMs > RESUME_CENTER_AFTER_TOUCH_MS
+        ) {
+            mapView.model.mapViewPosition.setCenter(point)
+        }
         val circle = gpsAccuracyCircle
         if (circle == null) {
             val fillPaint = AndroidGraphicFactory.INSTANCE.createPaint().apply {
@@ -601,6 +611,8 @@ fun OfflineMapView(
                 }
 
                 val controller = OfflineMapController(this, context)
+                // Not consumed — only notes when the hiker last panned/zoomed by hand.
+                setOnTouchListener { _, _ -> controller.onUserTouch(); false }
                 controller.baseFontScale = fontScale
                 controller.coverage = bounds
                 controller.rendererFactory = ::createRenderer
