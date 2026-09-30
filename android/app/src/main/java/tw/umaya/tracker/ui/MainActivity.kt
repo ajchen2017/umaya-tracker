@@ -2549,18 +2549,23 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 .background(Color(0xFF202020))
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         ) {
-            Row {
-                Text(hikeName.ifBlank { "尚未開始行程" }, color = Color.White, fontWeight = FontWeight.Bold)
+            // One line, never wrapping: a long 行程名稱 is cut with … first, the status parts stay whole.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    hikeName.ifBlank { "尚未開始行程" }, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
+                )
                 if (tripActive) {
                     Text(
-                        (if (tripPaused) "（已暫停）" else "（進行中）") + if (gpxRecording && !tripPaused) " ⏺記錄中" else "",
-                        color = Color.White.copy(alpha = 0.8f),
+                        (if (tripPaused) "・暫停" else "・進行中") + if (gpxRecording && !tripPaused) " ⏺" else "",
+                        color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp, maxLines = 1, softWrap = false,
                         modifier = Modifier.padding(start = 4.dp),
                     )
                 }
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.weight(1f).widthIn(min = 8.dp))
                 Text(
-                    "伺服器：" + when (serverOnline) { true -> "正常"; false -> "離線（點擊回報）"; null -> "檢查中" },
+                    when (serverOnline) { true -> "🟢 伺服器"; false -> "🔴 伺服器離線（點我回報）"; null -> "⚪ 伺服器檢查中" },
+                    fontSize = 12.sp, maxLines = 1, softWrap = false,
                     color = if (serverOnline == false) MaterialTheme.colorScheme.error else Color.White.copy(alpha = 0.8f),
                     modifier = if (serverOnline == false) {
                         Modifier.clickable {
@@ -2581,7 +2586,12 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     } else Modifier,
                 )
             }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            error?.let { msg ->
+                Text(
+                    msg, color = MaterialTheme.colorScheme.error, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.clickable { Toast.makeText(context, msg, Toast.LENGTH_LONG).show() }, // full text on tap
+                )
+            }
         }
     }
 }
