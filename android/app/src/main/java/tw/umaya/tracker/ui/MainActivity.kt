@@ -1870,7 +1870,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var recordingTrack by remember { mutableStateOf<List<List<GeoPoint>>>(emptyList()) }
     var recordingWaypoints by remember { mutableStateOf<List<RouteLabel>>(emptyList()) }
     var tripStats by remember { mutableStateOf<TrackStats?>(null) }
-    LaunchedEffect(gpxRecording) {
+    var trackReloadKey by remember { mutableStateOf(0) } // bumped by 🔄 to re-read the file right away
+    LaunchedEffect(gpxRecording, trackReloadKey) {
         if (!gpxRecording) { recordingTrack = emptyList(); recordingWaypoints = emptyList(); tripStats = null; return@LaunchedEffect }
         while (true) {
             val path = prefs.gpxFilePath
@@ -2232,7 +2233,31 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 }
             }
 
-            // (4) 打開/關閉 GPS — 搜尋中（還沒拿到第一個定位）琥珀底＋閃爍；定位就緒綠底＋✓
+            // (4) 🔄 補點 — 取回 GPS 暫存的定位點（訊號中斷／飛航模式期間）、立即補傳離線點給留守人、重畫軌跡
+            TopBarIconButton("🔄") {
+                if (!tripActive) {
+                    Toast.makeText(context, "請先開始行程", Toast.LENGTH_SHORT).show()
+                } else {
+                    context.startService(
+                        Intent(context, LocationForegroundService::class.java).setAction(LocationForegroundService.ACTION_FLUSH)
+                    )
+                    scope.launch {
+                        delay(1_500) // let the flushed fixes land in the GPX file and the upload queue
+                        trackReloadKey++
+                        val hikeId = prefs.activeHikeId
+                        val pending = if (hikeId == -1L) 0 else withContext(Dispatchers.IO) {
+                            tw.umaya.tracker.data.AppDatabase.get(context).trackPointDao().pendingCount(hikeId)
+                        }
+                        Toast.makeText(
+                            context,
+                            if (pending > 0) "軌跡已更新；$pending 個離線點待補傳給留守人（有網路時立即上傳）" else "軌跡已更新，留守人那邊已是最新",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+            }
+
+            // (5) 打開/關閉 GPS — 搜尋中（還沒拿到第一個定位）琥珀底＋閃爍；定位就緒綠底＋✓
             TopBarIconButton(
                 label = if (gpsFollowing) "🛰️" else "🚫",
                 modifier = if (gpsFollowing && !gpsHasFix) Modifier.alpha(gpsPulseAlpha) else Modifier,
