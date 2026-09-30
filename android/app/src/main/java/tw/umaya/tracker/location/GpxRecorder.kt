@@ -20,6 +20,12 @@ class GpxRecorder(private val context: Context) {
     private var file: File? = null
     private var pointCount = 0
     private var lastLogged: Location? = null
+    private var lastFixTime = 0L // latest fix handed to appendPoint, logged or not
+
+    private companion object {
+        const val GAP_MIN_MS = 120_000L       // no fix for this long = reception was lost
+        const val GAP_MIN_DISTANCE_M = 100f   // …and the next fix is this far away → new segment
+    }
 
     val isActive: Boolean get() = file != null
     val currentPath: String? get() = file?.absolutePath
@@ -56,6 +62,7 @@ class GpxRecorder(private val context: Context) {
         file = f
         pointCount = 0
         lastLogged = null
+        lastFixTime = 0L
         return f.absolutePath
     }
 
@@ -66,6 +73,16 @@ class GpxRecorder(private val context: Context) {
      */
     fun appendPoint(location: Location, minIntervalSec: Int, minDistanceM: Int) {
         val f = file ?: return
+        // No fixes at all for a while (no GPS reception, 飛航模式, the OS holding the app back) and
+        // the next one lands somewhere else: start a new segment, so the map and the GPX show a gap
+        // there instead of a straight line nobody walked. A rest stop doesn't trigger it — fixes keep
+        // arriving the whole time, they just aren't logged.
+        val gapMs = maxOf(GAP_MIN_MS, minIntervalSec * 3_000L)
+        val prevFix = lastFixTime
+        lastFixTime = location.time
+        if (prevFix != 0L && location.time - prevFix > gapMs && (lastLogged?.distanceTo(location) ?: 0f) > GAP_MIN_DISTANCE_M) {
+            newSegment()
+        }
         val prev = lastLogged
         if (prev != null) {
             val elapsedSec = (location.time - prev.time) / 1000.0
