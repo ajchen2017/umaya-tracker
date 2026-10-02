@@ -421,9 +421,12 @@ class LocationForegroundService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val stopIntent = Intent(this, LocationForegroundService::class.java).setAction(ACTION_STOP)
-        val stopPending = PendingIntent.getService(
-            this, 0, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        // No 結束行程 action here: one stray tap in the notification shade stopped the location
+        // service while the trip still showed as running. Tapping the notification opens the app;
+        // a trip only ends from ☰ → 結束行程 (or the widget's button).
+        val openApp = PendingIntent.getActivity(
+            this, 0, Intent(this, tw.umaya.tracker.ui.MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val hasHike = prefs.activeHikeId != -1L
         val parts = mutableListOf<String>()
@@ -434,7 +437,7 @@ class LocationForegroundService : Service() {
             .setContentText("正在背景記錄你的位置")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setOngoing(true)
-            .addAction(0, "結束行程", stopPending)
+            .setContentIntent(openApp)
             .build()
     }
 

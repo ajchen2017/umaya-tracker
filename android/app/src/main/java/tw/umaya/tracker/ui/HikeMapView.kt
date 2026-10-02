@@ -272,13 +272,32 @@ class HikeMapController internal constructor(
 
     private var scaleBar: ScaleBarOverlay? = null
 
-    /** 地圖比例尺 開/關 */
-    fun setScaleBarEnabled(enabled: Boolean) {
+    // ---- 量距: straight line from the GPS fix to the screen-centre crosshair ----
+    private var measureLine: Polyline? = null
+    fun mapCenter(): GeoPoint = mapView.mapCenter.let { GeoPoint(it.latitude, it.longitude) }
+    fun setMeasureLine(from: GeoPoint?, to: GeoPoint?) {
+        if (from == null || to == null) {
+            measureLine?.let { mapView.overlays.remove(it); measureLine = null; mapView.invalidate() }
+            return
+        }
+        val line = measureLine ?: Polyline(mapView).apply {
+            outlinePaint.color = Color.rgb(233, 30, 99)
+            outlinePaint.strokeWidth = 4 * mapView.resources.displayMetrics.density
+            outlinePaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(24f, 14f), 0f)
+            infoWindow = null
+        }.also { mapView.overlays.add(it); measureLine = it }
+        line.setPoints(listOf(from, to))
+        mapView.invalidate()
+    }
+
+    /** 地圖比例尺 開/關 — bottom-left, [bottomPx] above the map's lower edge. */
+    fun setScaleBarEnabled(enabled: Boolean, bottomPx: Int) {
         if (enabled) {
             if (scaleBar == null) {
                 scaleBar = ScaleBarOverlay(mapView).apply { setAlignBottom(true) }
                 mapView.overlays.add(0, scaleBar) // under everything else
             }
+            scaleBar?.setScaleBarOffset((12 * mapView.resources.displayMetrics.density).toInt(), bottomPx)
         } else {
             scaleBar?.let { mapView.overlays.remove(it) }
             scaleBar = null

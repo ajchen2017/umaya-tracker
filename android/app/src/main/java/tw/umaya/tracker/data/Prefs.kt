@@ -156,9 +156,9 @@ class Prefs(context: Context) {
         get() = prefs.getInt("gpx_min_record_distance_m", 20)
         set(value) = prefs.edit().putInt("gpx_min_record_distance_m", value).apply()
 
-    /** 地圖比例尺 開/關 — default off. */
+    /** 地圖比例尺 開/關 — default on (bottom-left, above the status bar). */
     var showScaleBar: Boolean
-        get() = prefs.getBoolean("show_scale_bar", false)
+        get() = prefs.getBoolean("show_scale_bar", true)
         set(value) = prefs.edit().putBoolean("show_scale_bar", value).apply()
 
     /** 向量魯地圖顯示山坡陰影(DEM) 開/關 — default on. Each tile needs the DEM-based shading

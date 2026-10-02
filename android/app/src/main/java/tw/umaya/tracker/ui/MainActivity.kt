@@ -251,6 +251,9 @@ private fun distanceToLinesM(lat: Double, lon: Double, lines: List<List<GeoPoint
     return if (best == Double.MAX_VALUE) null else Math.sqrt(best)
 }
 
+/** 量距 line shows once the map centre is this far from the GPS fix (GPS jitter / follow lag stay below). */
+private const val MEASURE_MIN_M = 20f
+
 private fun formatDistance(m: Double): String = if (m < 1000) "${m.toInt()} m" else "%.2f km".format(m / 1000)
 
 /** Snaps to the fixed [INTERVAL_PRESETS] list rather than any continuous value. */
@@ -585,8 +588,9 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var showBackgroundExecDialog by remember { mutableStateOf(false) }
     var showExitConfirmDialog by remember { mutableStateOf(false) }
     var showStartHikeDialog by remember { mutableStateOf(false) } // wraps the 開始新行程/接續舊行程 flow
-    var reportToGuardian by remember { mutableStateOf(true) }
-    var recordGpxOnStart by remember { mutableStateOf(true) }
+    var showEndTripConfirm by remember { mutableStateOf(false) }
+    var showStartGpxDialog by remember { mutableStateOf(false) }
+    var showStopGpxConfirm by remember { mutableStateOf(false) }
     var showFunctionMenu by remember { mutableStateOf(false) }
     var mapController by remember { mutableStateOf<HikeMapController?>(null) }
     var gpsFollowing by remember { mutableStateOf(true) }
@@ -884,26 +888,36 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         )
     }
 
+    // 行程 (reporting to the guardian, started/ended from ☰) and GPX 記錄 (the ⏺ buttons on the map)
+    // are independent; "a trip is on" for the stats panel, waypoints etc. means either of them.
     val tripActive = hasActiveHike || gpxRecording
-    val tripPaused = if (hasActiveHike) isPaused else gpxPaused
 
-    fun setTripPaused(pause: Boolean) {
-        if (hasActiveHike) {
-            isPaused = pause; prefs.isPaused = pause
-            gpxServiceAction(if (pause) LocationForegroundService.ACTION_PAUSE else LocationForegroundService.ACTION_RESUME)
-        }
-        if (gpxRecording) {
-            gpxPaused = pause; prefs.isGpxPaused = pause
-            gpxServiceAction(if (pause) LocationForegroundService.ACTION_GPX_PAUSE else LocationForegroundService.ACTION_GPX_RESUME)
-        }
+    /** The stats panel's 移動時間 stops counting while everything that's running is paused. */
+    fun updatePauseClock(hikePausedNow: Boolean, gpxPausedNow: Boolean) {
+        val allPaused = (!hasActiveHike || hikePausedNow) && (!gpxRecording || gpxPausedNow)
         val now = System.currentTimeMillis()
-        if (pause) {
+        if (allPaused) {
             if (prefs.tripPausedSince == 0L) prefs.tripPausedSince = now
         } else if (prefs.tripPausedSince != 0L) {
             prefs.tripPausedTotalMs += now - prefs.tripPausedSince
             prefs.tripPausedSince = 0L
         }
-        Toast.makeText(context, if (pause) "⏸ 行程已暫停（再按一次繼續）" else "▶ 行程繼續", Toast.LENGTH_SHORT).show()
+    }
+
+    fun setHikePaused(pause: Boolean) {
+        if (!hasActiveHike) return
+        isPaused = pause; prefs.isPaused = pause
+        gpxServiceAction(if (pause) LocationForegroundService.ACTION_PAUSE else LocationForegroundService.ACTION_RESUME)
+        updatePauseClock(pause, gpxPaused)
+        Toast.makeText(context, if (pause) "⏸ 行程回報已暫停" else "▶ 行程回報繼續", Toast.LENGTH_SHORT).show()
+    }
+
+    fun setGpxPaused(pause: Boolean) {
+        if (!gpxRecording) return
+        gpxPaused = pause; prefs.isGpxPaused = pause
+        gpxServiceAction(if (pause) LocationForegroundService.ACTION_GPX_PAUSE else LocationForegroundService.ACTION_GPX_RESUME)
+        updatePauseClock(isPaused, pause)
+        Toast.makeText(context, if (pause) "⏸ 軌跡記錄已暫停" else "⏺ 軌跡記錄繼續", Toast.LENGTH_SHORT).show()
     }
 
     // Trip clock + step baseline start when a trip begins (any path) and reset when it ends.
@@ -938,14 +952,17 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             hasActiveHike = false
             isPaused = false
             TrackerWidgetProvider.updateAllWidgets(context)
+            Toast.makeText(context, "🏁 行程已結束" + if (gpxRecording) "（軌跡記錄仍在進行）" else "", Toast.LENGTH_LONG).show()
         }
-        if (gpxRecording) {
-            // No more points while the save dialog is open; recording stops once it returns.
-            gpxServiceAction(LocationForegroundService.ACTION_GPX_PAUSE)
-            gpxPaused = true
-            gpxStopName = "${hikeName.ifBlank { "軌跡" }}_${defaultGpxTrackName()}".replace(Regex("[\\\\/:*?\"<>|]"), "_")
-            saveGpxLauncher.launch("$gpxStopName.gpx")
-        }
+    }
+
+    /** ⏹ 停止記錄 (after its confirm): pause so no more points land, then the save dialog finishes it. */
+    fun stopGpxWithSave() {
+        if (!gpxRecording) return
+        gpxServiceAction(LocationForegroundService.ACTION_GPX_PAUSE)
+        gpxPaused = true
+        gpxStopName = "${hikeName.ifBlank { "軌跡" }}_${defaultGpxTrackName()}".replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        saveGpxLauncher.launch("$gpxStopName.gpx")
     }
 
     // The recorder lives in the service; after the process was killed or the app updated, nothing
@@ -1057,10 +1074,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
 
     // Applies once the map exists and whenever these settings change from elsewhere (e.g. a
     // fresh HikeMap instance after process recreation) — keeps the map in sync with prefs.
-    LaunchedEffect(mapController, offlineMapController, scaleBarEnabled, mapOrientationMode) {
-        mapController?.setScaleBarEnabled(scaleBarEnabled)
+    LaunchedEffect(mapController, mapOrientationMode) {
         mapController?.setOrientationMode(mapOrientationMode)
-        offlineMapController?.setScaleBarEnabled(scaleBarEnabled)
     }
 
     val visibleLoraDevicePoints = if (showLoraDevicePoints) loraDevicePoints.toList() else emptyList()
@@ -1543,6 +1558,33 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         }
     }
 
+    if (showEndTripConfirm) {
+        AlertDialog(
+            onDismissRequest = { showEndTripConfirm = false },
+            title = { Text("結束行程？") },
+            text = { Text("結束後留守人頁面會停止更新你的位置。" + if (gpxRecording) "\nGPX 軌跡記錄不受影響，會繼續記錄。" else "") },
+            confirmButton = { TextButton(onClick = { showEndTripConfirm = false; endTrip() }) { Text("結束行程", color = Color(0xFFC62828)) } },
+            dismissButton = { TextButton(onClick = { showEndTripConfirm = false }) { Text("取消") } },
+        )
+    }
+    if (showStopGpxConfirm) {
+        AlertDialog(
+            onDismissRequest = { showStopGpxConfirm = false },
+            title = { Text("停止記錄軌跡？") },
+            text = { Text("接著會讓你選擇儲存位置與檔名。" + if (hasActiveHike) "\n行程（回報給留守人）不受影響。" else "") },
+            confirmButton = { TextButton(onClick = { showStopGpxConfirm = false; stopGpxWithSave() }) { Text("停止並儲存", color = Color(0xFFC62828)) } },
+            dismissButton = { TextButton(onClick = { showStopGpxConfirm = false }) { Text("取消") } },
+        )
+    }
+    if (showStartGpxDialog) {
+        AlertDialog(
+            onDismissRequest = { showStartGpxDialog = false },
+            title = { Text("開始記錄軌跡") },
+            text = { Text("記錄間隔：" + (if (gpxMinIntervalSec == 0) "持續" else "$gpxMinIntervalSec 秒") + "・最短 $gpxMinDistanceM 米\n要開新的軌跡檔，還是接著上次的檔案（另起一段）？") },
+            confirmButton = { TextButton(onClick = { showStartGpxDialog = false; startRecording(resumeExisting = false) }) { Text("新的軌跡檔") } },
+            dismissButton = { TextButton(onClick = { showStartGpxDialog = false; startRecording(resumeExisting = true) }) { Text("接續上次") } },
+        )
+    }
     if (showStartHikeDialog) {
         AlertDialog(
             onDismissRequest = { showStartHikeDialog = false; startMode = null },
@@ -1558,8 +1600,6 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                 hikeName = ""
                                 routesToShare.clear()
                                 routesToShare.addAll(loadedRoutes.map { it.file })
-                                reportToGuardian = true
-                                recordGpxOnStart = true
                                 startMode = "new"
                             },
                             modifier = Modifier.fillMaxWidth(),
@@ -1635,37 +1675,14 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         )
                         Spacer(Modifier.height(12.dp))
 
-                        if (!isContinue) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth().clickable { reportToGuardian = !reportToGuardian },
-                            ) {
-                                Checkbox(checked = reportToGuardian, onCheckedChange = null)
-                                Text("回報位置給留守人", style = MaterialTheme.typography.bodyMedium)
-                            }
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().clickable { recordGpxOnStart = !recordGpxOnStart },
-                        ) {
-                            Checkbox(checked = recordGpxOnStart, onCheckedChange = null)
-                            Text(
-                                "記錄 GPX 軌跡（" + (if (gpxMinIntervalSec == 0) "持續" else "$gpxMinIntervalSec 秒") + "・$gpxMinDistanceM 米）",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        }
-                        if (isContinue && recordGpxOnStart && (prefs.gpxFilePath ?: prefs.lastFinishedGpxPath) != null) {
-                            Text(
-                                "會接著寫入上次的軌跡檔（另起一段）。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                        Text(
+                            "行程開始後會一直回報位置給留守人，直到你在 ☰ 按「結束行程」。GPX 軌跡記錄另外用地圖左側的 ⏺ 開始。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         Spacer(Modifier.height(8.dp))
-                        if (isContinue || reportToGuardian) {
-                            IntervalSlider(intervalSeconds, onSecondsChange = { intervalSeconds = it })
-                        }
-                        if (!isContinue && reportToGuardian) {
+                        IntervalSlider(intervalSeconds, onSecondsChange = { intervalSeconds = it })
+                        if (!isContinue) {
                             Spacer(Modifier.height(12.dp))
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("同步給留守人的 GPX/KML", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
@@ -1708,20 +1725,12 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             confirmButton = {
                 if (startMode != null) {
                     val isContinue = startMode == "continue"
-                    val report = isContinue || reportToGuardian
                     TextButton(
-                        enabled = !loading && (isContinue || hikeName.isNotBlank()) && (report || recordGpxOnStart),
+                        enabled = !loading && (isContinue || hikeName.isNotBlank()),
                         onClick = {
                             error = null
                             prefs.intervalSeconds = intervalSeconds
                             if (!isContinue) prefs.lastNickname = nickname
-                            if (!report) {
-                                // Record-only trip: nothing goes to the server.
-                                startRecording(resumeExisting = false)
-                                startMode = null
-                                showStartHikeDialog = false
-                                return@TextButton
-                            }
                             loading = true
                             scope.launch {
                                 try {
@@ -1747,7 +1756,6 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                             .setAction(LocationForegroundService.ACTION_START)
                                     )
                                     hasActiveHike = true
-                                    if (recordGpxOnStart) startRecording(resumeExisting = isContinue)
                                     if (startMode == "new") {
                                         // A new hike has nothing on the server yet — ids from an earlier hike are stale.
                                         for (i in loadedRoutes.indices) loadedRoutes[i] = loadedRoutes[i].copy(serverId = null)
@@ -1933,6 +1941,43 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     // system font) — the stats panel sits on top of its measured height, not a fixed guess.
     var statusBarHeight by remember { mutableStateOf(44.dp) }
     val density = LocalDensity.current
+    // 量距: once the map is slid away from the GPS position, a dashed line runs from the fix to the
+    // screen-centre crosshair with its straight-line distance — slide, stop, read. With GPS 永遠置中
+    // it shows only after a hand pan (until the map recenters); with it off, whenever off-centre.
+    var measure by remember { mutableStateOf<Pair<Float, Float>?>(null) } // metres, bearing°
+    LaunchedEffect(mapController, offlineMapController, mapsforgeActive, gpsFollowing) {
+        val out = FloatArray(2)
+        while (true) {
+            var result: Pair<Float, Float>? = null
+            if (gpsFollowing) {
+                if (mapsforgeActive) {
+                    val fix = offlineMapController?.currentFix()
+                    val c = offlineMapController?.mapCenter()
+                    if (fix != null && c != null) {
+                        android.location.Location.distanceBetween(fix.latitude, fix.longitude, c.latitude, c.longitude, out)
+                        if (out[0] > MEASURE_MIN_M) { offlineMapController?.setMeasureLine(fix, c); result = out[0] to out[1] }
+                    }
+                } else {
+                    val fix = mapController?.currentFix()
+                    val c = mapController?.mapCenter()
+                    if (fix != null && c != null) {
+                        android.location.Location.distanceBetween(fix.latitude, fix.longitude, c.latitude, c.longitude, out)
+                        if (out[0] > MEASURE_MIN_M) { mapController?.setMeasureLine(fix, c); result = out[0] to out[1] }
+                    }
+                }
+            }
+            if (result == null) { offlineMapController?.setMeasureLine(null, null); mapController?.setMeasureLine(null, null) }
+            measure = result
+            delay(250)
+        }
+    }
+
+    // 比例尺: bottom-left, just above the bottom status bar (which overlaps the map's lower edge).
+    LaunchedEffect(mapController, offlineMapController, scaleBarEnabled, statusBarHeight) {
+        val bottomPx = with(density) { (statusBarHeight + 6.dp).roundToPx() }
+        mapController?.setScaleBarEnabled(scaleBarEnabled, bottomPx)
+        offlineMapController?.setScaleBarEnabled(scaleBarEnabled, bottomPx)
+    }
     var compassAzimuth by remember { mutableStateOf(0f) }
     DisposableEffect(tripActive && showStatsPanel) {
         val sm = context.getSystemService(android.content.Context.SENSOR_SERVICE) as android.hardware.SensorManager
@@ -2363,6 +2408,28 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         Box(modifier = Modifier.align(Alignment.TopStart).padding(top = 60.dp, start = 8.dp)) {
             MapCircleButton("☰", size = 40.dp) { showFunctionMenu = true }
             DropdownMenu(expanded = showFunctionMenu, onDismissRequest = { showFunctionMenu = false }) {
+                // 行程 (reporting to the guardian) lives here, first — kept away from the map's
+                // one-tap buttons so it only ever ends on purpose.
+                if (!hasActiveHike) {
+                    DropdownMenuItem(
+                        text = { Text("▶ 開始行程（回報位置給留守人）", fontWeight = FontWeight.Bold) },
+                        onClick = {
+                            showFunctionMenu = false
+                            error = null; continuingHikeId = null; startMode = null
+                            showStartHikeDialog = true
+                        },
+                    )
+                } else {
+                    DropdownMenuItem(
+                        text = { Text(if (isPaused) "▶ 繼續行程回報" else "⏸ 暫停行程回報", fontWeight = FontWeight.Bold) },
+                        onClick = { showFunctionMenu = false; setHikePaused(!isPaused) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("🏁 結束行程", fontWeight = FontWeight.Bold, color = Color(0xFFC62828)) },
+                        onClick = { showFunctionMenu = false; showEndTripConfirm = true },
+                    )
+                }
+                HorizontalDivider()
                 DropdownMenuItem(
                     text = { Text("軌跡檔管理（匯入／顯示／偏離提醒）" + if (loadedRoutes.isNotEmpty()) "・${loadedRoutes.size}" else "") },
                     onClick = { showFunctionMenu = false; showLoadRouteDialog = true },
@@ -2422,22 +2489,17 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             // wider caption (結束行程) pushes its circle out of line with the rest.
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            MapCircleButton(
-                label = if (!tripActive || tripPaused) "▶️" else "⏸",
-                background = Color(0xEE2D7DD2),
-            ) {
-                if (!tripActive) {
-                    error = null
-                    continuingHikeId = null
-                    startMode = null
-                    showStartHikeDialog = true
-                } else {
-                    setTripPaused(!tripPaused)
+            // GPX 軌跡記錄 — separate from the 行程 (☰): ⏺ starts, ⏸/▶️ pauses, ⏹ stops (confirmed).
+            if (!gpxRecording) {
+                LabeledMapButton("⏺", "開始記錄", Color(0xEE2D7DD2)) {
+                    if ((prefs.gpxFilePath ?: prefs.lastFinishedGpxPath) != null) showStartGpxDialog = true
+                    else startRecording(resumeExisting = false)
                 }
-            }
-            // Only meaningful while a trip is in progress — hidden before it starts and after it ends.
-            if (tripActive) {
-                LabeledMapButton("🏁", "結束行程", Color(0xEEC62828)) { endTrip() }
+            } else {
+                LabeledMapButton(if (gpxPaused) "▶️" else "⏸", if (gpxPaused) "繼續記錄" else "暫停記錄", Color(0xEE2D7DD2)) {
+                    setGpxPaused(!gpxPaused)
+                }
+                LabeledMapButton("⏹", "停止記錄", Color(0xEEC62828)) { showStopGpxConfirm = true }
             }
             // Marks and SOS go to the guardian, so they need the reporting half of the trip.
             if (hasActiveHike) {
@@ -2540,6 +2602,16 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             }
         }
 
+        measure?.let { (meters, bearing) ->
+            Text("✛", color = Color(0xFFE91E63), fontSize = 28.sp, modifier = Modifier.align(Alignment.Center))
+            Text(
+                "📏 " + formatDistance(meters.toDouble()) + "・" + compassDirection(((bearing + 360f) % 360f)) + " ${((bearing + 360f) % 360f).toInt()}°",
+                color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.align(Alignment.Center).padding(top = 64.dp)
+                    .background(Color(0xCC202020), RoundedCornerShape(8.dp)).padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+
         // ---- 狀態列／錯誤訊息（原本頁面上的伺服器狀態、行程狀態，移到底部一條窄列）----
         Column(
             modifier = Modifier
@@ -2557,7 +2629,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 )
                 if (tripActive) {
                     Text(
-                        (if (tripPaused) "・暫停" else "・進行中") + if (gpxRecording && !tripPaused) " ⏺" else "",
+                        (if (!hasActiveHike) "" else if (isPaused) "・回報暫停" else "・進行中") +
+                            (if (!gpxRecording) "" else if (gpxPaused) " ⏸記錄" else " ⏺"),
                         color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp, maxLines = 1, softWrap = false,
                         modifier = Modifier.padding(start = 4.dp),
                     )

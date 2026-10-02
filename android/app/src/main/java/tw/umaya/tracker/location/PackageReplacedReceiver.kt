@@ -15,14 +15,15 @@ import tw.umaya.tracker.data.Prefs
 import tw.umaya.tracker.ui.MainActivity
 
 /**
- * Installing an update kills the process, and with it the location service — tracking then
- * silently stopped until the hiker happened to open the app. When a trip or GPX recording was
- * running, restart the service right away; if Android won't allow that from the background
- * (no 「一律允許」 location permission), post a notification that reopens the app instead.
+ * Installing an update or rebooting the phone kills the location service — tracking then silently
+ * stopped until the hiker happened to open the app, although a trip only ever ends by pressing
+ * 結束行程. When a trip or GPX recording was running, restart the service right away; if Android
+ * won't allow that from the background (no 「一律允許」 location permission), post a notification
+ * that reopens the app instead.
  */
 class PackageReplacedReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
+        if (intent.action != Intent.ACTION_MY_PACKAGE_REPLACED && intent.action != Intent.ACTION_BOOT_COMPLETED) return
         val prefs = Prefs(context)
         val tripRunning = prefs.activeHikeId != -1L && !prefs.isPaused
         if (!tripRunning && !prefs.isGpxRecording) return
@@ -57,7 +58,7 @@ class PackageReplacedReceiver : BroadcastReceiver() {
             NOTIFICATION_ID,
             NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-                .setContentTitle("App 已更新，行程記錄暫停中")
+                .setContentTitle("App 已更新或手機重新開機，記錄暫停中")
                 .setContentText("點這裡打開 App，繼續記錄位置與軌跡")
                 .setContentIntent(open)
                 .setAutoCancel(true)

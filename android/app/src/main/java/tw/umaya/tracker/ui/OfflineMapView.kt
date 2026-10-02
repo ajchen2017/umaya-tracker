@@ -325,13 +325,40 @@ class OfflineMapController internal constructor(
     }
 
     /** 地圖比例尺 開/關 — Mapsforge's own scale bar, not osmdroid's ScaleBarOverlay. */
-    fun setScaleBarEnabled(enabled: Boolean) {
+    // ---- 量距: straight line from the GPS fix to the screen-centre crosshair ----
+    private var measureLine: Polyline? = null
+    fun mapCenter(): LatLong = mapView.model.mapViewPosition.center
+    fun setMeasureLine(from: LatLong?, to: LatLong?) {
+        if (from == null || to == null) {
+            measureLine?.let { layers.remove(it); measureLine = null }
+            return
+        }
+        val line = measureLine ?: Polyline(
+            AndroidGraphicFactory.INSTANCE.createPaint().apply {
+                setColor(Color.rgb(233, 30, 99))
+                setStrokeWidth(4 * mapView.model.displayModel.scaleFactor)
+                setStyle(Style.STROKE)
+                setDashPathEffect(floatArrayOf(24f, 14f))
+            },
+            AndroidGraphicFactory.INSTANCE,
+        ).also { layers.add(it); measureLine = it }
+        line.setPoints(listOf(from, to))
+        line.requestRedraw()
+    }
+
+    fun setScaleBarEnabled(enabled: Boolean, bottomPx: Int) {
         if (enabled) {
             if (scaleBar == null) {
                 scaleBar = DefaultMapScaleBar(
                     mapView.model.mapViewPosition, mapView.model.mapViewDimension,
                     AndroidGraphicFactory.INSTANCE, mapView.model.displayModel,
                 ).also { mapView.setMapScaleBar(it) }
+            }
+            scaleBar?.apply {
+                scaleBarPosition = org.mapsforge.map.scalebar.MapScaleBar.ScaleBarPosition.BOTTOM_LEFT
+                marginHorizontal = (12 * mapView.resources.displayMetrics.density).toInt()
+                marginVertical = bottomPx
+                redrawScaleBar()
             }
         } else {
             mapView.setMapScaleBar(null)
