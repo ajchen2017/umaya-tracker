@@ -149,6 +149,15 @@ private fun mapSourceIcon(source: MapSource, packId: String?): String = when (so
 
 /** Default GPX track name shown in the 結束追蹤 dialog — yyyy-mm-dd-hh-mm-ss per spec. */
 
+/**
+ * Runs [content] as its own composable lambda, i.e. its own JVM/dex method. HikeScreen had grown
+ * into one ~22k-instruction method, and 4.6 crashed at launch on a vivo (Android 15) with a
+ * `remember`ed state read as null deep inside it — not reproducible on an x86 emulator, so most
+ * likely the phone's runtime mishandling that huge method. Each dialog lives in one of these now.
+ */
+@Composable
+private fun Isolated(content: @Composable () -> Unit) = content()
+
 /** Raw exception messages ("timeout", "Unable to resolve host…") aren't useful to a hiker. */
 private fun friendlyErrorMessage(e: Exception): String = when (e) {
     is SocketTimeoutException -> "連線逾時，山區訊號較弱時常見，請稍後再試一次"
@@ -1003,7 +1012,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         }
     }
 
-    if (showLoadRouteDialog) {
+    if (showLoadRouteDialog) Isolated {
         AlertDialog(
             onDismissRequest = { showLoadRouteDialog = false },
             title = { Text("軌跡檔管理") },
@@ -1117,7 +1126,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         )
     }
 
-    if (showMapSettingsDialog) {
+    if (showMapSettingsDialog) Isolated {
         AlertDialog(
             onDismissRequest = { showMapSettingsDialog = false },
             title = { Text("地圖設定") },
@@ -1354,7 +1363,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         )
     }
 
-    if (showLayerSettingsDialog) {
+    if (showLayerSettingsDialog) Isolated {
         // 開關先存在待確認清單裡，不會立刻套用；按「確認」才寫回 enabledLayerIds/prefs 並讓地圖
         // 用新圖層重新載入一次（key(enabledLayerIds) 那邊會處理 remount，不必再手動切換地圖/重開App）。
         var pendingLayerIds by remember(showLayerSettingsDialog) { mutableStateOf(enabledLayerIds) }
@@ -1404,7 +1413,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     }
 
 
-    if (showExitConfirmDialog) {
+    if (showExitConfirmDialog) Isolated {
         AlertDialog(
             onDismissRequest = { showExitConfirmDialog = false },
             title = { Text("結束程式") },
@@ -1419,7 +1428,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         )
     }
 
-    if (showIntervalDialog) {
+    if (showIntervalDialog) Isolated {
         AlertDialog(
             onDismissRequest = { showIntervalDialog = false },
             title = { Text("定位頻率") },
@@ -1456,7 +1465,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         )
     }
 
-    if (showBackgroundExecDialog) {
+    if (showBackgroundExecDialog) Isolated {
         AlertDialog(
             onDismissRequest = { showBackgroundExecDialog = false },
             title = { Text("背景執行") },
@@ -1492,7 +1501,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
 
     val shareUrl = "https://tracker.umaya.tw/t/$shareToken"
 
-    if (showShareLinkDialog) {
+    if (showShareLinkDialog) Isolated {
         val shareText = "我的登山行程即時位置（留守人追蹤頁）：\n$shareUrl"
         AlertDialog(
             onDismissRequest = { showShareLinkDialog = false },
@@ -1572,7 +1581,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         }
     }
 
-    if (showEndTripConfirm) {
+    if (showEndTripConfirm) Isolated {
         AlertDialog(
             onDismissRequest = { showEndTripConfirm = false },
             title = { Text("結束行程？") },
@@ -1581,7 +1590,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             dismissButton = { TextButton(onClick = { showEndTripConfirm = false }) { Text("取消") } },
         )
     }
-    if (showStopGpxConfirm) {
+    if (showStopGpxConfirm) Isolated {
         AlertDialog(
             onDismissRequest = { showStopGpxConfirm = false },
             title = { Text("停止記錄軌跡？") },
@@ -1590,7 +1599,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             dismissButton = { TextButton(onClick = { showStopGpxConfirm = false }) { Text("取消") } },
         )
     }
-    if (showStartGpxDialog) {
+    if (showStartGpxDialog) Isolated {
         AlertDialog(
             onDismissRequest = { showStartGpxDialog = false },
             title = { Text("開始記錄軌跡") },
@@ -1599,7 +1608,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             dismissButton = { TextButton(onClick = { showStartGpxDialog = false; startRecording(resumeExisting = true) }) { Text("接續上次") } },
         )
     }
-    if (showStartHikeDialog) {
+    if (showStartHikeDialog) Isolated {
         AlertDialog(
             onDismissRequest = { showStartHikeDialog = false; startMode = null },
             title = { Text(if (startMode == null) "開始被追蹤" else if (startMode == "continue") "接續舊行程" else "開始新行程") },
@@ -1832,7 +1841,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     val exportGpxLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/gpx+xml")) { writeExport(it, false) }
     val exportKmlLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.google-earth.kml+xml")) { writeExport(it, true) }
 
-    if (showTrackSettingsDialog) {
+    if (showTrackSettingsDialog) Isolated {
         val tracks = remember(showTrackSettingsDialog) { recordedTracks(context).map { it to trackPointCount(it) } }
         fun applyToService() {
             // Only a live recording needs its location rate re-requested for the new interval.
@@ -1945,7 +1954,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             ).show()
         }
     }
-    if (showMergeDialog) {
+    if (showMergeDialog) Isolated {
         val sources = remember(showMergeDialog, mergeListVersion) {
             (recordedTracks(context).map { Triple(it, trackPointCount(it), false) } +
                 importedTracks(context).map { Triple(it, trackPointCount(it), true) })
@@ -2150,7 +2159,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             Toast.makeText(context, "找不到相機 App", Toast.LENGTH_LONG).show()
         }
     }
-    if (showWaypointDialog) {
+    if (showWaypointDialog) Isolated {
         val thumb = remember(waypointPhoto) {
             waypointPhoto?.let { rel ->
                 runCatching {
@@ -2202,7 +2211,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     // ---- 3D 飛行回放：pick recorded trails and/or loaded route files, one or several merged ----
     var showReliveDialog by remember { mutableStateOf(false) }
     val reliveSelection = remember { mutableStateListOf<String>() }
-    if (showReliveDialog) {
+    if (showReliveDialog) Isolated {
         val recorded = remember(showReliveDialog) { recordedTracks(context) }
         AlertDialog(
             onDismissRequest = { showReliveDialog = false },
@@ -2333,7 +2342,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Isolated { Box(modifier = Modifier.fillMaxSize()) { // the whole map screen, in its own method
         when {
             mapsforgeActive && currentOfflinePack != null -> {
                 key(enabledLayerIds, currentOfflinePackId, mapTextSizePx) {
@@ -2790,5 +2799,5 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 )
             }
         }
-    }
+    } }
 }
