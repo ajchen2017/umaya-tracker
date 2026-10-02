@@ -1013,7 +1013,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     }
 
     if (showLoadRouteDialog) Isolated {
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showLoadRouteDialog = false },
             title = { Text("軌跡檔管理") },
             text = {
@@ -1108,7 +1108,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     }
 
     packPendingDelete?.let { pack ->
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { packPendingDelete = null },
             title = { Text("刪除離線地圖包") },
             text = { Text("確定刪除「${pack.name}」？刪除後要重新下載或匯入才能使用。") },
@@ -1127,7 +1127,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     }
 
     if (showMapSettingsDialog) Isolated {
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showMapSettingsDialog = false },
             title = { Text("地圖設定") },
             text = {
@@ -1367,7 +1367,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         // 開關先存在待確認清單裡，不會立刻套用；按「確認」才寫回 enabledLayerIds/prefs 並讓地圖
         // 用新圖層重新載入一次（key(enabledLayerIds) 那邊會處理 remount，不必再手動切換地圖/重開App）。
         var pendingLayerIds by remember(showLayerSettingsDialog) { mutableStateOf(enabledLayerIds) }
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showLayerSettingsDialog = false },
             title = { Text("向量魯地圖圖層顯示") },
             text = {
@@ -1414,7 +1414,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
 
 
     if (showExitConfirmDialog) Isolated {
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showExitConfirmDialog = false },
             title = { Text("結束程式") },
             text = { Text("確定要完整結束 App 嗎？如果行程還在進行中，定位追蹤也會跟著停止。") },
@@ -1429,7 +1429,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     }
 
     if (showIntervalDialog) Isolated {
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showIntervalDialog = false },
             title = { Text("定位頻率") },
             text = {
@@ -1466,7 +1466,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     }
 
     if (showBackgroundExecDialog) Isolated {
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showBackgroundExecDialog = false },
             title = { Text("背景執行") },
             text = {
@@ -1503,7 +1503,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
 
     if (showShareLinkDialog) Isolated {
         val shareText = "我的登山行程即時位置（留守人追蹤頁）：\n$shareUrl"
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showShareLinkDialog = false },
             title = { Text("留守人連結") },
             text = {
@@ -1582,25 +1582,25 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     }
 
     if (showEndTripConfirm) Isolated {
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showEndTripConfirm = false },
             title = { Text("結束行程？") },
             text = { Text("結束後留守人頁面會停止更新你的位置。" + if (gpxRecording) "\nGPX 軌跡記錄不受影響，會繼續記錄。" else "") },
-            confirmButton = { TextButton(onClick = { showEndTripConfirm = false; endTrip() }) { Text("結束行程", color = Color(0xFFC62828)) } },
+            confirmButton = { TextButton(onClick = { showEndTripConfirm = false; endTrip() }) { Text("結束行程", color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { showEndTripConfirm = false }) { Text("取消") } },
         )
     }
     if (showStopGpxConfirm) Isolated {
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showStopGpxConfirm = false },
             title = { Text("停止記錄軌跡？") },
             text = { Text("接著會讓你選擇儲存位置與檔名。" + if (hasActiveHike) "\n行程（回報給留守人）不受影響。" else "") },
-            confirmButton = { TextButton(onClick = { showStopGpxConfirm = false; stopGpxWithSave() }) { Text("停止並儲存", color = Color(0xFFC62828)) } },
+            confirmButton = { TextButton(onClick = { showStopGpxConfirm = false; stopGpxWithSave() }) { Text("停止並儲存", color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { showStopGpxConfirm = false }) { Text("取消") } },
         )
     }
     if (showStartGpxDialog) Isolated {
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showStartGpxDialog = false },
             title = { Text("開始記錄軌跡") },
             text = { Text("記錄間隔：" + (if (gpxMinIntervalSec == 0) "持續" else "$gpxMinIntervalSec 秒") + "・最短 $gpxMinDistanceM 米\n要開新的軌跡檔，還是接著上次的檔案（另起一段）？") },
@@ -1609,7 +1609,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         )
     }
     if (showStartHikeDialog) Isolated {
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showStartHikeDialog = false; startMode = null },
             title = { Text(if (startMode == null) "開始被追蹤" else if (startMode == "continue") "接續舊行程" else "開始新行程") },
             text = {
@@ -1851,7 +1851,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 )
             }
         }
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showTrackSettingsDialog = false },
             title = { Text("軌跡記錄設定") },
             text = {
@@ -1959,7 +1959,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             (recordedTracks(context).map { Triple(it, trackPointCount(it), false) } +
                 importedTracks(context).map { Triple(it, trackPointCount(it), true) })
         }
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showMergeDialog = false },
             title = { Text("GPX 合併匯出") },
             text = {
@@ -2167,7 +2167,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 }.getOrNull()
             }
         }
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showWaypointDialog = false },
             title = { Text("新增航點") },
             text = {
@@ -2213,7 +2213,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     val reliveSelection = remember { mutableStateListOf<String>() }
     if (showReliveDialog) Isolated {
         val recorded = remember(showReliveDialog) { recordedTracks(context) }
-        AlertDialog(
+        PanelDialog(
             onDismissRequest = { showReliveDialog = false },
             title = { Text("3D 飛行回放") },
             text = {
@@ -2548,7 +2548,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         // GPS/軌跡/方位點細節設定）屬於下一階段的獨立子系統，先不做假按鈕。
         Box(modifier = Modifier.align(Alignment.TopStart).padding(top = 60.dp, start = 8.dp)) {
             MapCircleButton("☰", size = 40.dp) { showFunctionMenu = true }
-            DropdownMenu(expanded = showFunctionMenu, onDismissRequest = { showFunctionMenu = false }) {
+            PanelTheme { DropdownMenu(expanded = showFunctionMenu, onDismissRequest = { showFunctionMenu = false }) {
                 // 行程 (reporting to the guardian) lives here, first — kept away from the map's
                 // one-tap buttons so it only ever ends on purpose.
                 if (!hasActiveHike) {
@@ -2566,7 +2566,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         onClick = { showFunctionMenu = false; setHikePaused(!isPaused) },
                     )
                     DropdownMenuItem(
-                        text = { Text("🏁 結束行程", fontWeight = FontWeight.Bold, color = Color(0xFFC62828)) },
+                        text = { Text("🏁 結束行程", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error) },
                         onClick = { showFunctionMenu = false; showEndTripConfirm = true },
                     )
                 }
@@ -2618,7 +2618,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     text = { Text("結束") },
                     onClick = { showFunctionMenu = false; showExitConfirmDialog = true },
                 )
-            }
+            } }
         }
 
         // Back to the role picker (登山者／留守人) — top-right, mirrors ☰ on the top-left.
