@@ -1676,7 +1676,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         Spacer(Modifier.height(12.dp))
 
                         Text(
-                            "行程開始後會一直回報位置給留守人，直到你在 ☰ 按「結束行程」。GPX 軌跡記錄另外用地圖左側的 ⏺ 開始。",
+                            "行程開始後會一直回報位置給留守人，直到你在 ☰ 按「結束行程」。GPX 軌跡記錄另外用畫面最上方的 ⏺ 開始。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -2265,6 +2265,20 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
+            // (0) GPX 軌跡記錄 — separate from the 行程 (☰): ⏺ starts, ⏸/▶️ pauses, ⏹ stops (confirmed).
+            if (!gpxRecording) {
+                TopBarIconButton("⏺") {
+                    if ((prefs.gpxFilePath ?: prefs.lastFinishedGpxPath) != null) showStartGpxDialog = true
+                    else startRecording(resumeExisting = false)
+                }
+            } else {
+                TopBarIconButton(
+                    if (gpxPaused) "▶️" else "⏸",
+                    statusColor = if (gpxPaused) Color(0x55FFA000) else Color(0x55D32F2F), // red = 記錄中
+                ) { setGpxPaused(!gpxPaused) }
+                TopBarIconButton("⏹") { showStopGpxConfirm = true }
+            }
+
             // (1) 回到現在手機 GPS 位置
             TopBarIconButton("📍") {
                 val hasFix = if (mapsforgeActive) offlineMapController?.currentFix() != null else mapController?.currentFix() != null
@@ -2489,18 +2503,6 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             // wider caption (結束行程) pushes its circle out of line with the rest.
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // GPX 軌跡記錄 — separate from the 行程 (☰): ⏺ starts, ⏸/▶️ pauses, ⏹ stops (confirmed).
-            if (!gpxRecording) {
-                LabeledMapButton("⏺", "開始記錄", Color(0xEE2D7DD2)) {
-                    if ((prefs.gpxFilePath ?: prefs.lastFinishedGpxPath) != null) showStartGpxDialog = true
-                    else startRecording(resumeExisting = false)
-                }
-            } else {
-                LabeledMapButton(if (gpxPaused) "▶️" else "⏸", if (gpxPaused) "繼續記錄" else "暫停記錄", Color(0xEE2D7DD2)) {
-                    setGpxPaused(!gpxPaused)
-                }
-                LabeledMapButton("⏹", "停止記錄", Color(0xEEC62828)) { showStopGpxConfirm = true }
-            }
             // Marks and SOS go to the guardian, so they need the reporting half of the trip.
             if (hasActiveHike) {
                 LabeledMapButton("😊", "我很好", Color(0xEE2E7D32)) {
