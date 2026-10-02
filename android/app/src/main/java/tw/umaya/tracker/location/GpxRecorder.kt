@@ -45,19 +45,21 @@ class GpxRecorder(private val context: Context) {
      * appending to it in a new segment (接續舊行程, or after the process died mid-recording).
      * Returns the path actually in use.
      */
-    fun start(resumePath: String? = null): String {
+    fun start(resumePath: String? = null, title: String = DEFAULT_TRACK_TITLE): String {
         if (resumePath != null && File(resumePath).exists()) {
             file = File(resumePath)
             pointCount = trackPointCount(File(resumePath))
             newSegment()
             return resumePath
         }
-        val stamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(System.currentTimeMillis())
-        val f = File(gpxDir(), "$stamp.gpx")
+        // 行程名稱-yyyyMMdd-HHmmss.gpx, the time being when this recording started.
+        val baseName = trackFileBaseName(title, System.currentTimeMillis())
+        var f = File(gpxDir(), "$baseName.gpx"); var n = 2
+        while (f.exists()) f = File(gpxDir(), "$baseName-${n++}.gpx")
         f.writeText(
             """<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="umaya-tracker" xmlns="http://www.topografix.com/GPX/1/1">
-<trk><name>$stamp</name><trkseg>
+<trk><name>${xmlEscape(f.nameWithoutExtension)}</name><trkseg>
 </trkseg></trk></gpx>
 """
         )
@@ -159,6 +161,38 @@ class GpxRecorder(private val context: Context) {
 
 }
 
+const val DEFAULT_TRACK_TITLE = "軌跡"
+
+private fun safeFileName(s: String) = s.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { DEFAULT_TRACK_TITLE }
+
+/** Every GPX/KML file name: 行程名稱-yyyyMMdd-HHmmss (phone's local time). */
+fun trackFileBaseName(title: String, timeMs: Long): String =
+    safeFileName(title) + "-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(timeMs)
+
+private val oldStampName = Regex("^(\\d{4})-(\\d{2})-(\\d{2})_(\\d{2})-(\\d{2})-(\\d{2})$")               // 2026-10-02_09-08-08
+private val oldSavedName = Regex("^(.+)_(\\d{4})-(\\d{2})-(\\d{2})-(\\d{2})-(\\d{2})-(\\d{2})$")          // abc3_2026-10-02-19-55-00
+
+/**
+ * One-time rename of recordings made before 行程名稱-yyyyMMdd-HHmmss: the app's own automatic names
+ * only (a name the hiker typed in the save dialog is left alone), GPX and KML alike, never the file
+ * being recorded right now ([skipPath]). Returns old → new absolute paths.
+ */
+fun migrateTrackFileNames(context: Context, skipPath: String?): Map<String, String> {
+    val renamed = mutableMapOf<String, String>()
+    val dir = File(context.getExternalFilesDir(null), "gpx")
+    dir.listFiles { f -> f.isFile && (f.extension == "gpx" || f.extension == "kml") }.orEmpty().forEach { f ->
+        if (f.absolutePath == skipPath) return@forEach
+        val name = f.nameWithoutExtension
+        val newBase = oldStampName.find(name)?.groupValues?.let { g -> "$DEFAULT_TRACK_TITLE-${g[1]}${g[2]}${g[3]}-${g[4]}${g[5]}${g[6]}" }
+            ?: oldSavedName.find(name)?.groupValues?.let { g -> "${g[1]}-${g[2]}${g[3]}${g[4]}-${g[5]}${g[6]}${g[7]}" }
+            ?: return@forEach
+        var target = File(dir, "$newBase.${f.extension}"); var n = 2
+        while (target.exists()) target = File(dir, "$newBase-${n++}.${f.extension}")
+        if (f.renameTo(target)) renamed[f.absolutePath] = target.absolutePath
+    }
+    return renamed
+}
+
 /** GPX trails recorded on this phone (finished and in-progress), newest first. */
 fun recordedTracks(context: Context): List<File> =
     File(context.getExternalFilesDir(null), "gpx").listFiles { f -> f.extension == "gpx" }
@@ -170,21 +204,6 @@ private fun xmlEscape(s: String) =
 private val wptPattern = Regex("<wpt\\b.*?</wpt>", RegexOption.DOT_MATCHES_ALL)
 
 private val trksegPattern = Regex("<trkseg>(.*?)</trkseg>", RegexOption.DOT_MATCHES_ALL)
-
-/**
- * Merges several recorded trails into one GPX, oldest first, each kept as its own <trkseg> so no
- * line is drawn across the gap between one recording and the next.
- */
-fun mergeGpx(files: List<File>, name: String): String {
-    val segments = files.sortedBy { it.name }.flatMap { f ->
-        trksegPattern.findAll(f.readText()).map { it.groupValues[1].trim() }.filter { it.isNotEmpty() }.toList()
-    }
-    val waypoints = files.sortedBy { it.name }.flatMap { f -> wptPattern.findAll(f.readText()).map { it.value }.toList() }
-    return """<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="umaya-tracker" xmlns="http://www.topografix.com/GPX/1/1">
-""" + waypoints.joinToString("") { "$it\n" } + """<trk><name>$name</name>
-""" + segments.joinToString("") { "<trkseg>\n$it\n</trkseg>\n" } + "</trk></gpx>\n"
-}
 
 /** Converts a recorded (or merged) GPX trail to KML, one line per segment, keeping altitude. */
 fun gpxToKml(gpxXml: String, name: String): String {

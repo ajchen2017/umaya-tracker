@@ -96,7 +96,11 @@ import tw.umaya.tracker.data.TAIWAN_PACK_ID
 import tw.umaya.tracker.data.intervalLabel
 import tw.umaya.tracker.location.LocationForegroundService
 import tw.umaya.tracker.location.gpxToKml
-import tw.umaya.tracker.location.mergeGpx
+import tw.umaya.tracker.location.importedGpxDir
+import tw.umaya.tracker.location.importedTracks
+import tw.umaya.tracker.location.mergeGpxFiles
+import tw.umaya.tracker.location.migrateTrackFileNames
+import tw.umaya.tracker.location.trackFileBaseName
 import tw.umaya.tracker.location.recordedTracks
 import tw.umaya.tracker.location.trackPointCount
 import tw.umaya.tracker.location.trackStats
@@ -144,8 +148,6 @@ private fun mapSourceIcon(source: MapSource, packId: String?): String = when (so
 }
 
 /** Default GPX track name shown in the 結束追蹤 dialog — yyyy-mm-dd-hh-mm-ss per spec. */
-private fun defaultGpxTrackName(): String =
-    SimpleDateFormat("yyyy-MM-dd-HH-mm-ss", Locale.US).format(System.currentTimeMillis())
 
 /** Raw exception messages ("timeout", "Unable to resolve host…") aren't useful to a hiker. */
 private fun friendlyErrorMessage(e: Exception): String = when (e) {
@@ -599,6 +601,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var gpxRecording by remember { mutableStateOf(prefs.isGpxRecording) }
     var gpxPaused by remember { mutableStateOf(prefs.isGpxPaused) }
     var showTrackSettingsDialog by remember { mutableStateOf(false) }
+    var showMergeDialog by remember { mutableStateOf(false) }
     var showLoadRouteDialog by remember { mutableStateOf(false) }
     var showMapSettingsDialog by remember { mutableStateOf(false) }
     var scaleBarEnabled by remember { mutableStateOf(prefs.showScaleBar) }
@@ -885,6 +888,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             Intent(context, LocationForegroundService::class.java)
                 .setAction(LocationForegroundService.ACTION_GPX_START)
                 .putExtra(LocationForegroundService.EXTRA_GPX_RESUME_EXISTING, resumeExisting)
+                .putExtra(LocationForegroundService.EXTRA_GPX_TITLE, if (hasActiveHike) hikeName else "")
         )
     }
 
@@ -961,13 +965,23 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         if (!gpxRecording) return
         gpxServiceAction(LocationForegroundService.ACTION_GPX_PAUSE)
         gpxPaused = true
-        gpxStopName = "${hikeName.ifBlank { "軌跡" }}_${defaultGpxTrackName()}".replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        // Same 行程名稱-yyyyMMdd-HHmmss the file got when the recording started.
+        gpxStopName = prefs.gpxFilePath?.let { File(it).nameWithoutExtension }
+            ?: trackFileBaseName(hikeName, System.currentTimeMillis())
         saveGpxLauncher.launch("$gpxStopName.gpx")
     }
 
     // The recorder lives in the service; after the process was killed or the app updated, nothing
     // restarts it on its own even though prefs still say 記錄中 — reopening the app does.
     LaunchedEffect(Unit) {
+        if (!prefs.trackNamesMigrated) {
+            val renamed = withContext(Dispatchers.IO) {
+                migrateTrackFileNames(context, skipPath = if (prefs.isGpxRecording) prefs.gpxFilePath else null)
+            }
+            prefs.gpxFilePath?.let { p -> renamed[p]?.let { prefs.gpxFilePath = it } }
+            prefs.lastFinishedGpxPath?.let { p -> renamed[p]?.let { prefs.lastFinishedGpxPath = it } }
+            prefs.trackNamesMigrated = true
+        }
         if (prefs.isGpxRecording) {
             context.startForegroundService(
                 Intent(context, LocationForegroundService::class.java).setAction(LocationForegroundService.ACTION_START)
@@ -1789,12 +1803,13 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         )
     }
 
-    // ---- 軌跡記錄設定：記錄間隔／最短紀錄長度／匯出（可多選合併）----
+    // ---- 軌跡記錄設定：記錄間隔／最短紀錄長度／匯出單一軌跡（合併在 ☰ → GPX 合併匯出）----
     val exportSelection = remember { mutableStateListOf<String>() }
     var exportFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+    var mergeFillGaps by remember { mutableStateOf(true) }
     fun exportName(files: List<File>): String = when (files.size) {
         1 -> files.first().nameWithoutExtension
-        else -> files.map { it.nameWithoutExtension }.sorted().let { "合併_${it.first()}_${it.last()}" }
+        else -> files.minBy { it.lastModified() }.nameWithoutExtension + "-合併"
     }
     fun writeExport(uri: Uri?, asKml: Boolean) {
         val files = exportFiles
@@ -1803,7 +1818,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             try {
                 withContext(Dispatchers.IO) {
                     val name = exportName(files)
-                    val gpx = if (files.size == 1) files.first().readText() else mergeGpx(files, name)
+                    // Sources are only read; the merge is a new file.
+                    val gpx = if (files.size == 1) files.first().readText() else mergeGpxFiles(files, name, mergeFillGaps)
                     val content = if (asKml) gpxToKml(gpx, name) else gpx
                     context.contentResolver.openOutputStream(uri, "wt")!!.use { it.write(content.toByteArray()) }
                 }
@@ -1851,7 +1867,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         Text("還沒有記錄過軌跡。", style = MaterialTheme.typography.bodySmall)
                     } else {
                         Text(
-                            "勾選一筆或多筆；多筆會合併成一個檔案（各自一段，段與段之間不連線）。",
+                            "選一筆匯出。要把多筆（或手錶的 GPX）合併，請用 ☰ →「GPX 合併匯出」。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1861,10 +1877,11 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.fillMaxWidth().clickable {
-                                    if (checked) exportSelection.remove(file.absolutePath) else exportSelection.add(file.absolutePath)
+                                    exportSelection.clear()
+                                    if (!checked) exportSelection.add(file.absolutePath)
                                 },
                             ) {
-                                Checkbox(checked = checked, onCheckedChange = null)
+                                RadioButton(selected = checked, onClick = null)
                                 Text(
                                     "${file.nameWithoutExtension}（$count 個點${if (recordingNow) "・記錄中" else ""}）",
                                     style = MaterialTheme.typography.bodySmall,
@@ -1875,15 +1892,116 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(enabled = chosen.isNotEmpty(), onClick = {
                                 exportFiles = chosen; exportGpxLauncher.launch("${exportName(chosen)}.gpx")
-                            }) { Text(if (chosen.size > 1) "合併匯出 GPX" else "匯出 GPX") }
+                            }) { Text("匯出 GPX") }
                             OutlinedButton(enabled = chosen.isNotEmpty(), onClick = {
                                 exportFiles = chosen; exportKmlLauncher.launch("${exportName(chosen)}.kml")
-                            }) { Text(if (chosen.size > 1) "合併匯出 KML" else "匯出 KML") }
+                            }) { Text("匯出 KML") }
                         }
                     }
                 }
             },
             confirmButton = { TextButton(onClick = { showTrackSettingsDialog = false }) { Text("關閉") } },
+        )
+    }
+
+    // ---- GPX 合併匯出：App 的記錄＋匯入的 GPX（例如手錶）合併成新檔，原始檔一律不動 ----
+    val mergeSelection = remember { mutableStateListOf<String>() }
+    var mergeListVersion by remember { mutableStateOf(0) } // bumped after an import to re-list
+    val importGpxLauncher = rememberLauncherForActivityResult(remember { OpenDocumentsAtLastFolder(prefs) }) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        prefs.lastGpxFolderUri = uris.first().toString()
+        scope.launch {
+            var ok = 0
+            val failed = mutableListOf<String>()
+            for (uri in uris) {
+                val displayName = withContext(Dispatchers.IO) {
+                    context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) c.getString(0) else null
+                    }
+                } ?: uri.lastPathSegment ?: "匯入.gpx"
+                try {
+                    val copy = withContext(Dispatchers.IO) {
+                        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: throw Exception("無法讀取")
+                        if (!String(bytes, Charsets.UTF_8).contains("<trkpt", ignoreCase = true)) throw Exception("沒有軌跡點")
+                        // A copy inside the app — the file on the phone stays exactly as it was.
+                        val dir = importedGpxDir(context)
+                        val base = displayName.substringBeforeLast('.').replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                        var target = File(dir, "$base.gpx"); var n = 2
+                        while (target.exists()) target = File(dir, "${base}_${n++}.gpx")
+                        target.writeBytes(bytes)
+                        target
+                    }
+                    mergeSelection.add(copy.absolutePath)
+                    ok++
+                } catch (e: Exception) {
+                    failed += "$displayName（${e.message}）"
+                }
+            }
+            mergeListVersion++
+            Toast.makeText(
+                context,
+                "已匯入 $ok 個 GPX" + if (failed.isNotEmpty()) "；無法匯入：" + failed.joinToString("、") else "",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+    if (showMergeDialog) {
+        val sources = remember(showMergeDialog, mergeListVersion) {
+            (recordedTracks(context).map { Triple(it, trackPointCount(it), false) } +
+                importedTracks(context).map { Triple(it, trackPointCount(it), true) })
+        }
+        AlertDialog(
+            onDismissRequest = { showMergeDialog = false },
+            title = { Text("GPX 合併匯出") },
+            text = {
+                Column(modifier = Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState())) {
+                    Text(
+                        "勾選兩個以上的檔案合併成一個新檔。原始的 GPX（App 的記錄、你匯入的檔案、手機裡的原檔）都會保留，不會被修改或刪除。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedButton(onClick = { importGpxLauncher.launch(arrayOf("*/*")) }) { Text("＋ 匯入 GPX（例如手錶的軌跡）") }
+                    Spacer(Modifier.height(8.dp))
+                    if (sources.isEmpty()) Text("還沒有任何 GPX。", style = MaterialTheme.typography.bodySmall)
+                    sources.forEach { (file, count, imported) ->
+                        val checked = file.absolutePath in mergeSelection
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                if (checked) mergeSelection.remove(file.absolutePath) else mergeSelection.add(file.absolutePath)
+                            },
+                        ) {
+                            Checkbox(checked = checked, onCheckedChange = null)
+                            Text(
+                                (if (imported) "📥 " else "⏺ ") + "${file.nameWithoutExtension}（$count 個點）",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Text("合併方式", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { mergeFillGaps = true }) {
+                        RadioButton(selected = mergeFillGaps, onClick = null)
+                        Text("補空檔：點最多的檔為主，其他檔只補它沒記到的時段（手機＋手錶互補）", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { mergeFillGaps = false }) {
+                        RadioButton(selected = !mergeFillGaps, onClick = null)
+                        Text("各自一段：每個檔原樣保留成獨立段落，依時間排列", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    val chosen = sources.map { it.first }.filter { it.absolutePath in mergeSelection }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(enabled = chosen.size >= 2, onClick = {
+                            exportFiles = chosen; exportGpxLauncher.launch("${exportName(chosen)}.gpx")
+                        }) { Text("合併匯出 GPX") }
+                        OutlinedButton(enabled = chosen.size >= 2, onClick = {
+                            exportFiles = chosen; exportKmlLauncher.launch("${exportName(chosen)}.kml")
+                        }) { Text("合併匯出 KML") }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showMergeDialog = false }) { Text("關閉") } },
         )
     }
 
@@ -2455,6 +2573,10 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 DropdownMenuItem(
                     text = { Text("軌跡記錄設定（間隔／長度／匯出）") },
                     onClick = { showFunctionMenu = false; exportSelection.clear(); showTrackSettingsDialog = true },
+                )
+                DropdownMenuItem(
+                    text = { Text("GPX 合併匯出（可匯入手錶等 GPX）") },
+                    onClick = { showFunctionMenu = false; mergeSelection.clear(); showMergeDialog = true },
                 )
                 DropdownMenuItem(
                     text = { Text("地圖設定") },

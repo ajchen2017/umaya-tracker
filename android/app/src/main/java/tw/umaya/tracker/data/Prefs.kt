@@ -135,6 +135,11 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean("keep_gps_centered", true)
         set(value) = prefs.edit().putBoolean("keep_gps_centered", value).apply()
 
+    /** Old automatic recording names renamed to 行程名稱-yyyyMMdd-HHmmss (done once). */
+    var trackNamesMigrated: Boolean
+        get() = prefs.getBoolean("track_names_migrated", false)
+        set(value) = prefs.edit().putBoolean("track_names_migrated", value).apply()
+
     var statsPanelExpanded: Boolean
         get() = prefs.getBoolean("stats_panel_expanded", true)
         set(value) = prefs.edit().putBoolean("stats_panel_expanded", value).apply()

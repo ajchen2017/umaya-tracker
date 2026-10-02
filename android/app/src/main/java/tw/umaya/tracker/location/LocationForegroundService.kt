@@ -69,6 +69,7 @@ class LocationForegroundService : Service() {
         const val ACTION_GPX_STOP = "tw.umaya.tracker.action.GPX_STOP"
         // GPX_START: true = 繼續 an on-disk unfinished file (prefs.gpxFilePath), false/absent = 重新開始
         const val EXTRA_GPX_RESUME_EXISTING = "gpx_resume_existing"
+        const val EXTRA_GPX_TITLE = "gpx_title" // 行程名稱 for the file name
         // GPX_STOP: EXTRA_NAME/EXTRA_FORMAT ("gpx"/"kml"); EXTRA_OUTPUT_URI = where the hiker chose to save it
         const val EXTRA_GPX_NAME = "gpx_name"
         const val EXTRA_GPX_FORMAT = "gpx_format"
@@ -232,7 +233,7 @@ class LocationForegroundService : Service() {
                 // saved when it ended); a new trip starts a new file. Nothing is ever deleted — an
                 // older file stays listed under 軌跡記錄設定 → 匯出.
                 val resumePath = if (resumeExisting) prefs.gpxFilePath ?: prefs.lastFinishedGpxPath else null
-                val path = gpxRecorder.start(resumePath)
+                val path = gpxRecorder.start(resumePath, intent?.getStringExtra(EXTRA_GPX_TITLE) ?: DEFAULT_TRACK_TITLE)
                 prefs.gpxFilePath = path
                 prefs.isGpxRecording = true
                 prefs.isGpxPaused = false
