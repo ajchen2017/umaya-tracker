@@ -641,6 +641,13 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     val mapsforgeDownloader = remember { MapsforgeDownloader(context) }
     var showWorldMaps by remember { mutableStateOf(false) } // 🌍 下載世界各地離線地圖
     var torchOn by remember { mutableStateOf(false) }       // 手電筒
+    var showGnss by remember { mutableStateOf(false) }      // GPS 衛星狀態
+    var keepScreenOn by remember { mutableStateOf(prefs.keepScreenOn) }
+    LaunchedEffect(keepScreenOn) { // 螢幕恆亮
+        val w = (context as ComponentActivity).window
+        if (keepScreenOn) w.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
     var packRevision by remember { mutableStateOf(0) } // bumped after a pack is downloaded/imported/deleted
     val offlinePacks = remember(packRevision) { mapsforgeDownloader.allPacks() }
     val installedPackIds = remember(packRevision) {
@@ -1602,6 +1609,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         }
     }
 
+    if (showGnss) Isolated { GnssStatusDialog { showGnss = false } }
     if (showWorldMaps) Isolated {
         WorldMapsDialog(mapsforgeDownloader, onInstalled = { packRevision++ }, onDismiss = { showWorldMaps = false })
     }
@@ -2821,6 +2829,20 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     else -> {
                         Text("設定", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp, modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp))
                         Item("map", "地圖設定", sub = "地圖包、圖層、比例尺、文字、方向、GPS 置中") { showMapSettingsDialog = true }
+                        Item("gps", "GPS 衛星狀態", sub = "目前衛星數與訊號強度") { showGnss = true }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable { keepScreenOn = !keepScreenOn; prefs.keepScreenOn = keepScreenOn }
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                        ) {
+                            LineIcon("sun", size = 20.dp)
+                            Spacer(Modifier.width(14.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("螢幕恆亮", color = Color.White, fontSize = 15.sp)
+                                Text("地圖頁不自動關閉螢幕（較耗電）", color = Color.White.copy(alpha = 0.55f), fontSize = 11.sp)
+                            }
+                            Switch(checked = keepScreenOn, onCheckedChange = { keepScreenOn = it; prefs.keepScreenOn = it })
+                        }
                         Item("battery", "背景活動管理") { showBackgroundExecDialog = true }
                         Item("home", "切換身分", sub = "需要身分 PIN") { RoleLock.switchRole(context as ComponentActivity) }
                         Item("logout", "登出") { prefs.authToken = null; prefs.shareToken = null; onLoggedOut() }

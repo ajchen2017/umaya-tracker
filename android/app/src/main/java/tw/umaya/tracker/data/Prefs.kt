@@ -150,6 +150,11 @@ class Prefs(context: Context) {
         get() = prefs.getString("role_pin_hash", null)
         set(value) = prefs.edit().putString("role_pin_hash", value).apply()
 
+    /** 螢幕恆亮 on the map screen (default off — it costs battery). */
+    var keepScreenOn: Boolean
+        get() = prefs.getBoolean("keep_screen_on", false)
+        set(value) = prefs.edit().putBoolean("keep_screen_on", value).apply()
+
     var statsPanelExpanded: Boolean
         get() = prefs.getBoolean("stats_panel_expanded", true)
         set(value) = prefs.edit().putBoolean("stats_panel_expanded", value).apply()

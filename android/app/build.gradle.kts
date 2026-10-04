@@ -25,7 +25,9 @@ android {
         minSdk = 26
         targetSdk = 34
         versionCode = buildNumber
-        versionName = "${buildNumber / 10}.${buildNumber % 10}"
+        // The shown version restarted at 1.0 (build 54) and still steps by 0.1; versionCode keeps
+        // climbing from the old numbering so updates install over earlier builds.
+        versionName = (buildNumber - 44).let { "${it / 10}.${it % 10}" }
 
         buildConfigField("String", "API_BASE_URL", "\"https://tracker.umaya.tw/api/\"")
     }
