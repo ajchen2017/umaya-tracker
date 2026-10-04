@@ -14,7 +14,22 @@
   header h1 { font-size: 15px; margin: 0; flex: none; }
   #place { flex: 1; color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   header button, .btn { background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.22); border-radius: 8px; padding: 4px 9px; font-size: 13px; }
-  #map { height: 30vh; min-height: 150px; flex: none; }
+  #mapbox { position: relative; height: 34vh; min-height: 170px; flex: none; }
+  #map { position: absolute; inset: 0; }
+  #map .leaflet-tile-pane { filter: brightness(.55) saturate(.7); } /* darker base so the wind lines stand out */
+  #wind { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 450; }
+  #layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 440; }
+  #layers { display: flex; gap: 4px; padding: 0 10px 6px; background: #202020; overflow-x: auto; scrollbar-width: none; flex: none; }
+  #layers button { flex: none; background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.2); border-radius: 14px; padding: 3px 10px; font-size: 12px; }
+  #layers button.on { background: var(--accent); color: #000; border-color: var(--accent); font-weight: bold; }
+  #layers .sep { flex: none; width: 1px; background: rgba(255,255,255,.2); margin: 2px 2px; }
+  #windInfo { position: absolute; left: 6px; bottom: 6px; z-index: 460; background: rgba(20,20,20,.78); border-radius: 8px;
+    padding: 3px 7px; font-size: 11px; line-height: 15px; pointer-events: none; }
+  #windInfo i { display: inline-block; width: 14px; height: 4px; border-radius: 2px; margin: 0 2px 1px 6px; vertical-align: middle; }
+  #timebar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #202020; flex: none; }
+  #timebar input { flex: 1; accent-color: var(--accent); }
+  #hourLabel { width: 92px; font-size: 12px; text-align: right; color: #fff; }
+  #play { width: 34px; }
   #main { flex: 1; overflow-y: auto; padding: 8px 10px 16px; }
   .card { background: var(--card); border-radius: 12px; padding: 8px 10px; margin-bottom: 8px; }
   .card h2 { font-size: 13px; margin: 0 0 6px; display: flex; align-items: baseline; gap: 6px; }
@@ -51,7 +66,9 @@
   <button id="btnMe" title="回到我的位置">📍</button>
   <button id="btnClose">✕</button>
 </header>
-<div id="map"></div>
+<div id="mapbox"><div id="map"></div><canvas id="layer"></canvas><canvas id="wind"></canvas><div id="windInfo">風場載入中…</div></div>
+<div id="timebar"><button id="play" class="btn">▶</button><input id="hour" type="range" min="0" max="0" value="0"><span id="hourLabel">—</span></div>
+<div id="layers"></div>
 <div id="main">
   <div class="card"><div id="models"></div></div>
   <div id="status">讀取預報中…</div>
@@ -95,7 +112,7 @@ const marker = L.marker([state.lat, state.lon]).addTo(map);
 map.on('click', (e) => setPlace(e.latlng.lat, e.latlng.lng));
 document.getElementById('btnMe').onclick = () => { setPlace(home.lat, home.lon); map.setView([home.lat, home.lon], 10); };
 document.getElementById('btnClose').onclick = () => { if (bridge) bridge.close(); else history.back(); };
-function setPlace(lat, lon) { state.lat = lat; state.lon = lon; marker.setLatLng([lat, lon]); load(); }
+function setPlace(lat, lon) { state.lat = lat; state.lon = lon; marker.setLatLng([lat, lon]); load(); updateWindInfo(); }
 
 // ---------- models ----------
 function renderModels() {
@@ -103,7 +120,7 @@ function renderModels() {
     `<button data-m="${m.id}" class="${m.id === state.model ? 'on' : ''}">${m.name}<small>${m.note}</small></button>`).join('');
   document.querySelectorAll('#models button').forEach((b) => b.onclick = () => {
     state.model = b.dataset.m; try { localStorage.setItem('wxModel', state.model); } catch (_) {}
-    renderModels(); if (state.data) render();
+    renderModels(); if (state.data) render(); loadWind();
   });
 }
 
@@ -186,6 +203,7 @@ function render() {
   document.querySelectorAll('.day').forEach((el) => el.onclick = () => {
     const k = +el.dataset.k; if (!avail[k]) return;
     state.day = k; render(); scrollGramTo(k);
+    if (wind.times) { const i = wind.times.indexOf(state.data.daily.time[k] + 'T12:00'); if (i >= 0) setHour(i, true); }
   });
   drawGram(days.length);
   renderElev();
@@ -220,8 +238,7 @@ function drawGram(nDays) {
     ROWS.forEach(([, k], r) => {
       const v = H(k)[i] ?? 0;
       g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(x + 1, TOP + r * ROW_H + 1, COL - 2, ROW_H - 2); // empty cell stays visible
-      g.fillStyle = `rgba(235,240,245,${(v / 100) * 0.9})`; g.fillRect(x + 1, TOP + r * ROW_H + 1, COL - 2, ROW_H - 2);
-      if (v >= 20) { g.fillStyle = v >= 60 ? '#222' : '#fff'; g.fillText(Math.round(v), x + COL / 2, TOP + r * ROW_H + ROW_H / 2); }
+      drawCloud(g, x + COL / 2, TOP + r * ROW_H + ROW_H / 2, v, k === 'cloud_cover_low');
     });
     let rain = 0; for (let j = i; j < i + 3; j++) rain += H('precipitation')[j] || 0;
     const ry = TOP + ROWS.length * ROW_H;
@@ -239,6 +256,18 @@ function drawGram(nDays) {
   g.stroke();
   g.fillStyle = '#ffccbc';
   temps.forEach((t, c) => { if (t != null && c % 2 === 0) g.fillText(Math.round(t) + '°', c * COL + COL / 2, yOf(t) - 8); });
+}
+/** A cloud glyph for a cover percentage: bigger and whiter the more cloud; nothing below 3 %. */
+function drawCloud(g, cx, cy, v, low) {
+  if (v < 3) return;
+  const f = v / 100, k = 0.45 + 0.75 * Math.sqrt(f);
+  g.fillStyle = low ? `rgba(200,210,218,${0.35 + 0.65 * f})` : `rgba(242,246,250,${0.35 + 0.65 * f})`;
+  g.beginPath();
+  g.arc(cx - 5 * k, cy + 1.5 * k, 3.6 * k, 0, Math.PI * 2);
+  g.arc(cx - 0.5 * k, cy - 1.5 * k, 5 * k, 0, Math.PI * 2);
+  g.arc(cx + 5 * k, cy + 1 * k, 3.8 * k, 0, Math.PI * 2);
+  g.rect(cx - 5 * k, cy + 1 * k, 10 * k, 4.2 * k);
+  g.fill();
 }
 function scrollGramTo(day) {
   const date = state.data.daily.time[day], times = state.data.hourly.time;
@@ -269,8 +298,249 @@ function renderElev() {
   document.getElementById('elev').innerHTML = '<tr><th>高度</th><th>氣溫</th><th>最大風速</th><th>降水</th></tr>' + rows.join('');
 }
 
+// ---------- 動態風場（Windy 式流線） ----------
+// A 7×7 grid of 10 m wind over the visible map (one multi-point Open-Meteo request), bilinearly
+// interpolated in space and linearly in time; particles drift along it leaving fading trails.
+const windCv = document.getElementById('wind'), wctx = windCv.getContext('2d');
+const wind = { nx: 7, ny: 7, grid: null, bounds: null, times: null, offset: 0, hour: 0, playing: false,
+  field: null, fcols: 0, frows: 0, particles: [], seq: 0, moving: false, W: 0, Hh: 0, inited: false };
+const STEP = 12, KPX = 0.06; // field cell size (px); km/h → px per frame
+const SPEED_COLORS = [[10, '#ffffff'], [20, '#b2ff59'], [35, '#ffee58'], [50, '#ffa726'], [Infinity, '#ff5252']];
+const DIRS = ['北', '東北', '東', '東南', '南', '西南', '西', '西北'];
+const colorFor = (kmh) => SPEED_COLORS.find(([lim]) => kmh < lim)[1];
+
+function sizeWind() {
+  const r = document.getElementById('mapbox').getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  wind.W = r.width; wind.Hh = r.height;
+  windCv.width = r.width * dpr; windCv.height = r.height * dpr;
+  layerCv.width = r.width * dpr; layerCv.height = r.height * dpr;
+  wctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+async function loadWind() {
+  const b = map.getBounds().pad(0.2), seq = ++wind.seq, lats = [], lons = [];
+  for (let j = 0; j < wind.ny; j++) for (let i = 0; i < wind.nx; i++) {
+    lats.push((b.getSouth() + (b.getNorth() - b.getSouth()) * j / (wind.ny - 1)).toFixed(3));
+    lons.push((b.getWest() + (b.getEast() - b.getWest()) * i / (wind.nx - 1)).toFixed(3));
+  }
+  const url = 'https://api.open-meteo.com/v1/forecast?' + new URLSearchParams({
+    latitude: lats.join(','), longitude: lons.join(','), hourly: ['wind_speed_10m', 'wind_direction_10m'].concat(LAYERS.filter((l) => l.key).map((l) => l.key)).join(','),
+    models: state.model, forecast_days: 16, timezone: 'auto',
+  });
+  try {
+    const arr = await (await fetch(url)).json();
+    if (seq !== wind.seq) return;
+    if (!Array.isArray(arr)) throw new Error(arr.reason || '風場');
+    const key = (h, base) => Object.keys(h).find((k) => k.startsWith(base));
+    wind.grid = arr.map((pt) => {
+      const g = { s: pt.hourly[key(pt.hourly, 'wind_speed_10m')], d: pt.hourly[key(pt.hourly, 'wind_direction_10m_')] || pt.hourly[key(pt.hourly, 'wind_direction_10m')] };
+      for (const l of LAYERS) if (l.key) g[l.key] = pt.hourly[Object.keys(pt.hourly).find((k) => k === l.key || k.startsWith(l.key + '_'))];
+      return g;
+    });
+    wind.bounds = b; wind.times = arr[0].hourly.time; wind.offset = arr[0].utc_offset_seconds || 0;
+    const hr = document.getElementById('hour'); hr.max = wind.times.length - 1;
+    if (!wind.inited) { wind.inited = true; setHour(nowIndex(), false); } else setHour(Math.min(wind.hour, wind.times.length - 1), false);
+    buildField(); resetParticles();
+  } catch (e) {
+    if (seq === wind.seq) document.getElementById('windInfo').textContent = '風場載入失敗：' + e.message;
+  }
+}
+function nowIndex() {
+  const now = Date.now();
+  const i = wind.times.findIndex((t) => Date.parse(t + ':00Z') - wind.offset * 1000 >= now - 30 * 60000);
+  return Math.max(0, i);
+}
+function uvAt(lat, lon, h) {
+  const b = wind.bounds;
+  const fx = (lon - b.getWest()) / (b.getEast() - b.getWest()) * (wind.nx - 1);
+  const fy = (lat - b.getSouth()) / (b.getNorth() - b.getSouth()) * (wind.ny - 1);
+  if (fx < 0 || fy < 0 || fx > wind.nx - 1 || fy > wind.ny - 1) return null;
+  const i0 = Math.min(wind.nx - 2, Math.floor(fx)), j0 = Math.min(wind.ny - 2, Math.floor(fy)), tx = fx - i0, ty = fy - j0;
+  const h0 = Math.floor(h), h1 = Math.min(h0 + 1, wind.times.length - 1), th = h - h0;
+  let u = 0, v = 0, wsum = 0;
+  for (const [di, dj, w] of [[0, 0, (1 - tx) * (1 - ty)], [1, 0, tx * (1 - ty)], [0, 1, (1 - tx) * ty], [1, 1, tx * ty]]) {
+    const pt = wind.grid[(j0 + dj) * wind.nx + i0 + di];
+    for (const [hh, wt] of [[h0, 1 - th], [h1, th]]) {
+      const sp = pt.s[hh], d = pt.d[hh];
+      if (sp == null || d == null || w * wt === 0) continue;
+      const r = d * Math.PI / 180; // direction the wind comes FROM
+      u += -sp * Math.sin(r) * w * wt; v += -sp * Math.cos(r) * w * wt; wsum += w * wt;
+    }
+  }
+  return wsum ? [u / wsum, v / wsum] : null;
+}
+function buildField() {
+  if (!wind.grid || !wind.W) return;
+  wind.fcols = Math.ceil(wind.W / STEP) + 1; wind.frows = Math.ceil(wind.Hh / STEP) + 1;
+  const f = new Float32Array(wind.fcols * wind.frows * 3);
+  for (let r = 0; r < wind.frows; r++) for (let c = 0; c < wind.fcols; c++) {
+    const ll = map.containerPointToLatLng([c * STEP, r * STEP]), uv = uvAt(ll.lat, ll.lng, wind.hour), o = (r * wind.fcols + c) * 3;
+    if (uv) { f[o] = uv[0] * KPX; f[o + 1] = -uv[1] * KPX; f[o + 2] = Math.hypot(uv[0], uv[1]); } else f[o + 2] = -1;
+  }
+  wind.field = f;
+  drawLayer();
+  updateWindInfo();
+}
+
+// ---------- 色塊圖層：雲量／雨量／氣溫 ----------
+const LAYERS = [
+  { id: 'none', name: '無' },
+  { id: 'cloud', name: '全雲', key: 'cloud_cover', unit: '%' },
+  { id: 'low', name: '低雲', key: 'cloud_cover_low', unit: '%' },
+  { id: 'mid', name: '中雲', key: 'cloud_cover_mid', unit: '%' },
+  { id: 'high', name: '高雲', key: 'cloud_cover_high', unit: '%' },
+  { id: 'rain', name: '雨量', key: 'precipitation', unit: 'mm/h' },
+  { id: 'temp', name: '氣溫', key: 'temperature_2m', unit: '°C' },
+];
+let layerId = (() => { try { return localStorage.getItem('wxLayer') || 'cloud'; } catch (_) { return 'cloud'; } })();
+let showWind = (() => { try { return localStorage.getItem('wxWind') !== '0'; } catch (_) { return true; } })();
+const layerCv = document.getElementById('layer'), lctx = layerCv.getContext('2d');
+const RAIN_STOPS = [[0.1, [129, 212, 250, 0.45]], [0.5, [41, 182, 246, 0.6]], [1.5, [30, 136, 229, 0.7]], [3, [124, 179, 66, 0.75]],
+  [6, [255, 202, 40, 0.8]], [10, [255, 112, 67, 0.85]], [20, [216, 27, 96, 0.9]]];
+const TEMP_STOPS = [[-25, [74, 20, 140]], [-15, [57, 73, 171]], [-5, [30, 136, 229]], [0, [128, 222, 234]], [5, [129, 199, 132]],
+  [15, [205, 220, 57]], [22, [255, 193, 7]], [28, [255, 112, 67]], [35, [198, 40, 40]]];
+function ramp(stops, v) {
+  if (v <= stops[0][0]) return stops[0][1];
+  for (let k = 1; k < stops.length; k++) if (v <= stops[k][0]) {
+    const [a, ca] = stops[k - 1], [b, cb] = stops[k], f = (v - a) / (b - a);
+    return ca.map((x, n) => x + (cb[n] - x) * f);
+  }
+  return stops[stops.length - 1][1];
+}
+function layerColor(id, v) { // → [r, g, b, a 0..1] or null
+  if (v == null) return null;
+  if (id === 'rain') return v < 0.05 ? null : ramp(RAIN_STOPS, v);
+  if (id === 'temp') return [...ramp(TEMP_STOPS, v), 0.5];
+  return v < 3 ? null : [235, 240, 245, (v / 100) * 0.8]; // clouds
+}
+function scalarAt(lat, lon, h, key) {
+  const b = wind.bounds;
+  const fx = (lon - b.getWest()) / (b.getEast() - b.getWest()) * (wind.nx - 1);
+  const fy = (lat - b.getSouth()) / (b.getNorth() - b.getSouth()) * (wind.ny - 1);
+  if (fx < 0 || fy < 0 || fx > wind.nx - 1 || fy > wind.ny - 1) return null;
+  const i0 = Math.min(wind.nx - 2, Math.floor(fx)), j0 = Math.min(wind.ny - 2, Math.floor(fy)), tx = fx - i0, ty = fy - j0;
+  const h0 = Math.floor(h), h1 = Math.min(h0 + 1, wind.times.length - 1), th = h - h0;
+  let sum = 0, wsum = 0;
+  for (const [di, dj, w] of [[0, 0, (1 - tx) * (1 - ty)], [1, 0, tx * (1 - ty)], [0, 1, (1 - tx) * ty], [1, 1, tx * ty]]) {
+    const arr = wind.grid[(j0 + dj) * wind.nx + i0 + di][key];
+    if (!arr) continue;
+    for (const [hh, wt] of [[h0, 1 - th], [h1, th]]) { const val = arr[hh]; if (val == null || w * wt === 0) continue; sum += val * w * wt; wsum += w * wt; }
+  }
+  return wsum ? sum / wsum : null;
+}
+const small = document.createElement('canvas'), sctx = small.getContext('2d');
+function drawLayer() {
+  lctx.setTransform(1, 0, 0, 1, 0, 0); lctx.clearRect(0, 0, layerCv.width, layerCv.height);
+  const L = LAYERS.find((l) => l.id === layerId);
+  if (!L || !L.key || !wind.grid) return;
+  // One pixel per field cell, then scaled up with smoothing — a soft colour field like Windy's.
+  small.width = wind.fcols; small.height = wind.frows;
+  const img = sctx.createImageData(wind.fcols, wind.frows);
+  for (let r = 0; r < wind.frows; r++) for (let c = 0; c < wind.fcols; c++) {
+    const ll = map.containerPointToLatLng([c * STEP, r * STEP]), col = layerColor(L.id, scalarAt(ll.lat, ll.lng, wind.hour, L.key));
+    if (!col) continue;
+    const o = (r * wind.fcols + c) * 4;
+    img.data[o] = col[0]; img.data[o + 1] = col[1]; img.data[o + 2] = col[2]; img.data[o + 3] = Math.round(col[3] * 255);
+  }
+  sctx.putImageData(img, 0, 0);
+  lctx.imageSmoothingEnabled = true;
+  lctx.drawImage(small, 0, 0, wind.fcols, wind.frows, 0, 0, wind.fcols * STEP * (layerCv.width / wind.W), wind.frows * STEP * (layerCv.height / wind.Hh));
+}
+function renderLayerButtons() {
+  document.getElementById('layers').innerHTML =
+    `<button data-w="1" class="${showWind ? 'on' : ''}">🌬️ 風線</button><span class="sep"></span>` +
+    LAYERS.map((l) => `<button data-l="${l.id}" class="${l.id === layerId ? 'on' : ''}">${l.name}</button>`).join('');
+  document.querySelectorAll('#layers button').forEach((b) => b.onclick = () => {
+    if (b.dataset.w) { showWind = !showWind; try { localStorage.setItem('wxWind', showWind ? '1' : '0'); } catch (_) {} if (!showWind) wctx.clearRect(0, 0, wind.W, wind.Hh); }
+    else { layerId = b.dataset.l; try { localStorage.setItem('wxLayer', layerId); } catch (_) {} drawLayer(); }
+    renderLayerButtons(); updateWindInfo();
+  });
+}
+function fieldAt(x, y) {
+  const c = Math.round(x / STEP), r = Math.round(y / STEP);
+  if (c < 0 || r < 0 || c >= wind.fcols || r >= wind.frows) return null;
+  const o = (r * wind.fcols + c) * 3;
+  return wind.field[o + 2] < 0 ? null : wind.field.subarray(o, o + 3);
+}
+function resetParticles() {
+  const n = Math.round(wind.W * wind.Hh / 260);
+  wind.particles = Array.from({ length: n }, () => ({ x: Math.random() * wind.W, y: Math.random() * wind.Hh, age: Math.random() * 80 }));
+  wctx.clearRect(0, 0, wind.W, wind.Hh);
+}
+function setHour(h, stop) {
+  wind.hour = h; if (stop) setPlaying(false);
+  document.getElementById('hour').value = Math.floor(h);
+  const t = wind.times[Math.floor(h)], dt = new Date(t.slice(0, 10) + 'T12:00');
+  document.getElementById('hourLabel').textContent = `${dt.getMonth() + 1}/${dt.getDate()} 週${WD[dt.getDay()]} ${t.slice(11, 16)}`;
+  if (!wind.playing) buildField();
+}
+function setPlaying(on) { wind.playing = on; document.getElementById('play').textContent = on ? '⏸' : '▶'; }
+function updateWindInfo() {
+  const el = document.getElementById('windInfo');
+  if (!wind.grid) return;
+  const uv = uvAt(state.lat, state.lon, wind.hour);
+  const here = uv ? (() => { const sp = Math.hypot(uv[0], uv[1]), from = (Math.atan2(-uv[0], -uv[1]) * 180 / Math.PI + 360) % 360;
+    return `📍 ${DIRS[Math.round(from / 45) % 8]}風 ${Math.round(sp)} km/h`; })() : '📍 —';
+  const L = LAYERS.find((l) => l.id === layerId), lv = L && L.key ? scalarAt(state.lat, state.lon, wind.hour, L.key) : null;
+  const layerTxt = L && L.key ? `・${L.name} ${lv == null ? '—' : (L.id === 'rain' ? lv.toFixed(1) : Math.round(lv))} ${L.unit}` : '';
+  const legend = L && L.id === 'rain' ? RAIN_STOPS.map(([v, c]) => `<i style="background:rgb(${c.slice(0, 3)})"></i>${v}`).join('') + ' mm/h'
+    : L && L.id === 'temp' ? TEMP_STOPS.filter((_, k) => k % 2 === 0).map(([v, c]) => `<i style="background:rgb(${c})"></i>${v}`).join('') + '°C'
+    : showWind ? SPEED_COLORS.map(([lim, c], k) => `<i style="background:${c}"></i>${k === 0 ? '' : SPEED_COLORS[k - 1][0]}`).join('') + ' km/h' : '';
+  el.innerHTML = (showWind ? here : '📍') + layerTxt + (legend ? '<br>' + legend : '');
+}
+document.getElementById('play').onclick = () => {
+  if (!wind.times) return;
+  if (!wind.playing && wind.hour >= wind.times.length - 1) wind.hour = 0;
+  setPlaying(!wind.playing);
+};
+document.getElementById('hour').oninput = (e) => setHour(+e.target.value, true);
+let lastTs = 0, labelTick = 0;
+function windFrame(ts) {
+  const dt = lastTs ? Math.min(0.1, (ts - lastTs) / 1000) : 0; lastTs = ts;
+  if (wind.field && !wind.moving) {
+    if (wind.playing) {
+      wind.hour = Math.min(wind.times.length - 1, wind.hour + dt * 3); // 3 forecast hours per second
+      buildField();
+      if ((labelTick += dt) > 0.15) { labelTick = 0; setHour(wind.hour, false); }
+      if (wind.hour >= wind.times.length - 1) setPlaying(false);
+    }
+    if (showWind) {
+    wctx.globalCompositeOperation = 'destination-in'; wctx.fillStyle = 'rgba(0,0,0,0.9)'; wctx.fillRect(0, 0, wind.W, wind.Hh);
+    wctx.globalCompositeOperation = 'source-over'; wctx.lineWidth = 1.4; wctx.lineCap = 'round';
+    const byColor = new Map();
+    for (const p of wind.particles) {
+      const f = fieldAt(p.x, p.y);
+      if (!f || ++p.age > 90) { p.x = Math.random() * wind.W; p.y = Math.random() * wind.Hh; p.age = 0; continue; }
+      const nx = p.x + f[0], ny = p.y + f[1], col = colorFor(f[2]);
+      if (!byColor.has(col)) byColor.set(col, []);
+      byColor.get(col).push(p.x, p.y, nx, ny);
+      p.x = nx; p.y = ny;
+    }
+    for (const [col, seg] of byColor) {
+      wctx.strokeStyle = col; wctx.globalAlpha = 0.85; wctx.beginPath();
+      for (let k = 0; k < seg.length; k += 4) { wctx.moveTo(seg[k], seg[k + 1]); wctx.lineTo(seg[k + 2], seg[k + 3]); }
+      wctx.stroke();
+    }
+    wctx.globalAlpha = 1;
+    }
+  }
+  requestAnimationFrame(windFrame);
+}
+let windReload = null;
+map.on('movestart zoomstart', () => { wind.moving = true; wctx.clearRect(0, 0, wind.W, wind.Hh); lctx.setTransform(1, 0, 0, 1, 0, 0); lctx.clearRect(0, 0, layerCv.width, layerCv.height); });
+map.on('moveend', () => {
+  wind.moving = false; sizeWind();
+  const view = map.getBounds();
+  if (wind.bounds && wind.bounds.contains(view)) { buildField(); resetParticles(); }
+  else { clearTimeout(windReload); windReload = setTimeout(loadWind, 400); }
+});
+addEventListener('resize', () => { map.invalidateSize(); sizeWind(); buildField(); resetParticles(); });
+
 renderModels();
+renderLayerButtons();
+sizeWind();
 load();
+loadWind();
+requestAnimationFrame(windFrame);
 </script>
 </body>
 </html>
