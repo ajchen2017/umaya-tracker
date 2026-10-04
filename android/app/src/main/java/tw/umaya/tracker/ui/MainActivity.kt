@@ -609,6 +609,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     var showStartGpxDialog by remember { mutableStateOf(false) }
     var showStopGpxConfirm by remember { mutableStateOf(false) }
     var showFunctionMenu by remember { mutableStateOf(false) }
+    var navTab by remember { mutableStateOf("map") }   // 底部導覽列: map / trip / track / settings
+    var toolsOpen by remember { mutableStateOf(false) } // 工具 button expanded
     var mapController by remember { mutableStateOf<HikeMapController?>(null) }
     var gpsFollowing by remember { mutableStateOf(true) }
     var gpsHasFix by remember { mutableStateOf(false) } // false while "connecting" — drives the pulse animation
@@ -2431,20 +2433,20 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         ) {
             // (0) GPX 軌跡記錄 — separate from the 行程 (☰): ⏺ starts, ⏸/▶️ pauses, ⏹ stops (confirmed).
             if (!gpxRecording) {
-                TopBarIconButton("⏺") {
+                TopBarIconButton("@rec") {
                     if ((prefs.gpxFilePath ?: prefs.lastFinishedGpxPath) != null) showStartGpxDialog = true
                     else startRecording(resumeExisting = false)
                 }
             } else {
                 TopBarIconButton(
-                    if (gpxPaused) "▶️" else "⏸",
+                    if (gpxPaused) "@play" else "@pause",
                     statusColor = if (gpxPaused) Color(0x55FFA000) else Color(0x55D32F2F), // red = 記錄中
                 ) { setGpxPaused(!gpxPaused) }
-                TopBarIconButton("⏹") { showStopGpxConfirm = true }
+                TopBarIconButton("@stop") { showStopGpxConfirm = true }
             }
 
             // (1) 回到現在手機 GPS 位置
-            TopBarIconButton("📍") {
+            TopBarIconButton("@locate") {
                 val hasFix = if (mapsforgeActive) offlineMapController?.currentFix() != null else mapController?.currentFix() != null
                 if (hasFix) {
                     if (mapsforgeActive) {
@@ -2493,7 +2495,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             }
 
             // (2) 航點 — 以目前位置新增，輸入名稱
-            TopBarIconButton("🚩") {
+            TopBarIconButton("@flag") {
                 if (!tripActive) {
                     Toast.makeText(context, "請先開始行程，才能新增航點", Toast.LENGTH_SHORT).show()
                 } else {
@@ -2504,7 +2506,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             }
 
             // (3) 即時拍照 → 航點
-            TopBarIconButton("📷") {
+            TopBarIconButton("@camera") {
                 if (!tripActive) {
                     Toast.makeText(context, "請先開始行程，才能拍照建立航點", Toast.LENGTH_SHORT).show()
                 } else {
@@ -2514,33 +2516,9 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 }
             }
 
-            // (4) 🔄 補點 — 取回 GPS 暫存的定位點（訊號中斷／飛航模式期間）、立即補傳離線點給留守人、重畫軌跡
-            TopBarIconButton("🔄") {
-                if (!tripActive) {
-                    Toast.makeText(context, "請先開始行程", Toast.LENGTH_SHORT).show()
-                } else {
-                    context.startService(
-                        Intent(context, LocationForegroundService::class.java).setAction(LocationForegroundService.ACTION_FLUSH)
-                    )
-                    scope.launch {
-                        delay(1_500) // let the flushed fixes land in the GPX file and the upload queue
-                        trackReloadKey++
-                        val hikeId = prefs.activeHikeId
-                        val pending = if (hikeId == -1L) 0 else withContext(Dispatchers.IO) {
-                            tw.umaya.tracker.data.AppDatabase.get(context).trackPointDao().pendingCount(hikeId)
-                        }
-                        Toast.makeText(
-                            context,
-                            if (pending > 0) "軌跡已更新；$pending 個離線點待補傳給留守人（有網路時立即上傳）" else "軌跡已更新，留守人那邊已是最新",
-                            Toast.LENGTH_LONG,
-                        ).show()
-                    }
-                }
-            }
-
             // (5) 打開/關閉 GPS — 搜尋中（還沒拿到第一個定位）琥珀底＋閃爍；定位就緒綠底＋✓
             TopBarIconButton(
-                label = if (gpsFollowing) "🛰️" else "🚫",
+                label = if (gpsFollowing) "@gps" else "@gpsoff",
                 modifier = if (gpsFollowing && !gpsHasFix) Modifier.alpha(gpsPulseAlpha) else Modifier,
                 statusColor = when {
                     !gpsFollowing -> null
@@ -2556,7 +2534,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
 
             // (5) 選用地圖 — 地圖頁是唯一選地圖的地方；地圖設定只管各地圖的設定。
             Box {
-                TopBarIconButton(mapSourceIcon(currentMapSource, currentOfflinePackId)) { showMapPicker = true }
+                TopBarIconButton("@layers") { showMapPicker = true }
                 DropdownMenu(expanded = showMapPicker, onDismissRequest = { showMapPicker = false }) {
                     val choices = listOf(
                         Triple(MapSource.OPENSTREETMAP, null, "OpenStreetMap（線上）"),
@@ -2580,112 +2558,6 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             }
         }
 
-        // ---- 2. 左上功能選單（跳出視窗）----
-        // 目前只接了已有對應功能的項目；其餘（載入GPX/KML、方位點、離線地圖安裝、
-        // GPS/軌跡/方位點細節設定）屬於下一階段的獨立子系統，先不做假按鈕。
-        Box(modifier = Modifier.align(Alignment.TopStart).padding(top = 60.dp, start = 8.dp)) {
-            MapCircleButton("☰", size = 40.dp) { showFunctionMenu = true }
-            PanelTheme { DropdownMenu(expanded = showFunctionMenu, onDismissRequest = { showFunctionMenu = false }) {
-                // 行程 (reporting to the guardian) lives here, first — kept away from the map's
-                // one-tap buttons so it only ever ends on purpose.
-                if (!hasActiveHike) {
-                    DropdownMenuItem(
-                        text = { Text("▶ 開始行程（回報位置給留守人）", fontWeight = FontWeight.Bold) },
-                        onClick = {
-                            showFunctionMenu = false
-                            error = null; continuingHikeId = null; startMode = null
-                            showStartHikeDialog = true
-                        },
-                    )
-                } else {
-                    DropdownMenuItem(
-                        text = { Text(if (isPaused) "▶ 繼續行程回報" else "⏸ 暫停行程回報", fontWeight = FontWeight.Bold) },
-                        onClick = { showFunctionMenu = false; setHikePaused(!isPaused) },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("🏁 結束行程", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error) },
-                        onClick = { showFunctionMenu = false; showEndTripConfirm = true },
-                    )
-                }
-                HorizontalDivider()
-                DropdownMenuItem(
-                    text = { Text("軌跡檔管理（匯入／顯示／偏離提醒）" + if (loadedRoutes.isNotEmpty()) "・${loadedRoutes.size}" else "") },
-                    onClick = { showFunctionMenu = false; showLoadRouteDialog = true },
-                )
-                DropdownMenuItem(
-                    text = { Text("3D 飛行回放（Relive）") },
-                    onClick = { showFunctionMenu = false; reliveSelection.clear(); showReliveDialog = true },
-                )
-                DropdownMenuItem(
-                    text = { Text("軌跡記錄設定（間隔／長度／匯出）") },
-                    onClick = { showFunctionMenu = false; exportSelection.clear(); showTrackSettingsDialog = true },
-                )
-                DropdownMenuItem(
-                    text = { Text("GPX 合併匯出（可匯入手錶等 GPX）") },
-                    onClick = { showFunctionMenu = false; mergeSelection.clear(); showMergeDialog = true },
-                )
-                DropdownMenuItem(
-                    text = { Text("地圖設定") },
-                    onClick = { showFunctionMenu = false; showMapSettingsDialog = true },
-                )
-                if (hasActiveHike) {
-                    DropdownMenuItem(
-                        text = { Text("回報設定（定位頻率）") },
-                        onClick = { showFunctionMenu = false; showIntervalDialog = true },
-                    )
-                }
-                DropdownMenuItem(
-                    text = { Text("留守人連結（複製／分享／Email）") },
-                    onClick = { showFunctionMenu = false; showShareLinkDialog = true },
-                )
-                DropdownMenuItem(
-                    text = { Text("背景活動管理") },
-                    onClick = { showFunctionMenu = false; showBackgroundExecDialog = true },
-                )
-                DropdownMenuItem(
-                    text = { Text("程式設定：登出") },
-                    onClick = {
-                        showFunctionMenu = false
-                        prefs.authToken = null
-                        prefs.shareToken = null
-                        onLoggedOut()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("結束") },
-                    onClick = { showFunctionMenu = false; showExitConfirmDialog = true },
-                )
-                HorizontalDivider()
-                Text(
-                    "版本 " + appVersionName(context),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                )
-            } }
-        }
-
-        // Back to the role picker (登山者／留守人) — top-right, mirrors ☰ on the top-left.
-        Column(
-            modifier = Modifier.align(Alignment.TopEnd).padding(top = 60.dp, end = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            MapCircleButton("🏠", size = 40.dp) { (context as ComponentActivity).finish() }
-            // ⛅ 天氣預報 for where the hiker is (best fix we have), else wherever the map is looking.
-            MapCircleButton("⛅", size = 40.dp) {
-                val here: Pair<Double, Double>? =
-                    phoneLocation?.let { it.latitude to it.longitude }
-                        ?: (if (mapsforgeActive) offlineMapController?.currentFix()?.let { it.latitude to it.longitude }
-                            else mapController?.currentFix()?.let { it.latitude to it.longitude })
-                        ?: (if (mapsforgeActive) offlineMapController?.mapCenter()?.let { it.latitude to it.longitude }
-                            else mapController?.mapCenter()?.let { it.latitude to it.longitude })
-                WeatherActivity.start(context, here?.first, here?.second)
-            }
-            MapCircleButton("📈", size = 40.dp) { showProfile = !showProfile }
-            MapCircleButton("📏", size = 40.dp) { if (measuring) { measuring = false; measurePoints.clear() } else startMeasuring() }
-            MapCircleButton("🏔️", size = 40.dp) { PeakFinderActivity.start(context) } // 山峰辨識 (AR)
-        }
-
         // ---- 3. 左側圓圈：登山者回報區（留守人追蹤）----
         Column(
             modifier = Modifier.align(Alignment.CenterStart).padding(start = 12.dp),
@@ -2696,13 +2568,13 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         ) {
             // Marks and SOS go to the guardian, so they need the reporting half of the trip.
             if (hasActiveHike) {
-                LabeledMapButton("😊", "我很好", Color(0xEE2E7D32)) {
+                LabeledMapButton("@smile", "我很好", Color(0xEE2E7D32)) {
                     context.startService(
                         Intent(context, LocationForegroundService::class.java)
                             .setAction(LocationForegroundService.ACTION_MARK_SAFE)
                     )
                 }
-                LabeledMapButton("⛺", "停駐中", Color(0xEEEF6C00)) {
+                LabeledMapButton("@tent", "停駐中", Color(0xEEEF6C00)) {
                     context.startService(
                         Intent(context, LocationForegroundService::class.java)
                             .setAction(LocationForegroundService.ACTION_MARK_CAMPING)
@@ -2728,7 +2600,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            MapCircleButton("＋") { if (mapsforgeActive) offlineMapController?.zoomIn() else mapController?.zoomIn() }
+            MapCircleButton("@plus") { if (mapsforgeActive) offlineMapController?.zoomIn() else mapController?.zoomIn() }
             Text(
                 zoomLevelDisplay,
                 color = Color.White,
@@ -2737,7 +2609,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     .background(Color(0xEE202020), CircleShape)
                     .padding(horizontal = 8.dp, vertical = 2.dp),
             )
-            MapCircleButton("－") { if (mapsforgeActive) offlineMapController?.zoomOut() else mapController?.zoomOut() }
+            MapCircleButton("@minus") { if (mapsforgeActive) offlineMapController?.zoomOut() else mapController?.zoomOut() }
         }
 
         // ---- 偏離航道提示 ----
@@ -2755,10 +2627,10 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         }
 
         // ---- 5. 右下：可收合的行程統計（時間、里程、步數、爬升/下降、指北針）----
-        if (tripActive && !showProfile && !measuring) { // the 📈 / 📏 panels take this spot
-            Box(modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = statusBarHeight + 8.dp)) {
+        if (tripActive && !showProfile && !measuring && !toolsOpen) { // the 📈 / 📏 panels take this spot
+            Box(modifier = Modifier.align(Alignment.BottomEnd).padding(end = 72.dp, bottom = statusBarHeight + 8.dp)) {
                 if (!showStatsPanel) {
-                    MapCircleButton("📊", size = 44.dp) { showStatsPanel = true; prefs.statsPanelExpanded = true }
+                    MapCircleButton("@stats", size = 44.dp) { showStatsPanel = true; prefs.statsPanelExpanded = true }
                 } else {
                     val startedAt = prefs.tripStartedAt
                     val totalMs = if (startedAt == 0L) 0L else (nowMs - startedAt).coerceAtLeast(0L)
@@ -2849,6 +2721,120 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             )
         }
 
+        // (drawn last so the sheet and the open 工具 list sit above every other map overlay)
+        // ---- 2. 底部導覽列的分頁內容（行程／軌跡／設定）：從導覽列上方彈出 ----
+        if (navTab != "map") {
+            Box(modifier = Modifier.fillMaxSize().background(Color(0x55000000)).clickable { navTab = "map" })
+            Column(
+                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    .padding(start = 8.dp, end = 8.dp, bottom = statusBarHeight + 6.dp)
+                    .background(Color(0xF2202020), RoundedCornerShape(14.dp)).padding(vertical = 6.dp),
+            ) {
+                @Composable
+                fun Item(icon: String, text: String, sub: String? = null, color: Color = Color.White, onClick: () -> Unit) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().clickable { navTab = "map"; onClick() }.padding(horizontal = 16.dp, vertical = 11.dp),
+                    ) {
+                        LineIcon(icon, tint = color, size = 20.dp)
+                        Spacer(Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text, color = color, fontSize = 15.sp)
+                            if (sub != null) Text(sub, color = Color.White.copy(alpha = 0.55f), fontSize = 11.sp)
+                        }
+                        LineIcon("chev", tint = Color.White.copy(alpha = 0.35f), size = 16.dp)
+                    }
+                }
+                when (navTab) {
+                    "trip" -> {
+                        Text("行程（回報位置給留守人）", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp, modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp))
+                        if (!hasActiveHike) Item("play", "開始行程", color = Color(0xFF81C784)) {
+                            error = null; continuingHikeId = null; startMode = null; showStartHikeDialog = true
+                        } else {
+                            Item(if (isPaused) "play" else "pause", if (isPaused) "繼續行程回報" else "暫停行程回報") { setHikePaused(!isPaused) }
+                            Item("stop", "結束行程", color = Color(0xFFFF8A80)) { showEndTripConfirm = true }
+                            Item("clock", "定位頻率", sub = intervalLabel(prefs.intervalSeconds)) { showIntervalDialog = true }
+                        }
+                        Item("link", "留守人連結", sub = "複製／分享／Email") { showShareLinkDialog = true }
+                    }
+                    "track" -> {
+                        Text("軌跡", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp, modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp))
+                        Item("route", "GPX 記錄設定", sub = gpxIntervalLabel(gpxMinIntervalSec) + "・最短 $gpxMinDistanceM 米・匯出") { exportSelection.clear(); showTrackSettingsDialog = true }
+                        Item("download", "軌跡檔管理", sub = "匯入、顯示／隱藏、偏離提醒" + if (loadedRoutes.isNotEmpty()) "・${loadedRoutes.size} 個" else "") { showLoadRouteDialog = true }
+                        Item("merge", "GPX 合併匯出", sub = "可匯入手錶的 GPX，原檔保留") { mergeSelection.clear(); showMergeDialog = true }
+                        Item("film", "3D 飛行回放") { reliveSelection.clear(); showReliveDialog = true }
+                    }
+                    else -> {
+                        Text("設定", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp, modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp))
+                        Item("map", "地圖設定", sub = "地圖包、圖層、比例尺、文字、方向、GPS 置中") { showMapSettingsDialog = true }
+                        Item("battery", "背景活動管理") { showBackgroundExecDialog = true }
+                        Item("home", "切換身分", sub = "需要身分 PIN") { RoleLock.switchRole(context as ComponentActivity) }
+                        Item("logout", "登出") { prefs.authToken = null; prefs.shareToken = null; onLoggedOut() }
+                        Item("power", "結束程式") { showExitConfirmDialog = true }
+                        Text("版本 " + appVersionName(context), color = Color.White.copy(alpha = 0.45f), fontSize = 11.sp, modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 6.dp))
+                    }
+                }
+            }
+        }
+
+        // ---- 工具（收合）：補點／天氣／高度剖面／測距／山峰辨識 ----
+        if (toolsOpen) Box(modifier = Modifier.fillMaxSize().background(Color(0x33000000)).clickable { toolsOpen = false })
+        if (navTab == "map") Column(
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = statusBarHeight + 10.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (toolsOpen) {
+                @Composable
+                fun Tool(icon: String, label: String, onClick: () -> Unit) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { toolsOpen = false; onClick() }) {
+                        Text(label, color = Color.White, fontSize = 13.sp, modifier = Modifier.background(Color(0xCC202020), RoundedCornerShape(8.dp)).padding(horizontal = 9.dp, vertical = 4.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Box(modifier = Modifier.size(46.dp).background(Color(0xFF00796B), CircleShape), contentAlignment = Alignment.Center) { LineIcon(icon) }
+                    }
+                }
+                Tool("refresh", "補點") {
+                    // 取回 GPS 暫存的定位點（訊號中斷／飛航模式期間）、立即補傳離線點給留守人、重畫軌跡
+                    if (!tripActive) {
+                        Toast.makeText(context, "請先開始行程", Toast.LENGTH_SHORT).show()
+                    } else {
+                        context.startService(Intent(context, LocationForegroundService::class.java).setAction(LocationForegroundService.ACTION_FLUSH))
+                        scope.launch {
+                            delay(1_500) // let the flushed fixes land in the GPX file and the upload queue
+                            trackReloadKey++
+                            val hikeId = prefs.activeHikeId
+                            val pending = if (hikeId == -1L) 0 else withContext(Dispatchers.IO) {
+                                tw.umaya.tracker.data.AppDatabase.get(context).trackPointDao().pendingCount(hikeId)
+                            }
+                            Toast.makeText(
+                                context,
+                                if (pending > 0) "軌跡已更新；$pending 個離線點待補傳給留守人（有網路時立即上傳）" else "軌跡已更新，留守人那邊已是最新",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                }
+                Tool("cloud", "天氣") {
+                    // for where the hiker is (best fix we have), else wherever the map is looking
+                    val here: Pair<Double, Double>? =
+                        phoneLocation?.let { it.latitude to it.longitude }
+                            ?: (if (mapsforgeActive) offlineMapController?.currentFix()?.let { it.latitude to it.longitude }
+                                else mapController?.currentFix()?.let { it.latitude to it.longitude })
+                            ?: (if (mapsforgeActive) offlineMapController?.mapCenter()?.let { it.latitude to it.longitude }
+                                else mapController?.mapCenter()?.let { it.latitude to it.longitude })
+                    WeatherActivity.start(context, here?.first, here?.second)
+                }
+                Tool("chart", "高度剖面") { showProfile = !showProfile }
+                Tool("ruler", if (measuring) "結束測距" else "測距") { if (measuring) { measuring = false; measurePoints.clear() } else startMeasuring() }
+                Tool("mountain", "山峰辨識") { PeakFinderActivity.start(context) }
+            }
+            Box(
+                modifier = Modifier.size(54.dp).background(if (toolsOpen) Color(0xFF202020) else Color(0xEE00796B), CircleShape)
+                    .clickable { toolsOpen = !toolsOpen },
+                contentAlignment = Alignment.Center,
+            ) { LineIcon(if (toolsOpen) "x" else "tools", size = 24.dp) }
+        }
+
         // ---- 狀態列／錯誤訊息（原本頁面上的伺服器狀態、行程狀態，移到底部一條窄列）----
         Column(
             modifier = Modifier
@@ -2901,6 +2887,21 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     msg, color = MaterialTheme.colorScheme.error, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.clickable { Toast.makeText(context, msg, Toast.LENGTH_LONG).show() }, // full text on tap
                 )
+            }
+            // 底部導覽列: 地圖 (close any sheet) / 行程 / 軌跡 / 設定
+            Row(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                listOf("map" to ("map" to "地圖"), "trip" to ("play" to "行程"), "track" to ("route" to "軌跡"), "settings" to ("gear" to "設定"))
+                    .forEach { (tab, iconLabel) ->
+                        val on = navTab == tab
+                        val c = if (on) Color(0xFF64B5F6) else Color(0xFFBDBDBD)
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.weight(1f).clickable { navTab = if (on && tab != "map") "map" else tab; toolsOpen = false }.padding(vertical = 4.dp),
+                        ) {
+                            LineIcon(iconLabel.first, tint = c, size = 22.dp)
+                            Text(iconLabel.second, color = c, fontSize = 11.sp)
+                        }
+                    }
             }
         }
     } }

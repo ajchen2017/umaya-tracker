@@ -32,13 +32,15 @@ import tw.umaya.tracker.guardian.GuardianActivity
  */
 class HomeActivity : ComponentActivity() {
 
-    /** After a crash, offer to share its stack trace (e.g. by email/LINE) so it can be diagnosed remotely. */
-    private fun offerCrashReport() {
+    /** After a crash, offer to share its stack trace (e.g. by email/LINE) so it can be diagnosed remotely.
+     *  [then] runs once the offer is answered (or right away when there was no crash). */
+    private fun offerCrashReport(then: () -> Unit) {
         val file = tw.umaya.tracker.crashFile(this)
-        if (!file.exists()) return
+        if (!file.exists()) return then()
         val report = file.readText()
         file.delete()
         android.app.AlertDialog.Builder(this)
+            .setOnDismissListener { then() }
             .setTitle("上次 App 異常結束")
             .setMessage("要把錯誤資訊傳給開發者嗎？（只有錯誤記錄，不含位置或個人資料）")
             .setPositiveButton("分享") { _, _ ->
@@ -55,15 +57,28 @@ class HomeActivity : ComponentActivity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        offerCrashReport()
+        val prefs = tw.umaya.tracker.data.Prefs(this)
+        offerCrashReport {
+            // 身分鎖定: a phone that already has its role opens straight into it.
+            prefs.appRole?.let { open(it); return@offerCrashReport }
+        }
+        if (prefs.appRole != null) return
         setContent {
             MaterialTheme {
-                RoleTile(
-                    onPickHiker = { startActivity(Intent(this, MainActivity::class.java)) },
-                    onPickGuardian = { startActivity(Intent(this, GuardianActivity::class.java)) },
-                )
+                RoleTile(onPickHiker = { pick(prefs, RoleLock.HIKER) }, onPickGuardian = { pick(prefs, RoleLock.GUARDIAN) })
             }
         }
+    }
+
+    /** First pick on this phone: set the PIN that guards switching later, then lock the role. */
+    private fun pick(prefs: tw.umaya.tracker.data.Prefs, role: String) {
+        val lock = { prefs.appRole = role; open(role) }
+        if (prefs.rolePinHash == null) RoleLock.askNewPin(this) { h -> prefs.rolePinHash = h; lock() } else lock()
+    }
+
+    private fun open(role: String) {
+        startActivity(Intent(this, if (role == RoleLock.GUARDIAN) GuardianActivity::class.java else MainActivity::class.java))
+        finish()
     }
 }
 

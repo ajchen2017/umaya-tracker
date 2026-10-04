@@ -38,7 +38,9 @@ fun MapCircleButton(
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, fontSize = 20.sp, color = Color.White)
+        // "@name" = one of the line icons (LineIcons.kt); anything else is drawn as text/emoji
+        if (label.startsWith("@")) LineIcon(label.drop(1), size = if (size < 48.dp) 22.dp else 24.dp)
+        else Text(label, fontSize = 20.sp, color = Color.White)
     }
 }
 
@@ -83,7 +85,8 @@ fun TopBarIconButton(
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
+        if (label.startsWith("@")) LineIcon(label.drop(1), tint = if (enabled) Color.White else Color.White.copy(alpha = 0.4f))
+        else Text(
             label,
             fontSize = 22.sp,
             color = if (enabled) Color.White else Color.White.copy(alpha = 0.4f),

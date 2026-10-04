@@ -140,6 +140,16 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean("track_names_migrated", false)
         set(value) = prefs.edit().putBoolean("track_names_migrated", value).apply()
 
+    /** 身分鎖定: "hiker" / "guardian" once chosen on this phone; null = ask on launch. */
+    var appRole: String?
+        get() = prefs.getString("app_role", null)
+        set(value) = prefs.edit().putString("app_role", value).apply()
+
+    /** SHA-256 of the PIN that must be entered to switch 身分. */
+    var rolePinHash: String?
+        get() = prefs.getString("role_pin_hash", null)
+        set(value) = prefs.edit().putString("role_pin_hash", value).apply()
+
     var statsPanelExpanded: Boolean
         get() = prefs.getBoolean("stats_panel_expanded", true)
         set(value) = prefs.edit().putBoolean("stats_panel_expanded", value).apply()

@@ -64,7 +64,7 @@ class GuardianActivity : AppCompatActivity() {
             webContainer.visibility = android.view.View.GONE
             inputContainer.visibility = android.view.View.VISIBLE
         }
-        btnHome.setOnClickListener { finish() } // back to the role picker, not app exit
+        btnHome.setOnClickListener { tw.umaya.tracker.ui.RoleLock.switchRole(this) } // 切換身分 (PIN) → role picker
 
         val saved = prefs.getString(KEY_LINK, null)
         if (saved != null) {
