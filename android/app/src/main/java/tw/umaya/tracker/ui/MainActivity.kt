@@ -2132,6 +2132,35 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             delay(250)
         }
     }
+    /** 分享位置: coordinates, altitude and a Google Maps link through the share sheet (LINE, 簡訊, Email…),
+     *  plus "在 Google 地圖開啟" as an extra choice. Asks for a fresh fix when none is cached yet. */
+    @android.annotation.SuppressLint("MissingPermission")
+    fun shareMyLocation() {
+        fun send(loc: android.location.Location) {
+            val lat = "%.6f".format(Locale.US, loc.latitude); val lon = "%.6f".format(Locale.US, loc.longitude)
+            val alt = if (loc.hasAltitude()) "${loc.altitude.toInt()} m" else "—"
+            val time = SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.TAIWAN).format(loc.time)
+            val text = listOf(
+                "📍 我的位置（$time）",
+                "座標：$lat, $lon",
+                "海拔：$alt（誤差約 ±${loc.accuracy.toInt()} m）",
+                "Google 地圖：https://maps.google.com/?q=$lat,$lon",
+            ).joinToString("\n")
+            val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_SUBJECT, "我的位置").putExtra(Intent.EXTRA_TEXT, text)
+            val openMaps = Intent(Intent.ACTION_VIEW, Uri.parse("geo:$lat,$lon?q=$lat,$lon(我的位置)"))
+            context.startActivity(Intent.createChooser(send, "分享位置").putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(openMaps)))
+        }
+        phoneLocation?.let { return send(it) }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(context, "沒有定位權限", Toast.LENGTH_SHORT).show(); return
+        }
+        Toast.makeText(context, "正在取得目前位置…", Toast.LENGTH_SHORT).show()
+        LocationServices.getFusedLocationProviderClient(context).getCurrentLocation(
+            com.google.android.gms.location.CurrentLocationRequest.Builder().setPriority(Priority.PRIORITY_HIGH_ACCURACY).setMaxUpdateAgeMillis(60_000).build(),
+            com.google.android.gms.tasks.CancellationTokenSource().token,
+        ).addOnSuccessListener { loc -> if (loc != null) send(loc) else Toast.makeText(context, "目前無法取得定位，請稍後再試", Toast.LENGTH_LONG).show() }
+    }
+
     fun startMeasuring() {
         val start = currentFixLatLon() ?: mapCenterLatLon() ?: return
         measurePoints.clear(); measurePoints.add(start)
@@ -2818,6 +2847,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 Tool("chart", "高度剖面") { showProfile = !showProfile }
                 Tool("ruler", if (measuring) "結束測距" else "測距") { if (measuring) { measuring = false; measurePoints.clear() } else startMeasuring() }
                 Tool("mountain", "山峰辨識") { PeakFinderActivity.start(context) }
+                Tool("share", "分享位置") { shareMyLocation() }
             }
             Box(
                 modifier = Modifier.size(54.dp).background(if (toolsOpen) Color(0xFF202020) else Color(0xEE00796B), CircleShape)
