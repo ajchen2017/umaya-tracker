@@ -236,7 +236,12 @@ class Prefs(context: Context) {
     val isLoggedIn: Boolean get() = authToken != null
     val hasActiveHike: Boolean get() = activeHikeId != -1L
 
+    /** 行程名稱 of the active hike — kept so the status bar shows it after the app restarts. */
+    var activeHikeName: String?
+        get() = prefs.getString("active_hike_name", null)
+        set(value) = prefs.edit().putString("active_hike_name", value).apply()
+
     fun clearActiveHike() {
-        prefs.edit().remove("active_hike_id").remove("is_paused").apply()
+        prefs.edit().remove("active_hike_id").remove("is_paused").remove("active_hike_name").apply()
     }
 }

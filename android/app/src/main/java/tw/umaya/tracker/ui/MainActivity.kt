@@ -588,7 +588,9 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     val scope = rememberCoroutineScope()
     var hasActiveHike by remember { mutableStateOf(prefs.hasActiveHike) }
     val shareToken = prefs.shareToken // persistent per account, set at login — same link across every hike
-    var hikeName by remember { mutableStateOf("") }
+    // Restored from prefs: it used to live only in memory, so after the app restarted the status
+    // bar said 尚未開始行程 while the trip was still running.
+    var hikeName by remember { mutableStateOf(prefs.activeHikeName ?: "") }
     var nickname by remember { mutableStateOf(prefs.lastNickname) }
     // null = choosing 開始新行程/接續舊行程; "new"/"continue" = filling in the form for that choice.
     var startMode by remember { mutableStateOf<String?>(null) }
@@ -983,6 +985,12 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     // The recorder lives in the service; after the process was killed or the app updated, nothing
     // restarts it on its own even though prefs still say 記錄中 — reopening the app does.
     LaunchedEffect(Unit) {
+        if (prefs.hasActiveHike && prefs.activeHikeName == null) {
+            runCatching {
+                val token = prefs.authToken ?: return@runCatching
+                ApiClient.service.listHikes("Bearer $token").body()?.firstOrNull { it.id == prefs.activeHikeId }?.name
+            }.getOrNull()?.let { name -> prefs.activeHikeName = name; hikeName = name }
+        }
         if (!prefs.trackNamesMigrated) {
             val renamed = withContext(Dispatchers.IO) {
                 migrateTrackFileNames(context, skipPath = if (prefs.isGpxRecording) prefs.gpxFilePath else null)
@@ -1764,6 +1772,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                             if (!res.isSuccessful) throw Exception("重新啟用行程失敗")
                                         }
                                         prefs.activeHikeId = continuingHikeId!!
+                                        prefs.activeHikeName = hikeName
                                         prefs.isPaused = false
                                     } else {
                                         val token = prefs.authToken!!
@@ -1773,6 +1782,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                                         )
                                         if (!res.isSuccessful) throw Exception("建立行程失敗")
                                         prefs.activeHikeId = res.body()!!.id
+                                        prefs.activeHikeName = hikeName
                                     }
                                     context.startForegroundService(
                                         Intent(context, LocationForegroundService::class.java)
@@ -2757,7 +2767,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             // One line, never wrapping: a long 行程名稱 is cut with … first, the status parts stay whole.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    hikeName.ifBlank { "尚未開始行程" }, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+                    if (hasActiveHike) hikeName.ifBlank { "行程進行中" } else "尚未開始行程", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
                 )
                 if (tripActive) {
