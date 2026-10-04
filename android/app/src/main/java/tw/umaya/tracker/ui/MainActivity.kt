@@ -2090,6 +2090,19 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
 
     // Compass heading for the stats panel's small compass.
     var showStatsPanel by remember { mutableStateOf(prefs.statsPanelExpanded) }
+    // 行程電腦's 目前座標／高度: the latest fix any requester got (the trip's own service keeps it fresh).
+    var panelFix by remember { mutableStateOf<android.location.Location?>(null) }
+    LaunchedEffect(tripActive && showStatsPanel) {
+        if (!(tripActive && showStatsPanel)) return@LaunchedEffect
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return@LaunchedEffect
+        val fused = LocationServices.getFusedLocationProviderClient(context)
+        while (true) {
+            @android.annotation.SuppressLint("MissingPermission")
+            val task = fused.lastLocation
+            task.addOnSuccessListener { if (it != null) panelFix = it }
+            delay(5_000)
+        }
+    }
     var showProfile by remember { mutableStateOf(false) } // 📈 高度剖面
     // The bottom status bar wraps to 2–3 lines (long 行程名稱, 伺服器離線, an error message, large
     // system font) — the stats panel sits on top of its measured height, not a fixed guess.
@@ -2686,6 +2699,9 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         StatRow("步數", tripSteps?.let { "%,d".format(it) } ?: "—")
                         StatRow("累積爬升", stats?.let { "↑ ${it.ascentM.toInt()} m" } ?: "—")
                         StatRow("累積下降", stats?.let { "↓ ${it.descentM.toInt()} m" } ?: "—")
+                        StatRow("緯度", panelFix?.let { "%.5f".format(Locale.US, it.latitude) } ?: "—")
+                        StatRow("經度", panelFix?.let { "%.5f".format(Locale.US, it.longitude) } ?: "—")
+                        StatRow("海拔", panelFix?.takeIf { it.hasAltitude() }?.let { "${it.altitude.toInt()} m" } ?: "—")
                     }
                 }
             }
