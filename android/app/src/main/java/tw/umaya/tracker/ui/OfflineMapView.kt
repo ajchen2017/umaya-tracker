@@ -336,7 +336,7 @@ class OfflineMapController internal constructor(
         }
         val line = measureLine ?: Polyline(
             AndroidGraphicFactory.INSTANCE.createPaint().apply {
-                setColor(Color.WHITE)
+                setColor(Color.rgb(33, 150, 243)) // 測距線: blue
                 setStrokeWidth(4 * mapView.model.displayModel.scaleFactor)
                 setStyle(Style.STROKE)
                 setDashPathEffect(floatArrayOf(24f, 14f))

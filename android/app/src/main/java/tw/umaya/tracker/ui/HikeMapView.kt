@@ -282,8 +282,8 @@ class HikeMapController internal constructor(
             return
         }
         val line = measureLine ?: Polyline(mapView).apply {
-            outlinePaint.color = Color.WHITE
-            outlinePaint.setShadowLayer(3f, 0f, 0f, Color.argb(200, 0, 0, 0)) // stays visible on pale map areas
+            outlinePaint.color = Color.rgb(33, 150, 243) // 測距線: blue
+            outlinePaint.setShadowLayer(3f, 0f, 0f, Color.argb(160, 255, 255, 255)) // halo keeps it readable on dark areas
             outlinePaint.strokeWidth = 4 * mapView.resources.displayMetrics.density
             outlinePaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(24f, 14f), 0f)
             infoWindow = null

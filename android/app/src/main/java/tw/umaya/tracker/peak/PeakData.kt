@@ -29,45 +29,59 @@ class PeakData(context: Context) {
     private val root = File(context.filesDir, "peakfinder").apply { mkdirs() }
     private val tiles = HashMap<Long, ShortArray>() // (x shl 20 or y) → 256×256 metres, zoom DEM_Z
 
-    /**
-     * Makes sure DEM tiles and peaks within [RADIUS_KM] of (lat, lon) are on disk (downloading what's
-     * missing) and loaded. [progress] gets short status texts. Returns the peaks in range.
-     */
-    fun prepare(lat: Double, lon: Double, progress: (String) -> Unit): List<Peak> {
-        val (x0, y0) = tileXY(lat + RADIUS_KM / 111.0, lon - RADIUS_KM / (111.0 * cos(lat.rad)))
-        val (x1, y1) = tileXY(lat - RADIUS_KM / 111.0, lon + RADIUS_KM / (111.0 * cos(lat.rad)))
-        val need = (x0.toInt()..x1.toInt()).flatMap { x -> (y0.toInt()..y1.toInt()).map { y -> x to y } }
-        need.forEachIndexed { i, (x, y) ->
-            val f = File(root, "dem/$DEM_Z/$x/$y.png")
-            if (!f.exists()) {
-                progress("下載地形 ${i + 1}/${need.size}")
-                runCatching {
-                    f.parentFile?.mkdirs()
-                    val bytes = get("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/$DEM_Z/$x/$y.png")
-                    f.writeBytes(bytes)
-                }
-            }
-            val key = (x.toLong() shl 20) or y.toLong()
-            if (key !in tiles && f.exists()) runCatching { decode(f.readBytes()) }.getOrNull()?.let { tiles[key] = it }
-        }
-        return peaksAround(lat, lon, progress)
+    /** What an area needs: DEM tiles (and which are missing on disk) and whether the peak list is cached. */
+    class Plan(val lat: Double, val lon: Double, val tiles: List<Pair<Int, Int>>, val missingTiles: List<Pair<Int, Int>>, val peaksFile: File) {
+        val peaksMissing get() = !peaksFile.exists()
+        val nothingMissing get() = missingTiles.isEmpty() && !peaksMissing
     }
 
-    private fun peaksAround(lat: Double, lon: Double, progress: (String) -> Unit): List<Peak> {
-        // Cached per 0.5° cell of the request centre; a request covers ±1° so neighbours overlap.
-        val cell = "${(lat * 2).roundToInt()}_${(lon * 2).roundToInt()}"
-        val f = File(root, "peaks_$cell.json")
-        if (!f.exists()) {
-            progress("下載山峰名稱…")
-            val c = (lat * 2).roundToInt() / 2.0 to (lon * 2).roundToInt() / 2.0
-            val q = "[out:json][timeout:60];node[\"natural\"~\"^(peak|volcano)$\"][\"name\"](${c.first - 1},${c.second - 1.2},${c.first + 1},${c.second + 1.2});out body;"
+    fun plan(lat: Double, lon: Double): Plan {
+        val (x0, y0) = tileXY(lat + RADIUS_KM / 111.0, lon - RADIUS_KM / (111.0 * cos(lat.rad)))
+        val (x1, y1) = tileXY(lat - RADIUS_KM / 111.0, lon + RADIUS_KM / (111.0 * cos(lat.rad)))
+        val all = (x0.toInt()..x1.toInt()).flatMap { x -> (y0.toInt()..y1.toInt()).map { y -> x to y } }
+        // Peaks cached per 0.5° cell of the request centre; a request covers ±1° so neighbours overlap.
+        val peaks = File(root, "peaks_${(lat * 2).roundToInt()}_${(lon * 2).roundToInt()}.json")
+        return Plan(lat, lon, all, all.filter { (x, y) -> !demFile(x, y).exists() }, peaks)
+    }
+
+    /** Bytes the missing DEM tiles will take (HEAD requests; ~90 KB each where the server won't say). */
+    fun demBytes(plan: Plan): Long = plan.missingTiles.sumOf { (x, y) ->
+        runCatching {
+            (URL(demUrl(x, y)).openConnection() as HttpURLConnection).run {
+                requestMethod = "HEAD"; connectTimeout = 8_000; readTimeout = 8_000
+                contentLengthLong.takeIf { responseCode in 200..299 && it > 0 } ?: 90_000L
+            }
+        }.getOrDefault(90_000L)
+    }
+
+    /** Downloads what [plan] is missing; [progress] gets (bytes so far, step label). */
+    fun download(plan: Plan, progress: (Long, String) -> Unit) {
+        var done = 0L
+        plan.missingTiles.forEachIndexed { i, (x, y) ->
+            progress(done, "地形 ${i + 1}/${plan.missingTiles.size}")
             runCatching {
-                val body = post("https://overpass-api.de/api/interpreter", "data=" + URLEncoder.encode(q, "UTF-8"))
-                f.writeBytes(body)
-            }.onFailure { progress("山峰名稱下載失敗：${it.message}") }
+                val f = demFile(x, y); f.parentFile?.mkdirs()
+                val bytes = get(demUrl(x, y)); f.writeBytes(bytes); done += bytes.size
+            }
         }
-        if (!f.exists()) return emptyList()
-        val els = JSONObject(f.readText()).optJSONArray("elements") ?: return emptyList()
+        if (plan.peaksMissing) {
+            progress(done, "山峰名稱")
+            val c = (plan.lat * 2).roundToInt() / 2.0 to (plan.lon * 2).roundToInt() / 2.0
+            val q = "[out:json][timeout:60];node[\"natural\"~\"^(peak|volcano)$\"][\"name\"](${c.first - 1},${c.second - 1.2},${c.first + 1},${c.second + 1.2});out body;"
+            val body = post("https://overpass-api.de/api/interpreter", "data=" + URLEncoder.encode(q, "UTF-8"))
+            plan.peaksFile.writeBytes(body); done += body.size
+        }
+        progress(done, "完成")
+    }
+
+    /** Loads the cached DEM tiles and peaks of [plan] (whatever is on disk). */
+    fun load(plan: Plan): List<Peak> {
+        for ((x, y) in plan.tiles) {
+            val key = (x.toLong() shl 20) or y.toLong(); val f = demFile(x, y)
+            if (key !in tiles && f.exists()) runCatching { decode(f.readBytes()) }.getOrNull()?.let { tiles[key] = it }
+        }
+        if (!plan.peaksFile.exists()) return emptyList()
+        val els = JSONObject(plan.peaksFile.readText()).optJSONArray("elements") ?: return emptyList()
         val out = ArrayList<Peak>(els.length())
         for (i in 0 until els.length()) {
             val e = els.getJSONObject(i); val t = e.optJSONObject("tags") ?: continue
@@ -81,6 +95,9 @@ class PeakData(context: Context) {
         }
         return out
     }
+
+    private fun demFile(x: Int, y: Int) = File(root, "dem/$DEM_Z/$x/$y.png")
+    private fun demUrl(x: Int, y: Int) = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/$DEM_Z/$x/$y.png"
 
     /** Ground elevation (m) from the loaded DEM, bilinear; null where no tile is loaded. */
     fun elevation(lat: Double, lon: Double): Double? {
@@ -97,25 +114,39 @@ class PeakData(context: Context) {
      * The skyline seen from (lat, lon, eyeEle): for each azimuth step the highest apparent elevation
      * angle (degrees) of the terrain out to [RADIUS_KM], with earth curvature and refraction.
      */
-    fun skyline(lat: Double, lon: Double, eyeEle: Double): FloatArray {
+    /** The outermost skyline plus, per distance band ([BANDS_KM]), that band's ridgeline where it shows
+     *  above everything nearer (NaN where it's hidden) — the layered look of distant ranges. */
+    class Skyline(val main: FloatArray, val ridges: Array<FloatArray>)
+
+    fun skyline(lat: Double, lon: Double, eyeEle: Double): Skyline {
         val n = (360 / AZ_STEP).toInt()
         val out = FloatArray(n) { -90f }
+        val ridges = Array(BANDS_KM.size) { FloatArray(n) { Float.NaN } }
+        val bandBest = DoubleArray(BANDS_KM.size)
         val cosLat = cos(lat.rad)
         for (a in 0 until n) {
             val az = (a * AZ_STEP).rad; val dN = cos(az) / 111_320.0; val dE = sin(az) / (111_320.0 * cosLat)
-            var best = -90.0; var d = 60.0
+            var best = -90.0; var d = 60.0; var band = 0
+            bandBest.fill(-90.0)
             while (d < RADIUS_KM * 1000) {
+                while (band < BANDS_KM.size - 1 && d > BANDS_KM[band] * 1000) band++
                 val h = elevation(lat + dN * d, lon + dE * d)
                 if (h != null) {
                     val drop = d * d / (2 * EARTH_R) * (1 - REFRACTION)
                     val ang = atan((h - eyeEle - drop) / d)
                     if (ang > best) best = ang
+                    if (ang > bandBest[band]) bandBest[band] = ang
                 }
                 d += (d * 0.006).coerceAtLeast(30.0)
             }
             out[a] = Math.toDegrees(best).toFloat()
+            var nearer = -90.0
+            for (b in BANDS_KM.indices) {
+                if (bandBest[b] > nearer + 0.0015) ridges[b][a] = Math.toDegrees(bandBest[b]).toFloat() // shows above nearer ground
+                nearer = maxOf(nearer, bandBest[b])
+            }
         }
-        return out
+        return Skyline(out, ridges)
     }
 
     companion object {
@@ -124,6 +155,7 @@ class PeakData(context: Context) {
         const val AZ_STEP = 0.25        // degrees per skyline sample
         const val EARTH_R = 6_371_000.0
         const val REFRACTION = 0.13
+        val BANDS_KM = doubleArrayOf(3.0, 8.0, 20.0, 50.0, RADIUS_KM) // ridgeline layers, near → far
 
         /** Apparent elevation angle (deg) and distance (m) of a point seen from the eye. */
         fun angleTo(lat: Double, lon: Double, eyeEle: Double, pLat: Double, pLon: Double, pEle: Double): Pair<Double, Double> {

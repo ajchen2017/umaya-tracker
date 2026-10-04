@@ -2796,7 +2796,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         }
 
         if (measuring) {
-            Text("✛", color = Color.White, fontSize = 30.sp, modifier = Modifier.align(Alignment.Center))
+            Text("✛", color = Color(0xFF2196F3), fontSize = 30.sp, modifier = Modifier.align(Alignment.Center))
             Column(
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = statusBarHeight + 8.dp, start = 8.dp, end = 8.dp)
                     .background(Color(0xF2202020), RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 8.dp),
@@ -2825,7 +2825,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             }
         }
         if (!measuring) measure?.let { (meters, bearing) ->
-            Text("✛", color = Color.White, fontSize = 28.sp, modifier = Modifier.align(Alignment.Center))
+            Text("✛", color = Color(0xFF2196F3), fontSize = 28.sp, modifier = Modifier.align(Alignment.Center))
             Text(
                 "📏 " + formatDistance(meters.toDouble()) + "・" + compassDirection(((bearing + 360f) % 360f)) + " ${((bearing + 360f) % 360f).toInt()}°",
                 color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold,
