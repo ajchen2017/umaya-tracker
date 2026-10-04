@@ -2532,30 +2532,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 if (!gpsFollowing) offlineMapController?.setGpsVisible(false)
             }
 
-            // (5) 選用地圖 — 地圖頁是唯一選地圖的地方；地圖設定只管各地圖的設定。
-            Box {
-                TopBarIconButton("@layers") { showMapPicker = true }
-                DropdownMenu(expanded = showMapPicker, onDismissRequest = { showMapPicker = false }) {
-                    val choices = listOf(
-                        Triple(MapSource.OPENSTREETMAP, null, "OpenStreetMap（線上）"),
-                    ) + offlinePacks.map { pack ->
-                        Triple(MapSource.OFFLINE, pack.id, pack.name + if (pack.id in installedPackIds) "" else "（未下載）")
-                    }
-                    choices.forEach { (source, packId, label) ->
-                        val selected = source == currentMapSource && (packId == null || packId == currentOfflinePackId)
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    "${mapSourceIcon(source, packId)}  $label",
-                                    fontSize = 14.sp, maxLines = 1, softWrap = false,
-                                )
-                            },
-                            trailingIcon = if (selected) ({ Text("✓") }) else null,
-                            onClick = { showMapPicker = false; selectMapSource(source, packId) },
-                        )
-                    }
-                }
-            }
+            // 地圖切換 lives in the bottom 地圖 tab now.
         }
 
         // ---- 3. 左側圓圈：登山者回報區（留守人追蹤）----
@@ -2746,6 +2723,20 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     }
                 }
                 when (navTab) {
+                    "maps" -> {
+                        Text("地圖", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp, modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp))
+                        (listOf(Triple(MapSource.OPENSTREETMAP, null as String?, "OpenStreetMap（線上）")) +
+                            offlinePacks.map { Triple(MapSource.OFFLINE, it.id as String?, it.name) }).forEach { (source, packId, name) ->
+                            val selected = source == currentMapSource && (packId == null || packId == currentOfflinePackId)
+                            val installed = packId == null || packId in installedPackIds
+                            Item(
+                                if (selected) "check" else "map", name,
+                                sub = if (packId == null) "需要網路" else if (installed) "離線地圖" else "尚未下載（到 設定 → 地圖設定 下載）",
+                                color = if (selected) Color(0xFF64B5F6) else Color.White,
+                            ) { selectMapSource(source, packId) }
+                        }
+                        Item("layers", "地圖設定", sub = "地圖包、圖層、比例尺、文字、方向、GPS 置中") { showMapSettingsDialog = true }
+                    }
                     "trip" -> {
                         Text("行程（回報位置給留守人）", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp, modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp))
                         if (!hasActiveHike) Item("play", "開始行程", color = Color(0xFF81C784)) {
@@ -2892,11 +2883,13 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             Row(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
                 listOf("map" to ("map" to "地圖"), "trip" to ("play" to "行程"), "track" to ("route" to "軌跡"), "settings" to ("gear" to "設定"))
                     .forEach { (tab, iconLabel) ->
-                        val on = navTab == tab
+                        // 地圖 opens the map-source sheet ("maps"); tapping a highlighted tab again closes its sheet
+                        val sheet = if (tab == "map") "maps" else tab
+                        val on = navTab == sheet || (tab == "map" && navTab == "map")
                         val c = if (on) Color(0xFF64B5F6) else Color(0xFFBDBDBD)
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.weight(1f).clickable { navTab = if (on && tab != "map") "map" else tab; toolsOpen = false }.padding(vertical = 4.dp),
+                            modifier = Modifier.weight(1f).clickable { navTab = if (navTab == sheet) "map" else sheet; toolsOpen = false }.padding(vertical = 4.dp),
                         ) {
                             LineIcon(iconLabel.first, tint = c, size = 22.dp)
                             Text(iconLabel.second, color = c, fontSize = 11.sp)
