@@ -49,6 +49,12 @@
             android:label="3D 飛行回放"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
 
+        <activity
+            android:name=".ui.WeatherActivity"
+            android:exported="false"
+            android:label="天氣預報"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
+
         <!-- Hands the camera app a file to write the 航點 photo into. -->
         <provider
             android:name="androidx.core.content.FileProvider"

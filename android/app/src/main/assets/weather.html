@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>天氣預報</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --bg: #15181c; --card: rgba(32,32,32,.94); --line: rgba(255,255,255,.12); --dim: rgba(255,255,255,.62); --accent: #64b5f6; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: #fff; font-family: system-ui, "Noto Sans TC", sans-serif; font-size: 13px; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #202020; }
+  header h1 { font-size: 15px; margin: 0; flex: none; }
+  #place { flex: 1; color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  header button, .btn { background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.22); border-radius: 8px; padding: 4px 9px; font-size: 13px; }
+  #map { height: 30vh; min-height: 150px; flex: none; }
+  #main { flex: 1; overflow-y: auto; padding: 8px 10px 16px; }
+  .card { background: var(--card); border-radius: 12px; padding: 8px 10px; margin-bottom: 8px; }
+  .card h2 { font-size: 13px; margin: 0 0 6px; display: flex; align-items: baseline; gap: 6px; }
+  .card h2 small { color: var(--dim); font-weight: normal; font-size: 11px; }
+  #models { display: flex; gap: 6px; }
+  #models button { flex: 1; background: transparent; color: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 6px 4px; font-size: 13px; }
+  #models button.on { background: var(--accent); color: #000; font-weight: bold; border-color: var(--accent); }
+  #models button small { display: block; font-size: 10px; opacity: .75; font-weight: normal; }
+  #days { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+  .day { flex: none; width: 58px; text-align: center; border-radius: 8px; padding: 4px 0; border: 1px solid transparent; }
+  .day.on { border-color: var(--accent); background: rgba(100,181,246,.14); }
+  .day .d { font-size: 11px; color: var(--dim); }
+  .day .e { font-size: 20px; line-height: 26px; }
+  .day .t { font-size: 12px; } .day .t b { color: #ffab91; } .day .t span { color: #90caf9; }
+  .day .r { font-size: 11px; color: #4fc3f7; min-height: 14px; }
+  .day.na { opacity: .35; }
+  #gramWrap { display: flex; }
+  #gramLabels { flex: none; width: 34px; }
+  #gramScroll { flex: 1; overflow-x: auto; }
+  #elev { width: 100%; border-collapse: collapse; }
+  #elev th, #elev td { padding: 4px 3px; border-bottom: 1px solid var(--line); text-align: center; font-size: 12px; }
+  #elev th { color: var(--dim); font-weight: normal; font-size: 11px; }
+  #elev td:first-child { font-weight: bold; text-align: left; }
+  .snow { color: #e1f5fe; } .rain { color: #4fc3f7; } .mix { color: #b39ddb; }
+  .note { color: var(--dim); font-size: 11px; line-height: 15px; margin-top: 6px; }
+  #status { color: var(--dim); text-align: center; padding: 10px; }
+  .leaflet-container { background: #2b2f33; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⛅ 天氣預報</h1>
+  <div id="place">—</div>
+  <button id="btnMe" title="回到我的位置">📍</button>
+  <button id="btnClose">✕</button>
+</header>
+<div id="map"></div>
+<div id="main">
+  <div class="card"><div id="models"></div></div>
+  <div id="status">讀取預報中…</div>
+  <div id="content" style="display:none">
+    <div class="card"><h2>14 天預報 <small id="range"></small></h2><div id="days"></div></div>
+    <div class="card">
+      <h2>雲量與降水 <small>每 3 小時・左右滑動</small></h2>
+      <div id="gramWrap"><canvas id="gramLabels"></canvas><div id="gramScroll"><canvas id="gram"></canvas></div></div>
+    </div>
+    <div class="card">
+      <h2>各高度天氣 <small id="elevDay"></small></h2>
+      <div id="frz" class="note" style="margin:0 0 4px"></div>
+      <table id="elev"></table>
+      <div class="note">降水量是模型格點的數值；雨、雪依該高度的氣溫判斷（＞1°C 雨、＜−1°C 雪、之間雨雪混合），雪量以 1 mm 水 ≈ 1 cm 雪估算。高度溫度與風由各氣壓層內插而得。</div>
+    </div>
+    <div class="note" style="text-align:center">資料：Open-Meteo（ECMWF IFS／NOAA GFS／DWD ICON）</div>
+  </div>
+</div>
+<script>
+'use strict';
+const bridge = window.Android || null;
+const MODELS = [
+  { id: 'ecmwf_ifs025', name: 'ECMWF', note: '歐洲・15 天' },
+  { id: 'gfs_seamless', name: 'GFS', note: '美國・16 天' },
+  { id: 'icon_seamless', name: 'ICON', note: '德國・7 天' },
+];
+const LEVELS = [1000, 925, 850, 700, 600, 500]; // hPa
+const ELEVS = [5000, 4000, 3000, 2000, 1000];   // m, top row first
+const HOURLY = ['cloud_cover', 'cloud_cover_low', 'cloud_cover_mid', 'cloud_cover_high', 'precipitation', 'temperature_2m', 'weather_code']
+  .concat(...LEVELS.map((l) => [`temperature_${l}hPa`, `geopotential_height_${l}hPa`, `wind_speed_${l}hPa`]));
+const DAILY = ['weather_code', 'temperature_2m_max', 'temperature_2m_min', 'precipitation_sum'];
+
+const q = new URLSearchParams(location.search);
+let home = { lat: parseFloat(q.get('lat')) || 23.47, lon: parseFloat(q.get('lon')) || 120.95 };
+let state = { lat: home.lat, lon: home.lon, model: localStorage.getItem('wxModel') || 'ecmwf_ifs025', data: null, day: 0 };
+
+// ---------- map ----------
+const map = L.map('map', { zoomControl: false, attributionControl: false }).setView([state.lat, state.lon], 10);
+L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, subdomains: 'abc' }).addTo(map);
+const marker = L.marker([state.lat, state.lon]).addTo(map);
+map.on('click', (e) => setPlace(e.latlng.lat, e.latlng.lng));
+document.getElementById('btnMe').onclick = () => { setPlace(home.lat, home.lon); map.setView([home.lat, home.lon], 10); };
+document.getElementById('btnClose').onclick = () => { if (bridge) bridge.close(); else history.back(); };
+function setPlace(lat, lon) { state.lat = lat; state.lon = lon; marker.setLatLng([lat, lon]); load(); }
+
+// ---------- models ----------
+function renderModels() {
+  document.getElementById('models').innerHTML = MODELS.map((m) =>
+    `<button data-m="${m.id}" class="${m.id === state.model ? 'on' : ''}">${m.name}<small>${m.note}</small></button>`).join('');
+  document.querySelectorAll('#models button').forEach((b) => b.onclick = () => {
+    state.model = b.dataset.m; try { localStorage.setItem('wxModel', state.model); } catch (_) {}
+    renderModels(); if (state.data) render();
+  });
+}
+
+// ---------- fetch ----------
+let loadSeq = 0;
+async function load() {
+  const seq = ++loadSeq;
+  document.getElementById('status').style.display = ''; document.getElementById('status').textContent = '讀取預報中…';
+  document.getElementById('place').textContent = `${state.lat.toFixed(4)}, ${state.lon.toFixed(4)}`;
+  const url = 'https://api.open-meteo.com/v1/forecast?' + new URLSearchParams({
+    latitude: state.lat.toFixed(4), longitude: state.lon.toFixed(4), forecast_days: 16, timezone: 'auto',
+    models: MODELS.map((m) => m.id).join(','), hourly: HOURLY.join(','), daily: DAILY.join(','),
+  });
+  try {
+    const r = await fetch(url);
+    const d = await r.json();
+    if (seq !== loadSeq) return;
+    if (d.error) throw new Error(d.reason || 'API error');
+    state.data = d; state.day = 0;
+    document.getElementById('place').textContent = `${state.lat.toFixed(4)}, ${state.lon.toFixed(4)}・格點海拔 ${Math.round(d.elevation)} m`;
+    document.getElementById('status').style.display = 'none';
+    document.getElementById('content').style.display = '';
+    render();
+  } catch (e) {
+    if (seq !== loadSeq) return;
+    document.getElementById('status').textContent = '無法取得預報：' + (navigator.onLine === false ? '沒有網路連線' : e.message);
+  }
+}
+
+// ---------- helpers ----------
+const WMO = (c) => c == null ? '·' : c === 0 ? '☀️' : c <= 2 ? '🌤️' : c === 3 ? '☁️' : c <= 48 ? '🌫️' : c <= 57 ? '🌦️' : c <= 67 ? '🌧️'
+  : c <= 77 ? '🌨️' : c <= 82 ? '🌧️' : c <= 86 ? '🌨️' : '⛈️';
+const WD = ['日', '一', '二', '三', '四', '五', '六'];
+const H = (k) => state.data.hourly[`${k}_${state.model}`] || [];
+const Dly = (k) => state.data.daily[`${k}_${state.model}`] || [];
+function profile(i) { // [{z, t, w}] sorted by height, for hour i
+  const out = [];
+  for (const l of LEVELS) {
+    const z = H(`geopotential_height_${l}hPa`)[i], t = H(`temperature_${l}hPa`)[i], w = H(`wind_speed_${l}hPa`)[i];
+    if (z != null && t != null) out.push({ z, t, w });
+  }
+  return out.sort((a, b) => a.z - b.z);
+}
+function atHeight(p, z) {
+  if (p.length < 2) return null;
+  let a = p[0], b = p[1];
+  for (let k = 1; k < p.length && p[k].z < z; k++) { a = p[k - 1]; b = p[k]; }
+  if (z > p[p.length - 1].z) { a = p[p.length - 2]; b = p[p.length - 1]; }
+  const f = (z - a.z) / (b.z - a.z);
+  return { t: a.t + (b.t - a.t) * f, w: a.w != null && b.w != null ? a.w + (b.w - a.w) * f : null };
+}
+function freezingLevel(p) {
+  for (let k = 1; k < p.length; k++) {
+    const a = p[k - 1], b = p[k];
+    if (a.t > 0 && b.t <= 0) return a.z + (b.z - a.z) * (a.t / (a.t - b.t));
+  }
+  return p.length && p[0].t <= 0 ? p[0].z : null;
+}
+function dayHours(day) { // hourly indices belonging to daily index `day`
+  const date = state.data.daily.time[day];
+  return state.data.hourly.time.map((t, i) => t.startsWith(date) ? i : -1).filter((i) => i >= 0);
+}
+function hasData(i) { const v = H('cloud_cover')[i]; return v != null; }
+
+// ---------- render ----------
+function render() {
+  const days = state.data.daily.time.slice(0, 14);
+  const avail = days.map((_, k) => dayHours(k).some(hasData));
+  const lastDay = avail.lastIndexOf(true);
+  document.getElementById('range').textContent = lastDay >= 0 ? `此模型預報到 ${days[lastDay].slice(5).replace('-', '/')}` : '此地點沒有資料';
+  if (!avail[state.day]) state.day = 0;
+  document.getElementById('days').innerHTML = days.map((date, k) => {
+    const dt = new Date(date + 'T12:00'), mx = Dly('temperature_2m_max')[k], mn = Dly('temperature_2m_min')[k], rr = Dly('precipitation_sum')[k];
+    return `<div class="day ${k === state.day ? 'on' : ''} ${avail[k] ? '' : 'na'}" data-k="${k}">
+      <div class="d">${k === 0 ? '今天' : '週' + WD[dt.getDay()]}<br>${dt.getMonth() + 1}/${dt.getDate()}</div>
+      <div class="e">${WMO(Dly('weather_code')[k])}</div>
+      <div class="t">${mx == null ? '—' : `<b>${Math.round(mx)}°</b> <span>${Math.round(mn)}°</span>`}</div>
+      <div class="r">${rr ? rr.toFixed(rr < 10 ? 1 : 0) + 'mm' : ''}</div></div>`;
+  }).join('');
+  document.querySelectorAll('.day').forEach((el) => el.onclick = () => {
+    const k = +el.dataset.k; if (!avail[k]) return;
+    state.day = k; render(); scrollGramTo(k);
+  });
+  drawGram(days.length);
+  renderElev();
+}
+
+// Meteogram: 3-hour columns over 14 days — cloud layers as shaded cells, rain bars, temperature line.
+const COL = 26, ROWS = [['高雲', 'cloud_cover_high'], ['中雲', 'cloud_cover_mid'], ['低雲', 'cloud_cover_low'], ['全雲', 'cloud_cover']];
+const TOP = 30, ROW_H = 20, RAIN_H = 46, TEMP_H = 54;
+function drawGram(nDays) {
+  const times = state.data.hourly.time, idx = [];
+  for (let i = 0; i < times.length && idx.length < nDays * 8; i += 3) idx.push(i);
+  const W = idx.length * COL, Hh = TOP + ROWS.length * ROW_H + RAIN_H + TEMP_H + 6, dpr = devicePixelRatio || 1;
+  const cv = document.getElementById('gram'), lv = document.getElementById('gramLabels');
+  for (const [c, w] of [[cv, W], [lv, 34]]) { c.width = w * dpr; c.height = Hh * dpr; c.style.width = w + 'px'; c.style.height = Hh + 'px'; }
+  const g = cv.getContext('2d'), gl = lv.getContext('2d');
+  g.scale(dpr, dpr); gl.scale(dpr, dpr);
+  gl.fillStyle = 'rgba(255,255,255,.62)'; gl.font = '11px system-ui'; gl.textBaseline = 'middle';
+  ROWS.forEach(([lab], r) => gl.fillText(lab, 0, TOP + r * ROW_H + ROW_H / 2));
+  gl.fillText('雨量', 0, TOP + ROWS.length * ROW_H + RAIN_H / 2); gl.fillText('氣溫', 0, TOP + ROWS.length * ROW_H + RAIN_H + TEMP_H / 2);
+
+  g.font = '10px system-ui'; g.textBaseline = 'middle'; g.textAlign = 'center';
+  const temps = [];
+  idx.forEach((i, c) => {
+    const x = c * COL, t = times[i], hh = +t.slice(11, 13);
+    if (hh === 0) { // day boundary + date
+      g.fillStyle = 'rgba(255,255,255,.25)'; g.fillRect(x, 0, 1, Hh);
+      const dt = new Date(t.slice(0, 10) + 'T12:00');
+      g.fillStyle = '#fff'; g.textAlign = 'left'; g.fillText(`${dt.getMonth() + 1}/${dt.getDate()} 週${WD[dt.getDay()]}`, x + 3, 8); g.textAlign = 'center';
+    }
+    g.fillStyle = 'rgba(255,255,255,.55)'; g.fillText(String(hh).padStart(2, '0'), x + COL / 2, 21);
+    if (!hasData(i)) { g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(x, TOP, COL, Hh - TOP); temps.push(null); return; }
+    ROWS.forEach(([, k], r) => {
+      const v = H(k)[i] ?? 0;
+      g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(x + 1, TOP + r * ROW_H + 1, COL - 2, ROW_H - 2); // empty cell stays visible
+      g.fillStyle = `rgba(235,240,245,${(v / 100) * 0.9})`; g.fillRect(x + 1, TOP + r * ROW_H + 1, COL - 2, ROW_H - 2);
+      if (v >= 20) { g.fillStyle = v >= 60 ? '#222' : '#fff'; g.fillText(Math.round(v), x + COL / 2, TOP + r * ROW_H + ROW_H / 2); }
+    });
+    let rain = 0; for (let j = i; j < i + 3; j++) rain += H('precipitation')[j] || 0;
+    const ry = TOP + ROWS.length * ROW_H;
+    if (rain > 0.05) {
+      const h = Math.min(RAIN_H - 14, 6 + rain * 4);
+      g.fillStyle = '#29b6f6'; g.fillRect(x + 4, ry + RAIN_H - 2 - h, COL - 8, h);
+      g.fillStyle = '#b3e5fc'; g.fillText(rain < 10 ? rain.toFixed(1) : Math.round(rain), x + COL / 2, ry + RAIN_H - 8 - h);
+    }
+    temps.push(H('temperature_2m')[i]);
+  });
+  const valid = temps.filter((t) => t != null), tmin = Math.min(...valid), tmax = Math.max(...valid), ty = TOP + ROWS.length * ROW_H + RAIN_H;
+  const yOf = (t) => ty + 10 + (TEMP_H - 22) * (1 - (t - tmin) / Math.max(1, tmax - tmin));
+  g.strokeStyle = '#ffab91'; g.lineWidth = 2; g.beginPath(); let started = false;
+  temps.forEach((t, c) => { if (t == null) { started = false; return; } const x = c * COL + COL / 2; started ? g.lineTo(x, yOf(t)) : g.moveTo(x, yOf(t)); started = true; });
+  g.stroke();
+  g.fillStyle = '#ffccbc';
+  temps.forEach((t, c) => { if (t != null && c % 2 === 0) g.fillText(Math.round(t) + '°', c * COL + COL / 2, yOf(t) - 8); });
+}
+function scrollGramTo(day) {
+  const date = state.data.daily.time[day], times = state.data.hourly.time;
+  const i = times.findIndex((t) => t.startsWith(date));
+  if (i >= 0) document.getElementById('gramScroll').scrollTo({ left: Math.floor(i / 3) * COL - 4, behavior: 'smooth' });
+}
+
+function renderElev() {
+  const hours = dayHours(state.day).filter(hasData), date = state.data.daily.time[state.day];
+  const dt = new Date(date + 'T12:00');
+  document.getElementById('elevDay').textContent = `${dt.getMonth() + 1}/${dt.getDate()}（週${WD[dt.getDay()]}）全天`;
+  if (!hours.length) { document.getElementById('elev').innerHTML = '<tr><td>這天沒有資料</td></tr>'; document.getElementById('frz').textContent = ''; return; }
+  const frz = hours.map((i) => freezingLevel(profile(i))).filter((v) => v != null);
+  document.getElementById('frz').textContent = frz.length ? `0°C 高度：約 ${Math.round(Math.min(...frz) / 50) * 50}～${Math.round(Math.max(...frz) / 50) * 50} m` : '';
+  const rows = ELEVS.map((z) => {
+    let tmin = Infinity, tmax = -Infinity, wmax = 0, rain = 0, snow = 0;
+    for (const i of hours) {
+      const v = atHeight(profile(i), z); if (!v) continue;
+      tmin = Math.min(tmin, v.t); tmax = Math.max(tmax, v.t); if (v.w != null) wmax = Math.max(wmax, v.w);
+      const p = H('precipitation')[i] || 0;
+      if (v.t > 1) rain += p; else if (v.t < -1) snow += p; else { rain += p / 2; snow += p / 2; }
+    }
+    if (tmin === Infinity) return `<tr><td>${z} m</td><td colspan="3">—</td></tr>`;
+    const prec = [rain >= 0.1 ? `<span class="rain">雨 ${rain.toFixed(rain < 10 ? 1 : 0)} mm</span>` : '',
+      snow >= 0.1 ? `<span class="snow">雪 ~${snow.toFixed(snow < 10 ? 1 : 0)} cm</span>` : ''].filter(Boolean).join('<br>') || '—';
+    return `<tr><td>${z} m</td><td>${Math.round(tmin)}～${Math.round(tmax)}°C</td><td>${Math.round(wmax)} km/h</td><td>${prec}</td></tr>`;
+  });
+  document.getElementById('elev').innerHTML = '<tr><th>高度</th><th>氣溫</th><th>最大風速</th><th>降水</th></tr>' + rows.join('');
+}
+
+renderModels();
+load();
+</script>
+</body>
+</html>

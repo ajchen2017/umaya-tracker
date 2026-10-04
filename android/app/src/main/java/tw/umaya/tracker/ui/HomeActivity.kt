@@ -84,6 +84,12 @@ private fun RoleTile(onPickHiker: () -> Unit, onPickGuardian: () -> Unit) {
             RoleSquare(iconRes = R.mipmap.tile_hiker, label = "我是徒步健行者", onClick = onPickHiker)
             Spacer(Modifier.height(28.dp))
             RoleSquare(iconRes = R.mipmap.tile_guardian, label = "我是留守人員", onClick = onPickGuardian)
+            Spacer(Modifier.height(36.dp))
+            Text(
+                "版本 " + appVersionName(androidx.compose.ui.platform.LocalContext.current),
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

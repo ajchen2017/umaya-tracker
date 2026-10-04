@@ -158,6 +158,10 @@ private fun mapSourceIcon(source: MapSource, packId: String?): String = when (so
 @Composable
 private fun Isolated(content: @Composable () -> Unit) = content()
 
+/** e.g. "4.9" — shown at the bottom of ☰ and on the home screen. */
+fun appVersionName(context: android.content.Context): String =
+    runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "?"
+
 /** Raw exception messages ("timeout", "Unable to resolve host…") aren't useful to a hiker. */
 private fun friendlyErrorMessage(e: Exception): String = when (e) {
     is SocketTimeoutException -> "連線逾時，山區訊號較弱時常見，請稍後再試一次"
@@ -2629,12 +2633,32 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     text = { Text("結束") },
                     onClick = { showFunctionMenu = false; showExitConfirmDialog = true },
                 )
+                HorizontalDivider()
+                Text(
+                    "版本 " + appVersionName(context),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
             } }
         }
 
         // Back to the role picker (登山者／留守人) — top-right, mirrors ☰ on the top-left.
-        Box(modifier = Modifier.align(Alignment.TopEnd).padding(top = 60.dp, end = 8.dp)) {
+        Column(
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 60.dp, end = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             MapCircleButton("🏠", size = 40.dp) { (context as ComponentActivity).finish() }
+            // ⛅ 天氣預報 for where the hiker is (best fix we have), else wherever the map is looking.
+            MapCircleButton("⛅", size = 40.dp) {
+                val here: Pair<Double, Double>? =
+                    phoneLocation?.let { it.latitude to it.longitude }
+                        ?: (if (mapsforgeActive) offlineMapController?.currentFix()?.let { it.latitude to it.longitude }
+                            else mapController?.currentFix()?.let { it.latitude to it.longitude })
+                        ?: (if (mapsforgeActive) offlineMapController?.mapCenter()?.let { it.latitude to it.longitude }
+                            else mapController?.mapCenter()?.let { it.latitude to it.longitude })
+                WeatherActivity.start(context, here?.first, here?.second)
+            }
         }
 
         // ---- 3. 左側圓圈：登山者回報區（留守人追蹤）----
