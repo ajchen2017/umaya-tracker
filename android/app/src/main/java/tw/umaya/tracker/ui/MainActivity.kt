@@ -985,11 +985,12 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     // The recorder lives in the service; after the process was killed or the app updated, nothing
     // restarts it on its own even though prefs still say 記錄中 — reopening the app does.
     LaunchedEffect(Unit) {
-        if (prefs.hasActiveHike && prefs.activeHikeName == null) {
-            runCatching {
-                val token = prefs.authToken ?: return@runCatching
+        val token = prefs.authToken
+        if (prefs.hasActiveHike && prefs.activeHikeName == null && token != null) {
+            val name = runCatching {
                 ApiClient.service.listHikes("Bearer $token").body()?.firstOrNull { it.id == prefs.activeHikeId }?.name
-            }.getOrNull()?.let { name -> prefs.activeHikeName = name; hikeName = name }
+            }.getOrNull()
+            if (name != null) { prefs.activeHikeName = name; hikeName = name }
         }
         if (!prefs.trackNamesMigrated) {
             val renamed = withContext(Dispatchers.IO) {
