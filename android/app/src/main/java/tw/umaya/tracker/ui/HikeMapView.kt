@@ -275,18 +275,20 @@ class HikeMapController internal constructor(
     // ---- 量距: straight line from the GPS fix to the screen-centre crosshair ----
     private var measureLine: Polyline? = null
     fun mapCenter(): GeoPoint = mapView.mapCenter.let { GeoPoint(it.latitude, it.longitude) }
-    fun setMeasureLine(from: GeoPoint?, to: GeoPoint?) {
-        if (from == null || to == null) {
+    /** 量距 polyline (start → added points → crosshair); null removes it. White, dashed. */
+    fun setMeasurePath(points: List<GeoPoint>?) {
+        if (points == null || points.size < 2) {
             measureLine?.let { mapView.overlays.remove(it); measureLine = null; mapView.invalidate() }
             return
         }
         val line = measureLine ?: Polyline(mapView).apply {
-            outlinePaint.color = Color.rgb(233, 30, 99)
+            outlinePaint.color = Color.WHITE
+            outlinePaint.setShadowLayer(3f, 0f, 0f, Color.argb(200, 0, 0, 0)) // stays visible on pale map areas
             outlinePaint.strokeWidth = 4 * mapView.resources.displayMetrics.density
             outlinePaint.pathEffect = android.graphics.DashPathEffect(floatArrayOf(24f, 14f), 0f)
             infoWindow = null
         }.also { mapView.overlays.add(it); measureLine = it }
-        line.setPoints(listOf(from, to))
+        line.setPoints(points)
         mapView.invalidate()
     }
 

@@ -2079,6 +2079,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
 
     // Compass heading for the stats panel's small compass.
     var showStatsPanel by remember { mutableStateOf(prefs.statsPanelExpanded) }
+    var showProfile by remember { mutableStateOf(false) } // 📈 高度剖面
     // The bottom status bar wraps to 2–3 lines (long 行程名稱, 伺服器離線, an error message, large
     // system font) — the stats panel sits on top of its measured height, not a fixed guess.
     var statusBarHeight by remember { mutableStateOf(44.dp) }
@@ -2086,32 +2087,53 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     // 量距: once the map is slid away from the GPS position, a dashed line runs from the fix to the
     // screen-centre crosshair with its straight-line distance — slide, stop, read. With GPS 永遠置中
     // it shows only after a hand pan (until the map recenters); with it off, whenever off-centre.
-    var measure by remember { mutableStateOf<Pair<Float, Float>?>(null) } // metres, bearing°
-    LaunchedEffect(mapController, offlineMapController, mapsforgeActive, gpsFollowing) {
+    var measure by remember { mutableStateOf<Pair<Float, Float>?>(null) } // metres, bearing° (single line)
+    // 📏 多段測距: points added at the crosshair one by one; the path runs start → points → crosshair.
+    var measuring by remember { mutableStateOf(false) }
+    val measurePoints = remember { mutableStateListOf<Pair<Double, Double>>() } // lat, lon (start first)
+    var measureTotal by remember { mutableStateOf(0.0) }
+    var measureLeg by remember { mutableStateOf<Pair<Float, Float>?>(null) } // last leg: metres, bearing°
+    fun currentFixLatLon(): Pair<Double, Double>? =
+        if (mapsforgeActive) offlineMapController?.currentFix()?.let { it.latitude to it.longitude }
+        else mapController?.currentFix()?.let { it.latitude to it.longitude }
+    fun mapCenterLatLon(): Pair<Double, Double>? =
+        if (mapsforgeActive) offlineMapController?.mapCenter()?.let { it.latitude to it.longitude }
+        else mapController?.mapCenter()?.let { it.latitude to it.longitude }
+    LaunchedEffect(mapController, offlineMapController, mapsforgeActive, gpsFollowing, measuring) {
         val out = FloatArray(2)
         while (true) {
-            var result: Pair<Float, Float>? = null
-            if (gpsFollowing) {
-                if (mapsforgeActive) {
-                    val fix = offlineMapController?.currentFix()
-                    val c = offlineMapController?.mapCenter()
-                    if (fix != null && c != null) {
-                        android.location.Location.distanceBetween(fix.latitude, fix.longitude, c.latitude, c.longitude, out)
-                        if (out[0] > MEASURE_MIN_M) { offlineMapController?.setMeasureLine(fix, c); result = out[0] to out[1] }
-                    }
-                } else {
-                    val fix = mapController?.currentFix()
-                    val c = mapController?.mapCenter()
-                    if (fix != null && c != null) {
-                        android.location.Location.distanceBetween(fix.latitude, fix.longitude, c.latitude, c.longitude, out)
-                        if (out[0] > MEASURE_MIN_M) { mapController?.setMeasureLine(fix, c); result = out[0] to out[1] }
-                    }
+            val fix = currentFixLatLon()
+            val c = mapCenterLatLon()
+            var path: List<Pair<Double, Double>>? = null
+            var single: Pair<Float, Float>? = null
+            if (measuring && c != null) {
+                path = measurePoints.toList() + c
+                var total = 0.0
+                for (k in 1 until path.size) {
+                    android.location.Location.distanceBetween(path[k - 1].first, path[k - 1].second, path[k].first, path[k].second, out)
+                    total += out[0]
                 }
+                measureTotal = total
+                measureLeg = if (path.size >= 2) out[0] to out[1] else null
+            } else if (!measuring && gpsFollowing && fix != null && c != null) {
+                android.location.Location.distanceBetween(fix.first, fix.second, c.first, c.second, out)
+                if (out[0] > MEASURE_MIN_M) { path = listOf(fix, c); single = out[0] to out[1] }
             }
-            if (result == null) { offlineMapController?.setMeasureLine(null, null); mapController?.setMeasureLine(null, null) }
-            measure = result
+            if (mapsforgeActive) {
+                offlineMapController?.setMeasurePath(path?.map { org.mapsforge.core.model.LatLong(it.first, it.second) })
+                mapController?.setMeasurePath(null)
+            } else {
+                mapController?.setMeasurePath(path?.map { GeoPoint(it.first, it.second) })
+                offlineMapController?.setMeasurePath(null)
+            }
+            measure = single
             delay(250)
         }
+    }
+    fun startMeasuring() {
+        val start = currentFixLatLon() ?: mapCenterLatLon() ?: return
+        measurePoints.clear(); measurePoints.add(start)
+        measureTotal = 0.0; measureLeg = null; measuring = true
     }
 
     // 比例尺: bottom-left, just above the bottom status bar (which overlaps the map's lower edge).
@@ -2296,7 +2318,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
     // GPS 永遠置中 (☰ → 地圖設定): only while GPS is on. The offline map centers inside its own fix
     // handler; osmdroid's follow mode needs re-arming after a drag, hence the 1-second tick.
     LaunchedEffect(keepGpsCentered, gpsFollowing, mapController, offlineMapController, mapsforgeActive) {
-        val on = keepGpsCentered && gpsFollowing
+        val on = keepGpsCentered && gpsFollowing && !measuring // the map must stay where the hiker is measuring
         offlineMapController?.keepCentered = on && mapsforgeActive
         while (true) {
             mapController?.keepCenteredTick(on && !mapsforgeActive)
@@ -2659,6 +2681,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                             else mapController?.mapCenter()?.let { it.latitude to it.longitude })
                 WeatherActivity.start(context, here?.first, here?.second)
             }
+            MapCircleButton("📈", size = 40.dp) { showProfile = !showProfile }
+            MapCircleButton("📏", size = 40.dp) { if (measuring) { measuring = false; measurePoints.clear() } else startMeasuring() }
         }
 
         // ---- 3. 左側圓圈：登山者回報區（留守人追蹤）----
@@ -2730,7 +2754,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         }
 
         // ---- 5. 右下：可收合的行程統計（時間、里程、步數、爬升/下降、指北針）----
-        if (tripActive) {
+        if (tripActive && !showProfile && !measuring) { // the 📈 / 📏 panels take this spot
             Box(modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = statusBarHeight + 8.dp)) {
                 if (!showStatsPanel) {
                     MapCircleButton("📊", size = 44.dp) { showStatsPanel = true; prefs.statsPanelExpanded = true }
@@ -2770,13 +2794,57 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             }
         }
 
-        measure?.let { (meters, bearing) ->
-            Text("✛", color = Color(0xFFE91E63), fontSize = 28.sp, modifier = Modifier.align(Alignment.Center))
+        if (measuring) {
+            Text("✛", color = Color.White, fontSize = 30.sp, modifier = Modifier.align(Alignment.Center))
+            Column(
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = statusBarHeight + 8.dp, start = 8.dp, end = 8.dp)
+                    .background(Color(0xF2202020), RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    "📏 多段測距　總長 " + formatDistance(measureTotal) + "（${measurePoints.size} 段）",
+                    color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                )
+                measureLeg?.let { (m, b) ->
+                    val deg = (b + 360f) % 360f
+                    Text("本段 " + formatDistance(m.toDouble()) + "・" + compassDirection(deg) + " ${deg.toInt()}°", color = Color.White.copy(alpha = 0.75f), fontSize = 12.sp)
+                }
+                Text("移動地圖讓 ✛ 對準下一點，再按「＋ 加點」", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { mapCenterLatLon()?.let { measurePoints.add(it) } }) { Text("＋ 加點", color = Color.White) }
+                    OutlinedButton(enabled = measurePoints.size > 1, onClick = { measurePoints.removeAt(measurePoints.lastIndex) }) {
+                        Text("↶ 復原", color = Color.White)
+                    }
+                    Button(
+                        onClick = { measuring = false; measurePoints.clear() },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828)),
+                    ) { Text("結束測距") }
+                }
+            }
+        }
+        if (!measuring) measure?.let { (meters, bearing) ->
+            Text("✛", color = Color.White, fontSize = 28.sp, modifier = Modifier.align(Alignment.Center))
             Text(
                 "📏 " + formatDistance(meters.toDouble()) + "・" + compassDirection(((bearing + 360f) % 360f)) + " ${((bearing + 360f) % 360f).toInt()}°",
                 color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold,
                 modifier = Modifier.align(Alignment.Center).padding(top = 64.dp)
                     .background(Color(0xCC202020), RoundedCornerShape(8.dp)).padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+
+        if (showProfile) {
+            val profiles = remember(visibleRoutes, recordingTrack) {
+                visibleRoutes.mapNotNull { Profile.of(it.name, it.route.segments) } +
+                    listOfNotNull(Profile.of("記錄中的軌跡", recordingTrack))
+            }
+            val here: GeoPoint? = phoneLocation?.let { GeoPoint(it.latitude, it.longitude) }
+                ?: (if (mapsforgeActive) offlineMapController?.currentFix()?.let { GeoPoint(it.latitude, it.longitude) }
+                    else mapController?.currentFix()?.let { GeoPoint(it.latitude, it.longitude) })
+            ElevationProfilePanel(
+                profiles = profiles, here = here, onClose = { showProfile = false },
+                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    .padding(start = 8.dp, end = 8.dp, bottom = statusBarHeight + 8.dp),
             )
         }
 

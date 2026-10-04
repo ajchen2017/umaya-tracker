@@ -145,6 +145,7 @@ private fun parseGpx(p: XmlPullParser): ParsedRoute {
                     wpt != null -> wptName = p.readText()
                     seg == null && !inTrkpt -> trkName = p.readText()
                 }
+                "ele" -> if (inTrkpt) p.readText().toDoubleOrNull()?.let { seg?.lastOrNull()?.altitude = it } // for the 高度剖面
                 "desc" -> if (wpt != null) wptDesc = p.readText()
                 "cmt" -> if (wpt != null) wptCmt = p.readText()
             }
@@ -169,7 +170,8 @@ private fun parseCoordinates(block: String): List<GeoPoint> =
         if (parts.size < 2) return@mapNotNull null
         val lon = parts[0].toDoubleOrNull()
         val lat = parts[1].toDoubleOrNull()
-        if (lon != null && lat != null) GeoPoint(lat, lon) else null
+        val alt = parts.getOrNull(2)?.toDoubleOrNull()
+        if (lon != null && lat != null) (if (alt != null) GeoPoint(lat, lon, alt) else GeoPoint(lat, lon)) else null
     }
 
 private fun parseKml(p: XmlPullParser): ParsedRoute {

@@ -328,21 +328,22 @@ class OfflineMapController internal constructor(
     // ---- 量距: straight line from the GPS fix to the screen-centre crosshair ----
     private var measureLine: Polyline? = null
     fun mapCenter(): LatLong = mapView.model.mapViewPosition.center
-    fun setMeasureLine(from: LatLong?, to: LatLong?) {
-        if (from == null || to == null) {
+    /** 量距 polyline (start → added points → crosshair); null removes it. White, dashed. */
+    fun setMeasurePath(points: List<LatLong>?) {
+        if (points == null || points.size < 2) {
             measureLine?.let { layers.remove(it); measureLine = null }
             return
         }
         val line = measureLine ?: Polyline(
             AndroidGraphicFactory.INSTANCE.createPaint().apply {
-                setColor(Color.rgb(233, 30, 99))
+                setColor(Color.WHITE)
                 setStrokeWidth(4 * mapView.model.displayModel.scaleFactor)
                 setStyle(Style.STROKE)
                 setDashPathEffect(floatArrayOf(24f, 14f))
             },
             AndroidGraphicFactory.INSTANCE,
         ).also { layers.add(it); measureLine = it }
-        line.setPoints(listOf(from, to))
+        line.setPoints(points)
         line.requestRedraw()
     }
 
