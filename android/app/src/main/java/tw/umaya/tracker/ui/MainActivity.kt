@@ -639,6 +639,8 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         )
     }
     val mapsforgeDownloader = remember { MapsforgeDownloader(context) }
+    var showWorldMaps by remember { mutableStateOf(false) } // 🌍 下載世界各地離線地圖
+    var torchOn by remember { mutableStateOf(false) }       // 手電筒
     var packRevision by remember { mutableStateOf(0) } // bumped after a pack is downloaded/imported/deleted
     val offlinePacks = remember(packRevision) { mapsforgeDownloader.allPacks() }
     val installedPackIds = remember(packRevision) {
@@ -1275,6 +1277,10 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                         enabled = !importingMap && downloadingPackId == null,
                         onClick = { mapImportLauncher.launch(arrayOf("*/*")) },
                     ) { Text(if (importingMap) "匯入中…" else "從手機匯入地圖檔（.map／.zip）") }
+                    OutlinedButton(
+                        enabled = !importingMap && downloadingPackId == null,
+                        onClick = { showWorldMaps = true },
+                    ) { Text("🌍 下載世界各地離線地圖（選洲 → 國家）") }
                     Text(
                         "可匯入其他 Mapsforge 格式的地圖檔；會套用魯地圖的樣式顯示。",
                         style = MaterialTheme.typography.bodySmall,
@@ -1596,6 +1602,9 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         }
     }
 
+    if (showWorldMaps) Isolated {
+        WorldMapsDialog(mapsforgeDownloader, onInstalled = { packRevision++ }, onDismiss = { showWorldMaps = false })
+    }
     if (showEndTripConfirm) Isolated {
         PanelDialog(
             onDismissRequest = { showEndTripConfirm = false },
@@ -2543,6 +2552,15 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     waypointPhoto = null
                     takeWaypointPhoto()
                 }
+            }
+
+            // 手電筒 — the phone's flash LED as a torch (yellow while on)
+            TopBarIconButton("@torch", statusColor = if (torchOn) Color(0xCCF9A825) else null) {
+                val cm = context.getSystemService(android.content.Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+                val id = cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true }
+                if (id == null) Toast.makeText(context, "這支手機沒有閃光燈", Toast.LENGTH_SHORT).show()
+                else runCatching { cm.setTorchMode(id, !torchOn); torchOn = !torchOn }
+                    .onFailure { Toast.makeText(context, "手電筒無法使用（相機可能正被使用）", Toast.LENGTH_SHORT).show() }
             }
 
             // (5) 打開/關閉 GPS — 搜尋中（還沒拿到第一個定位）琥珀底＋閃爍；定位就緒綠底＋✓

@@ -86,11 +86,12 @@ class MapsforgeDownloader(context: Context) {
         val catalogFiles = catalog.map { it.mapFileName }.toSet()
         val imported = mapsDir.listFiles { f -> f.extension == "map" && f.name !in catalogFiles }
             .orEmpty().sortedBy { it.name }
-            .map { OfflinePack("import:${it.name}", it.nameWithoutExtension, it.name, null) }
+            .map { OfflinePack("import:${it.name}", WorldMaps.label(it.nameWithoutExtension), it.name, null) }
         return catalog + imported
     }
 
     fun mapFile(pack: OfflinePack): File = File(mapsDir, pack.mapFileName)
+    fun hasWorldMap(name: String): Boolean = File(mapsDir, "$name.map").exists()
     fun demDir(pack: OfflinePack): File? = pack.demDirName?.let { File(baseDir, it) }
     fun isInstalled(pack: OfflinePack): Boolean = mapFile(pack).exists() && themeFile.exists()
 
@@ -188,6 +189,36 @@ class MapsforgeDownloader(context: Context) {
             extractZip(zipPart, destDir)
             zipPart.delete()
         }
+    }
+
+    /** Bytes still to download for a 世界地圖 [entry] (plus the shared theme if this phone lacks it). */
+    suspend fun worldMapBytes(entry: WorldMaps.Entry): Long = withContext(Dispatchers.IO) {
+        runCatching { fetchContentLength(WorldMaps.BASE + entry.path) }.getOrDefault(entry.bytes) +
+            if (themeFile.exists()) 0L else runCatching { fetchContentLength(themePackage.url) }.getOrDefault(0L)
+    }
+
+    /** Downloads one Mapsforge .map from the world server into maps/ (it then lists like an imported
+     *  pack) — and the 魯地圖 theme first if missing, since every pack renders with it. Resumable. */
+    suspend fun downloadWorldMap(entry: WorldMaps.Entry, onProgress: (Long, Long) -> Unit) = withContext(Dispatchers.IO) {
+        cancelled = false
+        mapsDir.mkdirs()
+        val url = WorldMaps.BASE + entry.path
+        val mapSize = runCatching { fetchContentLength(url) }.getOrDefault(entry.bytes)
+        val themeSize = if (themeFile.exists()) 0L else runCatching { fetchContentLength(themePackage.url) }.getOrDefault(0L)
+        val total = mapSize + themeSize
+        var done = 0L
+        if (!themeFile.exists()) {
+            val part = File(baseDir, "theme-${File(themePackage.url).name}.part")
+            downloadOneFile(themePackage.url, part) { onProgress(it, total) }
+            File(baseDir, themePackage.destDir).mkdirs()
+            extractZip(part, File(baseDir, themePackage.destDir)); part.delete()
+            done = themeSize
+        }
+        val dest = File(mapsDir, "${entry.name}.map")
+        val part = File(mapsDir, "${entry.name}.map.part")
+        downloadOneFile(url, part) { onProgress(done + it, total) }
+        if (!part.renameTo(dest)) throw IOException("無法寫入 ${dest.name}")
+        onProgress(total, total)
     }
 
     private fun fetchContentLength(url: String): Long {

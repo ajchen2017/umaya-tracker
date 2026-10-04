@@ -51,6 +51,7 @@ private val ICONS: Map<String, String> = mapOf(
     "tent" to "M3 20L12 4l9 16zM9 20l3-6 3 6",
     "stats" to "M4 20V10M10 20V4M16 20v-7M22 20H2",
     "chev" to "M9 6l6 6-6 6",
+    "torch" to "M8 2h8v5l-2 3v12h-4V10L8 7zM8 7h8M12 13v3",
     "share" to c(18f, 5f, 3f) + c(6f, 12f, 3f) + c(18f, 19f, 3f) + "M8.6 13.5l6.8 4M15.4 6.5l-6.8 4",
     "check" to "M5 12l5 5 9-10",
     "clock" to c(12f, 12f, 9f) + "M12 7v5l3 2",
