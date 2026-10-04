@@ -253,21 +253,35 @@ class PeakFinderActivity : ComponentActivity(), SensorEventListener {
             if (p.first < -20 || p.first > w + 20) return@mapNotNull null
             Triple(pk, p, d)
         }.sortedByDescending { (pk, _, d) -> pk.ele - d / 50 }
-        val placed = ArrayList<Float>()
+        // Labels stay level with the real horizon however the phone is turned (portrait, tilted,
+        // landscape): `up` is the world's up direction as it appears on screen, `along` the horizon.
+        val ux = r[6].toDouble(); val uy = r[7].toDouble(); val un = kotlin.math.hypot(ux, uy).coerceAtLeast(1e-6)
+        val upX = (ux / un).toFloat(); val upY = (-uy / un).toFloat()      // screen vector pointing "up"
+        val alX = -upY; val alY = upX                                       // screen vector along the horizon
+        val angle = Math.toDegrees(kotlin.math.atan2(ux, uy)).toFloat()     // canvas rotation for level text
+        val small = Paint(text).apply { textSize = 10.5f * unit; isFakeBoldText = false }
+        val rowH = 30 * unit; val gap = 6 * unit
+        val rows = ArrayList<MutableList<Pair<Float, Float>>>()             // per row: occupied spans along the horizon
+        var shown = 0
         for ((pk, p, d) in visible) {
-            if (placed.any { abs(it - p.first) < 17 * unit }) continue
-            placed += p.first
-            val top = p.second - 26 * unit
-            c.drawLine(p.first, p.second - 3 * unit, p.first, top, tick)
+            val line1 = "${pk.zh ?: pk.en} ${pk.ele.toInt()} m"
+            val line2 = listOfNotNull(pk.en.takeIf { pk.zh != null }, "%.1f km".format(d / 1000)).joinToString("・")
+            val half = maxOf(text.measureText(line1), small.measureText(line2)) / 2 + gap
+            val u = p.first * alX + p.second * alY                         // position along the horizon
+            // lowest row where this label's span is free
+            val row = (0 until 6).firstOrNull { k -> rows.getOrNull(k)?.none { (a0, a1) -> u + half > a0 && u - half < a1 } ?: true } ?: continue
+            while (rows.size <= row) rows += mutableListOf<Pair<Float, Float>>()
+            rows[row] += (u - half) to (u + half)
+            val lift = 22 * unit + row * rowH
+            val tx = p.first + upX * lift; val ty = p.second + upY * lift  // label anchor (bottom centre)
+            c.drawLine(p.first + upX * 3 * unit, p.second + upY * 3 * unit, tx, ty, tick)
             c.drawCircle(p.first, p.second, 2.5f * unit, tick)
-            // Longest form that fits between the tick and the top edge: drop the distance, then the English.
-            val names = listOfNotNull(pk.zh, pk.en).joinToString(" ")
-            val label = listOf(
-                "$names  ${pk.ele.toInt()} m・${"%.1f".format(d / 1000)} km", "$names  ${pk.ele.toInt()} m",
-                "${pk.zh ?: pk.en} ${pk.ele.toInt()} m",
-            ).firstOrNull { text.measureText(it) <= top - 4 * unit } ?: "${pk.zh ?: pk.en} ${pk.ele.toInt()}"
-            c.save(); c.rotate(-90f, p.first, top); c.drawText(label, p.first + 2 * unit, top + 4.5f * unit, text); c.restore()
-            if (placed.size >= 40) break
+            c.save(); c.rotate(angle, tx, ty)
+            text.textAlign = Paint.Align.CENTER; small.textAlign = Paint.Align.CENTER
+            c.drawText(line1, tx, ty - 13 * unit, text)
+            c.drawText(line2, tx, ty - 2 * unit, small)
+            c.restore()
+            if (++shown >= 40) break
         }
     }
 
