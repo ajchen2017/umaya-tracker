@@ -74,60 +74,6 @@
   #statusbar .row > span:last-child { min-width: 0; overflow-wrap: break-word; }
   #statusbar .label { color: #777; }
 
-  /* Live elevation-vs-time strip chart — floats over the left edge of the map
-     rather than living in the bottom status bar, and only shows when the
-     guardian has explicitly turned it on (default off — most check-ins never
-     need it, and it used to eat status-bar space even empty). Split into
-     three pieces: a fixed Y-axis gutter (left), the horizontally scrollable
-     plot itself (native scrollbar = the "drag back through history" ask),
-     and a fixed X-axis caption row below — so the axis labels never scroll
-     away with the data, only the plot does. */
-  /* bottom is set from JS to sit flush against the status bar's actual (variable)
-     height — the bar grows/shrinks with the alert banner and signal legend. */
-  #elevationChart {
-    display: none; flex-direction: column;
-    position: fixed; left: 0; z-index: 900;
-    width: 100vw; height: 122px;
-    background: rgba(255,255,255,.95); border-radius: 8px 8px 0 0;
-    box-shadow: 0 1px 8px rgba(0,0,0,.3); padding: 6px 6px 4px;
-  }
-  #elevationChart.show { display: flex; }
-  #btnElevToggle {
-    margin-top: 8px; border: 1px solid #ccc; border-radius: 20px; background: #f2f2f2;
-    color: #333; padding: 6px 14px; font-size: 13px; cursor: pointer;
-  }
-  #btnElevToggle.active { background: #2d7dd2; color: #fff; border-color: #2d7dd2; }
-  #elevationMain { flex: 1 1 auto; display: flex; overflow: hidden; min-height: 0; }
-  #elevationAxisY { flex: 0 0 32px; }
-  #elevationAxisY svg { display: block; width: 100%; height: 100%; }
-  #elevationScroll { flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
-  #elevationScroll svg { display: block; height: 100%; }
-  /* Zoom controls sit inline right after the caption text (定位頻率 …), not floating over
-     the plot's top-right corner — that used to crowd against the plot's own content up
-     there and look cramped. */
-  #elevationAxisX {
-    flex: 0 0 auto; font-size: 10px; color: #888; padding-top: 2px;
-    display: flex; align-items: center; justify-content: center; gap: 6px;
-  }
-  #elevationZoomControls { display: flex; gap: 3px; flex: 0 0 auto; }
-  #elevationZoomControls button {
-    width: 16px; height: 16px; font-size: 12px; line-height: 1; padding: 0;
-    border: 1px solid #ccc; border-radius: 3px; background: #fff; cursor: pointer;
-  }
-  #elevationChart .axis-line { stroke: #ddd; stroke-width: 1; }
-  #elevationChart .chart-frame { fill: none; stroke: #bbb; stroke-width: 1; }
-  #elevationChart .axis-label { font-size: 11px; fill: #888; }
-  #elevationChart .axis-tick { font-size: 10px; fill: #888; text-anchor: end; }
-  #elevationChart .elevation-line { stroke: #2d7dd2; stroke-width: 2; fill: none; }
-  #elevationChart .elev-point { fill: #2d7dd2; cursor: pointer; }
-  #elevationChart .elev-point:hover { fill: #16406e; }
-  #elevationChart .event-label {
-    font-size: 11px; font-weight: 700; fill: #444; text-anchor: middle;
-  }
-  #elevationChart .event-label.sos { fill: #d92b2b; }
-  #elevationChart .event-label.icon { font-size: 15px; }
-  #elevationChart .event-label.edge { text-anchor: end; } /* right-edge labels grow leftward, not off-canvas */
-
   #signalLegend {
     display: none; flex-wrap: wrap; gap: 4px 12px; padding-bottom: 8px; margin-bottom: 6px;
     border-bottom: 1px solid #eee;
@@ -306,24 +252,9 @@
     <div class="row"><span class="label">最後更新</span><span id="lastUpdate">—</span></div>
     <div class="row"><span class="label">目前位置</span><span id="lastPos">—</span></div>
     <div class="row"><span class="label">手機電量</span><span id="lastBattery">—</span></div>
-    <button id="btnElevToggle" title="顯示／隱藏高度曲線">📈 動態圖</button>
   </div>
 </div>
 
-<div id="elevationChart">
-  <div id="elevationMain">
-    <div id="elevationAxisY"></div>
-    <div id="elevationScroll"></div>
-  </div>
-  <div id="elevationAxisX">
-    <span id="elevationAxisXText"></span>
-    <div id="elevationZoomControls">
-      <button id="btnElevZoomOut" title="縮小（每格時間跨度變長，可看更久的歷史，最粗到 2 小時一格）">－</button>
-      <button id="btnElevZoomIn" title="放大（每格時間跨度變短）">＋</button>
-      <button id="btnElevZoomReset" title="重設為預設縮放（每格 1 分鐘）">↺</button>
-    </div>
-  </div>
-</div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/t/assets/config.js"></script>
