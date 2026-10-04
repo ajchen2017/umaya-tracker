@@ -77,6 +77,12 @@ dependencies {
     // Location
     implementation("com.google.android.gms:play-services-location:21.3.0")
 
+    // 🏔️ 山峰辨識 (AR): camera preview + capture
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+
     // Map rendering — plain XYZ tile source support, so it can hit the same 魯地圖/線上地圖
     // tile endpoints the guardian web page already uses, no separate map backend needed.
     // Embedded into Compose via AndroidView (already part of androidx.compose.ui:ui).

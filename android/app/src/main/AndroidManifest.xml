@@ -1,6 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
@@ -48,6 +50,13 @@
             android:exported="false"
             android:label="3D 飛行回放"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
+
+        <!-- 🏔️ 山峰辨識: portrait only — the AR projection assumes the camera looks out the back in portrait. -->
+        <activity
+            android:name=".ui.PeakFinderActivity"
+            android:exported="false"
+            android:label="山峰辨識"
+            android:screenOrientation="portrait" />
 
         <activity
             android:name=".ui.WeatherActivity"

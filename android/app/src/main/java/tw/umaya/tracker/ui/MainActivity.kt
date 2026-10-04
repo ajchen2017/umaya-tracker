@@ -2683,6 +2683,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
             }
             MapCircleButton("📈", size = 40.dp) { showProfile = !showProfile }
             MapCircleButton("📏", size = 40.dp) { if (measuring) { measuring = false; measurePoints.clear() } else startMeasuring() }
+            MapCircleButton("🏔️", size = 40.dp) { PeakFinderActivity.start(context) } // 山峰辨識 (AR)
         }
 
         // ---- 3. 左側圓圈：登山者回報區（留守人追蹤）----
