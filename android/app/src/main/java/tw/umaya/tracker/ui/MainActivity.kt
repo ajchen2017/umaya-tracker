@@ -2903,6 +2903,14 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                 Tool("chart", "高度剖面") { showProfile = !showProfile }
                 Tool("ruler", if (measuring) "結束測距" else "測距") { if (measuring) { measuring = false; measurePoints.clear() } else startMeasuring() }
                 Tool("mountain", "山峰辨識") { PeakFinderActivity.start(context) }
+                Tool("globe", "3D 地形") {
+                    // the routes shown on the map plus the one being recorded, explored in 3D
+                    val files = visibleRoutes.map { File(it.file) } +
+                        listOfNotNull(prefs.gpxFilePath?.takeIf { gpxRecording }?.let(::File))
+                    val usable = files.filter { it.exists() }
+                    if (usable.isEmpty()) Toast.makeText(context, "地圖上沒有顯示中的軌跡（到 軌跡 → 軌跡檔管理 匯入）", Toast.LENGTH_LONG).show()
+                    else ReliveActivity.start(context, usable, visibleRoutes.joinToString("、") { it.name }.ifBlank { "目前軌跡" }, explore = true)
+                }
                 Tool("share", "分享位置") { shareMyLocation() }
             }
             Box(

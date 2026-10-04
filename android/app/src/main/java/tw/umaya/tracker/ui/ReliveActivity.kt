@@ -61,7 +61,9 @@ class ReliveActivity : ComponentActivity() {
         setContentView(webView)
         val html = assets.open("relive.html").bufferedReader().use { it.readText() }
         // An https base (not file://) so MapLibre's workers and tile fetches behave like a normal site.
-        webView.loadDataWithBaseURL("https://relive.umaya.local/", html, "text/html", "utf-8", null)
+        // ?explore=1 = 3D 地形 (free camera over the route) instead of the flyover playback
+        val base = "https://relive.umaya.local/" + if (intent.getBooleanExtra(EXTRA_EXPLORE, false)) "?explore=1" else ""
+        webView.loadDataWithBaseURL(base, html, "text/html", "utf-8", null)
         // Back key/gesture goes to the page first: it closes a dialog or offers to stop a recording
         // instead of silently throwing the recording away; it calls Android.close() to leave.
         onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
@@ -231,12 +233,14 @@ class ReliveActivity : ComponentActivity() {
     companion object {
         const val EXTRA_FILES = "files"
         const val EXTRA_TITLE = "title"
+        const val EXTRA_EXPLORE = "explore"
 
-        fun start(context: Context, files: List<File>, title: String) {
+        fun start(context: Context, files: List<File>, title: String, explore: Boolean = false) {
             context.startActivity(
                 Intent(context, ReliveActivity::class.java)
                     .putStringArrayListExtra(EXTRA_FILES, ArrayList(files.map { it.absolutePath }))
                     .putExtra(EXTRA_TITLE, title)
+                    .putExtra(EXTRA_EXPLORE, explore)
             )
         }
     }

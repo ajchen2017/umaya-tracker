@@ -22,6 +22,14 @@
     gap: 10px; background: #0d1117; font-size: 15px; z-index: 5; text-align: center; padding: 20px; }
   #loading input { color: #fff; }
   body.recording #controls { display: none; }
+  #exploreBar, #exploreHint { display: none; }
+  body.explore #controls { display: none; }
+  body.explore #exploreBar { display: flex; position: absolute; left: 0; right: 0; bottom: 0; gap: 8px; flex-wrap: wrap; align-items: center;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); background: linear-gradient(transparent, rgba(0,0,0,.75) 40%); }
+  #exploreBar button, #exploreBar select { background: rgba(255,255,255,.14); color: #fff; border: 1px solid rgba(255,255,255,.25); border-radius: 8px; padding: 6px 10px; font-size: 14px; }
+  #exploreBar .grow { flex: 1; }
+  body.explore #exploreHint { display: block; position: absolute; left: 50%; top: 10px; transform: translateX(-50%); background: rgba(0,0,0,.6);
+    color: #fff; font-size: 12px; padding: 4px 10px; border-radius: 12px; white-space: nowrap; pointer-events: none; transition: opacity .6s; }
   #recBadge { display: none; position: absolute; top: 10px; right: 10px; background: #c62828; padding: 4px 10px; border-radius: 12px;
     font-weight: bold; font-size: 13px; z-index: 6; }
   body.recording #recBadge { display: block; }
@@ -47,6 +55,14 @@
 <div id="stage"><div id="map"></div><canvas id="overlay"></canvas></div>
 <div id="recBadge">● 錄影中</div>
 <div id="loading"><div id="loadingText">載入中…</div></div>
+<div id="exploreHint">單指拖曳移動・雙指縮放旋轉・雙指上下推改變俯角</div>
+<div id="exploreBar">
+  <select id="exStyle"><option value="sat" selected>衛星</option><option value="topo">地形圖</option><option value="osm">街道</option></select>
+  <button id="exReset">⟲ 重設視角</button>
+  <button id="exFly">▶ 飛行回放</button>
+  <span class="grow"></span>
+  <button id="exBack">↩ 返回</button>
+</div>
 <div id="controls">
   <div class="row">
     <button id="btnRestart" title="從頭播放">⏮</button>
@@ -370,7 +386,7 @@ function tick(ts) {
   state.lastFrame = ts;
   if (T && map && state.playing && !rec.active) advance(dt); // while recording, the recorder steps the clock
   ovCtx.clearRect(0, 0, ovCanvas.width, ovCanvas.height);
-  drawOverlay(ovCtx, ovCanvas.width, ovCanvas.height, devicePixelRatio);
+  if (!explore) drawOverlay(ovCtx, ovCanvas.width, ovCanvas.height, devicePixelRatio);
   requestAnimationFrame(tick);
 }
 
@@ -576,6 +592,22 @@ async function finishRecording(save) {
 const seekEl = document.getElementById('seek'), styleEl = document.getElementById('style'), playBtn = document.getElementById('btnPlay');
 function setPlaying(on) { state.playing = on; playBtn.textContent = on ? '⏸' : '▶'; }
 function restart(play) { setPlaying(play); startIntro(); }
+
+// ---------- 3D 地形探索 (?explore=1): Google-Earth-style free camera over the route ----------
+let explore = new URLSearchParams(location.search).has('explore');
+if (explore) document.body.classList.add('explore');
+function exploreView(duration) {
+  const cam = map.cameraForBounds(T.bounds, { padding: 70, pitch: 60, bearing: -20 });
+  map.easeTo({ ...cam, pitch: 60, bearing: -20, duration });
+}
+function startExplore() {
+  setPlaying(false); state.phase = 'idle';
+  const last = T.pts[T.pts.length - 1];
+  map.getSource('done').setData(lineGeo(T.pts.length - 1, last)); // the whole route in the bright colour
+  map.getSource('head').setData({ type: 'Point', coordinates: [T.pts[0].lon, T.pts[0].lat] });
+  exploreView(1600);
+  setTimeout(() => { $('exploreHint').style.opacity = '0'; }, 6000);
+}
 playBtn.onclick = () => {
   if (state.phase === 'idle' || state.phase === 'done') { restart(true); return; }
   setPlaying(!state.playing);
@@ -623,6 +655,10 @@ $('stopDiscard').onclick = () => { openDialog('stopDialog', false); finishRecord
 $('stopResume').onclick = () => { openDialog('stopDialog', false); rec.paused = false; };
 function goBack() { if (bridge) bridge.close(); else history.back(); }
 $('btnBack').onclick = goBack;
+$('exBack').onclick = goBack;
+$('exReset').onclick = () => exploreView(1000);
+$('exStyle').onchange = () => { styleEl.value = $('exStyle').value; styleEl.onchange(); };
+$('exFly').onclick = () => { explore = false; document.body.classList.remove('explore'); restart(true); };
 // The phone's back key/gesture (ReliveActivity forwards it here): close a dialog, offer to stop a
 // recording, otherwise leave.
 window.onAndroidBack = () => {
@@ -653,7 +689,7 @@ function boot(track) {
     addTrackLayers();
     sizeOverlay();
     document.getElementById('loading').style.display = 'none';
-    setTimeout(() => restart(true), 800);
+    if (explore) startExplore(); else setTimeout(() => restart(true), 800);
   });
   map.on('error', (e) => console.warn('map error', e && e.error && e.error.message));
   setTimeout(() => {
