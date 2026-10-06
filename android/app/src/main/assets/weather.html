@@ -7,30 +7,40 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
-  :root { --bg: #15181c; --card: rgba(32,32,32,.94); --line: rgba(255,255,255,.12); --dim: rgba(255,255,255,.62); --accent: #64b5f6; }
+  :root { --bg: #15181c; --card: rgba(0,0,0,.28); --line: rgba(255,255,255,.12); --dim: rgba(255,255,255,.62); --accent: #64b5f6; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: #fff; font-family: system-ui, "Noto Sans TC", sans-serif; font-size: 13px; }
-  body { display: flex; flex-direction: column; overflow: hidden; }
+  body { display: flex; flex-direction: column; overflow: hidden; position: relative; }
   header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #202020; }
   header h1 { font-size: 15px; margin: 0; flex: none; }
   #place { flex: 1; color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   header button, .btn { background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.22); border-radius: 8px; padding: 4px 9px; font-size: 13px; }
-  #mapbox { position: relative; height: 34vh; min-height: 170px; flex: none; }
+  #mapbox { position: relative; flex: 1; min-height: 0; }
   #map { position: absolute; inset: 0; }
   #map .leaflet-tile-pane { filter: brightness(.55) saturate(.7); } /* darker base so the wind lines stand out */
   #wind { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 450; }
   #layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 440; }
-  #layers { display: flex; gap: 4px; padding: 0 10px 6px; background: #202020; overflow-x: auto; scrollbar-width: none; flex: none; }
-  #layers button { flex: none; background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.2); border-radius: 14px; padding: 3px 10px; font-size: 12px; }
-  #layers button.on { background: var(--accent); color: #000; border-color: var(--accent); font-weight: bold; }
+  #layers, #alts { display: flex; gap: 4px; padding: 0 10px 6px; overflow-x: auto; scrollbar-width: none; flex: none; }
+  #alts:empty { display: none; }
+  #layers button, #alts button { flex: none; background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.2); border-radius: 14px; padding: 3px 10px; font-size: 12px; }
+  #layers button.on, #alts button.on { background: var(--accent); color: #000; border-color: var(--accent); font-weight: bold; }
   #layers .sep { flex: none; width: 1px; background: rgba(255,255,255,.2); margin: 2px 2px; }
-  #windInfo { position: absolute; left: 6px; bottom: 6px; z-index: 460; background: rgba(20,20,20,.78); border-radius: 8px;
+  #windInfo { position: absolute; left: 6px; top: 6px; z-index: 460; background: rgba(20,20,20,.78); border-radius: 8px;
     padding: 3px 7px; font-size: 11px; line-height: 15px; pointer-events: none; }
   #windInfo i { display: inline-block; width: 14px; height: 4px; border-radius: 2px; margin: 0 2px 1px 6px; vertical-align: middle; }
-  #timebar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #202020; flex: none; }
+  #timebar { display: flex; align-items: center; gap: 8px; padding: 2px 10px 6px; flex: none; }
   #timebar input { flex: 1; accent-color: var(--accent); }
   #hourLabel { width: 92px; font-size: 12px; text-align: right; color: #fff; }
   #play { width: 34px; }
-  #main { flex: 1; overflow-y: auto; padding: 8px 10px 16px; }
+  #main { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 10px 16px; }
+  /* 半透明資訊欄疊在全螢幕地圖上：min＝只剩時間軸與圖層、half、full＝滿版 */
+  #sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 1000; display: flex; flex-direction: column; height: 50%;
+    background: rgba(22,24,28,.62); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border-radius: 14px 14px 0 0; box-shadow: 0 -2px 12px rgba(0,0,0,.45); transition: height .25s ease; }
+  #sheet.min { height: auto; } #sheet.min #main { display: none; }
+  #sheet.full { height: calc(100% - var(--hdr, 44px)); border-radius: 0; }
+  #handle { flex: none; height: 20px; display: flex; justify-content: center; align-items: center; touch-action: none; }
+  #handle span { width: 42px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.45); }
+  .cursor { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #ffeb3b; box-shadow: 0 0 3px #000; pointer-events: none; display: none; }
   .card { background: var(--card); border-radius: 12px; padding: 8px 10px; margin-bottom: 8px; }
   .card h2 { font-size: 13px; margin: 0 0 6px; display: flex; align-items: baseline; gap: 6px; }
   .card h2 small { color: var(--dim); font-weight: normal; font-size: 11px; }
@@ -46,9 +56,9 @@
   .day .t { font-size: 12px; } .day .t b { color: #ffab91; } .day .t span { color: #90caf9; }
   .day .r { font-size: 11px; color: #4fc3f7; min-height: 14px; }
   .day.na { opacity: .35; }
-  #gramWrap { display: flex; }
-  #gramLabels { flex: none; width: 34px; }
-  #gramScroll { flex: 1; overflow-x: auto; }
+  #gramWrap, #xsWrap { display: flex; }
+  #gramLabels, #xsLabels { flex: none; width: 38px; }
+  #gramScroll, #xsScroll { flex: 1; overflow-x: auto; position: relative; }
   #elev { width: 100%; border-collapse: collapse; }
   #elev th, #elev td { padding: 4px 3px; border-bottom: 1px solid var(--line); text-align: center; font-size: 12px; }
   #elev th { color: var(--dim); font-weight: normal; font-size: 11px; }
@@ -67,16 +77,24 @@
   <button id="btnClose">✕</button>
 </header>
 <div id="mapbox"><div id="map"></div><canvas id="layer"></canvas><canvas id="wind"></canvas><div id="windInfo">風場載入中…</div></div>
+<div id="sheet" class="half">
+<div id="handle"><span></span></div>
 <div id="timebar"><button id="play" class="btn">▶</button><input id="hour" type="range" min="0" max="0" value="0"><span id="hourLabel">—</span></div>
 <div id="layers"></div>
+<div id="alts"></div>
 <div id="main">
   <div class="card"><div id="models"></div></div>
   <div id="status">讀取預報中…</div>
   <div id="content" style="display:none">
     <div class="card"><h2>14 天預報 <small id="range"></small></h2><div id="days"></div></div>
     <div class="card">
-      <h2>雲量與降水 <small>每 3 小時・左右滑動</small></h2>
-      <div id="gramWrap"><canvas id="gramLabels"></canvas><div id="gramScroll"><canvas id="gram"></canvas></div></div>
+      <h2>雲量與降水 <small>每 3 小時・點圖表切換地圖時間</small></h2>
+      <div id="gramWrap"><canvas id="gramLabels"></canvas><div id="gramScroll"><canvas id="gram"></canvas><div class="cursor" id="gramCursor"></div></div></div>
+    </div>
+    <div class="card">
+      <h2>雲層剖面（依高度） <small id="xsNote"></small></h2>
+      <div id="xsWrap"><canvas id="xsLabels"></canvas><div id="xsScroll"><canvas id="xs"></canvas><div class="cursor" id="xsCursor"></div></div></div>
+      <div class="note">各氣壓層的雲量；左側為該層實際高度（海拔）。褐色＝低於此格點地面。</div>
     </div>
     <div class="card">
       <h2>各高度天氣 <small id="elevDay"></small></h2>
@@ -86,6 +104,7 @@
     </div>
     <div class="note" style="text-align:center">資料：Open-Meteo（ECMWF IFS／NOAA GFS／DWD ICON）</div>
   </div>
+</div>
 </div>
 <script>
 'use strict';
@@ -99,6 +118,9 @@ const LEVELS = [1000, 925, 850, 700, 600, 500]; // hPa
 const ELEVS = [5000, 4000, 3000, 2000, 1000];   // m, top row first
 const HOURLY = ['cloud_cover', 'cloud_cover_low', 'cloud_cover_mid', 'cloud_cover_high', 'precipitation', 'temperature_2m', 'weather_code']
   .concat(...LEVELS.map((l) => [`temperature_${l}hPa`, `geopotential_height_${l}hPa`, `wind_speed_${l}hPa`]));
+const CL = [300, 400, 500, 600, 700, 850, 925]; // cloud levels (hPa), top row first
+const STD_Z = { 925: 800, 850: 1500, 700: 3000, 600: 4200, 500: 5600, 400: 7200, 300: 9200 }; // m, standard atmosphere
+HOURLY.push(...CL.map((l) => `cloud_cover_${l}hPa`), 'geopotential_height_400hPa', 'geopotential_height_300hPa');
 const DAILY = ['weather_code', 'temperature_2m_max', 'temperature_2m_min', 'precipitation_sum'];
 
 const q = new URLSearchParams(location.search);
@@ -202,26 +224,35 @@ function render() {
   }).join('');
   document.querySelectorAll('.day').forEach((el) => el.onclick = () => {
     const k = +el.dataset.k; if (!avail[k]) return;
-    state.day = k; render(); scrollGramTo(k);
-    if (wind.times) { const i = wind.times.indexOf(state.data.daily.time[k] + 'T12:00'); if (i >= 0) setHour(i, true); }
+    state.day = k; render();
+    const i = wind.times ? wind.times.indexOf(state.data.daily.time[k] + 'T12:00') : -1;
+    if (i >= 0) setHour(i, true); else scrollGramTo(k);
   });
   drawGram(days.length);
+  drawXs(days.length);
   renderElev();
+  syncCharts();
+  renderLayerButtons(); // altitude chips show this place's level heights
 }
 
 // Meteogram: 3-hour columns over 14 days — cloud layers as shaded cells, rain bars, temperature line.
-const COL = 26, ROWS = [['高雲', 'cloud_cover_high'], ['中雲', 'cloud_cover_mid'], ['低雲', 'cloud_cover_low'], ['全雲', 'cloud_cover']];
-const TOP = 30, ROW_H = 20, RAIN_H = 46, TEMP_H = 54;
+const COL = 26, ROWS = [['高雲', 'cloud_cover_high', '>8 km'], ['中雲', 'cloud_cover_mid', '3–8 km'], ['低雲', 'cloud_cover_low', '<3 km'], ['全雲', 'cloud_cover', '']];
+const TOP = 30, ROW_H = 24, RAIN_H = 46, TEMP_H = 54;
 function drawGram(nDays) {
   const times = state.data.hourly.time, idx = [];
   for (let i = 0; i < times.length && idx.length < nDays * 8; i += 3) idx.push(i);
   const W = idx.length * COL, Hh = TOP + ROWS.length * ROW_H + RAIN_H + TEMP_H + 6, dpr = devicePixelRatio || 1;
   const cv = document.getElementById('gram'), lv = document.getElementById('gramLabels');
-  for (const [c, w] of [[cv, W], [lv, 34]]) { c.width = w * dpr; c.height = Hh * dpr; c.style.width = w + 'px'; c.style.height = Hh + 'px'; }
+  for (const [c, w] of [[cv, W], [lv, 38]]) { c.width = w * dpr; c.height = Hh * dpr; c.style.width = w + 'px'; c.style.height = Hh + 'px'; }
   const g = cv.getContext('2d'), gl = lv.getContext('2d');
   g.scale(dpr, dpr); gl.scale(dpr, dpr);
   gl.fillStyle = 'rgba(255,255,255,.62)'; gl.font = '11px system-ui'; gl.textBaseline = 'middle';
-  ROWS.forEach(([lab], r) => gl.fillText(lab, 0, TOP + r * ROW_H + ROW_H / 2));
+  ROWS.forEach(([lab, , sub], r) => {
+    const y = TOP + r * ROW_H + ROW_H / 2;
+    gl.font = '11px system-ui'; gl.fillText(lab, 0, sub ? y - 5 : y);
+    if (sub) { gl.font = '9px system-ui'; gl.fillText(sub, 0, y + 6); }
+  });
+  gl.font = '11px system-ui';
   gl.fillText('雨量', 0, TOP + ROWS.length * ROW_H + RAIN_H / 2); gl.fillText('氣溫', 0, TOP + ROWS.length * ROW_H + RAIN_H + TEMP_H / 2);
 
   g.font = '10px system-ui'; g.textBaseline = 'middle'; g.textAlign = 'center';
@@ -273,6 +304,64 @@ function scrollGramTo(day) {
   const date = state.data.daily.time[day], times = state.data.hourly.time;
   const i = times.findIndex((t) => t.startsWith(date));
   if (i >= 0) document.getElementById('gramScroll').scrollTo({ left: Math.floor(i / 3) * COL - 4, behavior: 'smooth' });
+}
+
+/** Height (m) of pressure level l at hour i: the model's geopotential height, else the standard atmosphere. */
+const lvlZ = (l, i) => (state.data && i >= 0 && H(`geopotential_height_${l}hPa`)[i]) || STD_Z[l];
+// 雲層剖面: cloud cover per pressure level (300 hPa on top), same 3-hour columns as the meteogram.
+const XROW = 22;
+function drawXs(nDays) {
+  const times = state.data.hourly.time, idx = [];
+  for (let i = 0; i < times.length && idx.length < nDays * 8; i += 3) idx.push(i);
+  const W = idx.length * COL, Hh = TOP + CL.length * XROW + 4, dpr = devicePixelRatio || 1, ground = state.data.elevation || 0;
+  const cv = document.getElementById('xs'), lv = document.getElementById('xsLabels');
+  for (const [c, w] of [[cv, W], [lv, 38]]) { c.width = w * dpr; c.height = Hh * dpr; c.style.width = w + 'px'; c.style.height = Hh + 'px'; }
+  const g = cv.getContext('2d'), gl = lv.getContext('2d');
+  g.scale(dpr, dpr); gl.scale(dpr, dpr);
+  const i0 = idx.find(hasData) ?? 0;
+  gl.fillStyle = 'rgba(255,255,255,.62)'; gl.font = '10px system-ui'; gl.textBaseline = 'middle';
+  CL.forEach((l, r) => gl.fillText((lvlZ(l, i0) / 1000).toFixed(1) + ' km', 0, TOP + r * XROW + XROW / 2));
+  document.getElementById('xsNote').textContent = `格點海拔 ${Math.round(ground)} m`;
+  g.font = '10px system-ui'; g.textBaseline = 'middle'; g.textAlign = 'center';
+  idx.forEach((i, c) => {
+    const x = c * COL, t = times[i], hh = +t.slice(11, 13);
+    if (hh === 0) {
+      g.fillStyle = 'rgba(255,255,255,.25)'; g.fillRect(x, 0, 1, Hh);
+      const dt = new Date(t.slice(0, 10) + 'T12:00');
+      g.fillStyle = '#fff'; g.textAlign = 'left'; g.fillText(`${dt.getMonth() + 1}/${dt.getDate()} 週${WD[dt.getDay()]}`, x + 3, 8); g.textAlign = 'center';
+    }
+    g.fillStyle = 'rgba(255,255,255,.55)'; g.fillText(String(hh).padStart(2, '0'), x + COL / 2, 21);
+    if (!hasData(i)) { g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(x, TOP, COL, Hh - TOP); return; }
+    CL.forEach((l, r) => {
+      const y = TOP + r * XROW, z = lvlZ(l, i);
+      if (z < ground) { g.fillStyle = 'rgba(141,110,99,.45)'; g.fillRect(x, y + 1, COL, XROW - 2); return; } // below the ground
+      g.fillStyle = 'rgba(255,255,255,.05)'; g.fillRect(x + 1, y + 1, COL - 2, XROW - 2);
+      drawCloud(g, x + COL / 2, y + XROW / 2, H(`cloud_cover_${l}hPa`)[i] ?? 0, z < 3000);
+    });
+  });
+}
+/** Map time → yellow cursor on both charts (scrolled into view) and the matching day chip / 各高度 table. */
+function syncCharts() {
+  if (!state.data || !wind.times) return;
+  const h = wind.hour, t = wind.times[Math.floor(h)], i = state.data.hourly.time.indexOf(t);
+  for (const id of ['gramCursor', 'xsCursor']) document.getElementById(id).style.display = i < 0 ? 'none' : 'block';
+  if (i < 0) return;
+  const x = (i + h % 1) * COL / 3 + COL / 6;
+  for (const id of ['gramCursor', 'xsCursor']) document.getElementById(id).style.left = x + 'px';
+  const sc = document.getElementById('gramScroll');
+  if (sc.clientWidth && (x < sc.scrollLeft + 8 || x > sc.scrollLeft + sc.clientWidth - 8)) sc.scrollLeft = Math.max(0, x - sc.clientWidth / 3);
+  const k = state.data.daily.time.indexOf(t.slice(0, 10));
+  if (k >= 0 && k < 14 && k !== state.day) {
+    state.day = k;
+    document.querySelectorAll('.day').forEach((el) => el.classList.toggle('on', +el.dataset.k === k));
+    renderElev();
+  }
+}
+/** Tap a chart column → the map jumps to that hour. */
+function chartTap(e) {
+  if (!state.data || !wind.times) return;
+  const t = state.data.hourly.time[Math.max(0, Math.floor(e.offsetX / (COL / 3)))], j = wind.times.indexOf(t);
+  if (j >= 0) setHour(j, true);
 }
 
 function renderElev() {
@@ -388,9 +477,12 @@ const LAYERS = [
   { id: 'low', name: '低雲', key: 'cloud_cover_low', unit: '%' },
   { id: 'mid', name: '中雲', key: 'cloud_cover_mid', unit: '%' },
   { id: 'high', name: '高雲', key: 'cloud_cover_high', unit: '%' },
+  { id: 'lvl', name: '雲・選高度', get key() { return `cloud_cover_${cloudLvl}hPa`; }, unit: '%' },
   { id: 'rain', name: '雨量', key: 'precipitation', unit: 'mm/h' },
   { id: 'temp', name: '氣溫', key: 'temperature_2m', unit: '°C' },
 ];
+let cloudLvl = (() => { try { return +localStorage.getItem('wxCloudLvl') || 700; } catch (_) { return 700; } })();
+const curIdx = () => state.data && wind.times ? state.data.hourly.time.indexOf(wind.times[Math.floor(wind.hour)]) : -1;
 let layerId = (() => { try { return localStorage.getItem('wxLayer') || 'cloud'; } catch (_) { return 'cloud'; } })();
 let showWind = (() => { try { return localStorage.getItem('wxWind') !== '0'; } catch (_) { return true; } })();
 const layerCv = document.getElementById('layer'), lctx = layerCv.getContext('2d');
@@ -449,9 +541,21 @@ function renderLayerButtons() {
   document.getElementById('layers').innerHTML =
     `<button data-w="1" class="${showWind ? 'on' : ''}">🌬️ 風線</button><span class="sep"></span>` +
     LAYERS.map((l) => `<button data-l="${l.id}" class="${l.id === layerId ? 'on' : ''}">${l.name}</button>`).join('');
+  // 雲・選高度: one chip per pressure level, labelled with its height here (low → high)
+  document.getElementById('alts').innerHTML = layerId !== 'lvl' ? '' : CL.slice().reverse().map((l) =>
+    `<button data-a="${l}" class="${l === cloudLvl ? 'on' : ''}">${(lvlZ(l, curIdx()) / 1000).toFixed(1)} km</button>`).join('');
+  document.querySelectorAll('#alts button').forEach((b) => b.onclick = () => {
+    cloudLvl = +b.dataset.a; try { localStorage.setItem('wxCloudLvl', cloudLvl); } catch (_) {}
+    renderLayerButtons(); updateWindInfo();
+    if (wind.grid && wind.grid[0][`cloud_cover_${cloudLvl}hPa`]) drawLayer(); else loadWind(); // fetched on demand
+  });
   document.querySelectorAll('#layers button').forEach((b) => b.onclick = () => {
     if (b.dataset.w) { showWind = !showWind; try { localStorage.setItem('wxWind', showWind ? '1' : '0'); } catch (_) {} if (!showWind) wctx.clearRect(0, 0, wind.W, wind.Hh); }
-    else { layerId = b.dataset.l; try { localStorage.setItem('wxLayer', layerId); } catch (_) {} drawLayer(); }
+    else {
+      layerId = b.dataset.l; try { localStorage.setItem('wxLayer', layerId); } catch (_) {}
+      const L = LAYERS.find((l) => l.id === layerId);
+      if (L.key && wind.grid && !wind.grid[0][L.key]) loadWind(); else drawLayer();
+    }
     renderLayerButtons(); updateWindInfo();
   });
 }
@@ -472,6 +576,7 @@ function setHour(h, stop) {
   const t = wind.times[Math.floor(h)], dt = new Date(t.slice(0, 10) + 'T12:00');
   document.getElementById('hourLabel').textContent = `${dt.getMonth() + 1}/${dt.getDate()} 週${WD[dt.getDay()]} ${t.slice(11, 16)}`;
   if (!wind.playing) buildField();
+  syncCharts();
 }
 function setPlaying(on) { wind.playing = on; document.getElementById('play').textContent = on ? '⏸' : '▶'; }
 function updateWindInfo() {
@@ -481,7 +586,8 @@ function updateWindInfo() {
   const here = uv ? (() => { const sp = Math.hypot(uv[0], uv[1]), from = (Math.atan2(-uv[0], -uv[1]) * 180 / Math.PI + 360) % 360;
     return `📍 ${DIRS[Math.round(from / 45) % 8]}風 ${Math.round(sp)} km/h`; })() : '📍 —';
   const L = LAYERS.find((l) => l.id === layerId), lv = L && L.key ? scalarAt(state.lat, state.lon, wind.hour, L.key) : null;
-  const layerTxt = L && L.key ? `・${L.name} ${lv == null ? '—' : (L.id === 'rain' ? lv.toFixed(1) : Math.round(lv))} ${L.unit}` : '';
+  const lname = L && L.id === 'lvl' ? `${(lvlZ(cloudLvl, curIdx()) / 1000).toFixed(1)} km 雲量` : L && L.name;
+  const layerTxt = L && L.key ? `・${lname} ${lv == null ? '—' : (L.id === 'rain' ? lv.toFixed(1) : Math.round(lv))} ${L.unit}` : '';
   const legend = L && L.id === 'rain' ? RAIN_STOPS.map(([v, c]) => `<i style="background:rgb(${c.slice(0, 3)})"></i>${v}`).join('') + ' mm/h'
     : L && L.id === 'temp' ? TEMP_STOPS.filter((_, k) => k % 2 === 0).map(([v, c]) => `<i style="background:rgb(${c})"></i>${v}`).join('') + '°C'
     : showWind ? SPEED_COLORS.map(([lim, c], k) => `<i style="background:${c}"></i>${k === 0 ? '' : SPEED_COLORS[k - 1][0]}`).join('') + ' km/h' : '';
@@ -534,6 +640,29 @@ map.on('moveend', () => {
   else { clearTimeout(windReload); windReload = setTimeout(loadWind, 400); }
 });
 addEventListener('resize', () => { map.invalidateSize(); sizeWind(); buildField(); resetParticles(); });
+
+const sheet = document.getElementById('sheet');
+function setSheet(st) {
+  sheet.className = st; try { localStorage.setItem('wxSheet', st); } catch (_) {}
+}
+document.documentElement.style.setProperty('--hdr', document.querySelector('header').offsetHeight + 'px');
+setSheet((() => { try { return localStorage.getItem('wxSheet') || 'half'; } catch (_) { return 'half'; } })());
+// Tap the handle: min → half → full → min; swipe it up / down for one step.
+const SHEET_ORDER = ['min', 'half', 'full'];
+let dragY = null;
+const handle = document.getElementById('handle');
+handle.addEventListener('pointerdown', (e) => { dragY = e.clientY; handle.setPointerCapture(e.pointerId); });
+handle.addEventListener('pointerup', (e) => {
+  if (dragY == null) return;
+  const dy = e.clientY - dragY, k = SHEET_ORDER.indexOf(sheet.className); dragY = null;
+  if (Math.abs(dy) < 15) setSheet(SHEET_ORDER[(k + 1) % 3]);
+  else setSheet(SHEET_ORDER[Math.max(0, Math.min(2, k + (dy < 0 ? 1 : -1)))]);
+});
+document.getElementById('gram').onclick = chartTap;
+document.getElementById('xs').onclick = chartTap;
+const gs = document.getElementById('gramScroll'), xsc = document.getElementById('xsScroll');
+gs.addEventListener('scroll', () => { if (xsc.scrollLeft !== gs.scrollLeft) xsc.scrollLeft = gs.scrollLeft; });
+xsc.addEventListener('scroll', () => { if (gs.scrollLeft !== xsc.scrollLeft) gs.scrollLeft = xsc.scrollLeft; });
 
 renderModels();
 renderLayerButtons();
