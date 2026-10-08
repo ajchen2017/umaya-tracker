@@ -1036,6 +1036,18 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
         }
     }
 
+    // 記錄管理 →「顯示在地圖上」: the record comes back as a file path, loaded like an imported route.
+    val recordsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        val path = res.data?.getStringExtra(RecordsActivity.EXTRA_SHOW) ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            val added = importRoutes(listOf(Uri.fromFile(File(path))))
+            loadedRoutes.firstOrNull { it.file in added }?.let { route ->
+                if (mapsforgeActive) offlineMapController?.animateTo(route.firstPoint.latitude, route.firstPoint.longitude)
+                else mapController?.animateTo(route.firstPoint, 15.0)
+            }
+        }
+    }
+
     if (showLoadRouteDialog) Isolated {
         PanelDialog(
             onDismissRequest = { showLoadRouteDialog = false },
@@ -2821,6 +2833,7 @@ fun HikeScreen(prefs: Prefs, onLoggedOut: () -> Unit) {
                     }
                     "track" -> {
                         Text("軌跡", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp, modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp))
+                        Item("calendar", "記錄管理", sub = "列表／日曆・高度剖面・分享・匯出・刪除") { recordsLauncher.launch(RecordsActivity.intent(context)) }
                         Item("route", "GPX 記錄設定", sub = gpxIntervalLabel(gpxMinIntervalSec) + "・最短 $gpxMinDistanceM 米・匯出") { exportSelection.clear(); showTrackSettingsDialog = true }
                         Item("download", "軌跡檔管理", sub = "匯入、顯示／隱藏、偏離提醒" + if (loadedRoutes.isNotEmpty()) "・${loadedRoutes.size} 個" else "") { showLoadRouteDialog = true }
                         Item("merge", "GPX 合併匯出", sub = "可匯入手錶的 GPX，原檔保留") { mergeSelection.clear(); showMergeDialog = true }

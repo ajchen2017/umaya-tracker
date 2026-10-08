@@ -59,6 +59,11 @@
             android:screenOrientation="portrait" />
 
         <activity
+            android:name=".ui.RecordsActivity"
+            android:exported="false"
+            android:label="記錄管理" />
+
+        <activity
             android:name=".ui.WeatherActivity"
             android:exported="false"
             android:label="天氣預報"

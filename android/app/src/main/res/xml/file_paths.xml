@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <external-files-path name="photos" path="gpx/photos/" />
+    <!-- 記錄管理 → 分享 hands a recorded GPX to other apps -->
+    <external-files-path name="gpx" path="gpx/" />
+    <external-files-path name="imported" path="imported/" />
 </paths>
