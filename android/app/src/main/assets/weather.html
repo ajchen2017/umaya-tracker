@@ -116,7 +116,7 @@
       <table id="elev"></table>
       <div class="note">降水量是模型格點的數值；雨、雪依該高度的氣溫判斷（＞1°C 雨、＜−1°C 雪、之間雨雪混合），雪量以 1 mm 水 ≈ 1 cm 雪估算。高度溫度與風由各氣壓層內插而得。</div>
     </div>
-    <div class="note" style="text-align:center">資料：Open-Meteo（ECMWF IFS／NOAA GFS／DWD ICON）</div>
+    <div class="note" style="text-align:center">資料：Open-Meteo（ECMWF IFS／NOAA GFS）</div>
   </div>
 </div>
 </div>
@@ -124,9 +124,9 @@
 'use strict';
 const bridge = window.Android || null;
 const MODELS = [
-  { id: 'ecmwf_ifs025', name: 'ECMWF', note: '歐洲・15 天' },
-  { id: 'gfs_seamless', name: 'GFS', note: '美國・16 天' },
-  { id: 'icon_seamless', name: 'ICON', note: '德國・7 天' },
+  // note: grid spacing — ECMWF open data 0.25°; GFS surface 0.11°, pressure levels 0.25°
+  { id: 'ecmwf_ifs025', name: 'ECMWF', note: '歐洲・15 天・格距 25 km' },
+  { id: 'gfs_seamless', name: 'GFS', note: '美國・16 天・格距 13～25 km' },
 ];
 const LEVELS = [1000, 925, 850, 700, 600, 500]; // hPa
 const ELEVS = [5000, 4000, 3000, 2000, 1000];   // m, top row first
@@ -166,7 +166,7 @@ const SETTINGS = [
 
 const q = new URLSearchParams(location.search);
 let home = { lat: parseFloat(q.get('lat')) || 23.47, lon: parseFloat(q.get('lon')) || 120.95 };
-let state = { lat: home.lat, lon: home.lon, model: localStorage.getItem('wxModel') || 'ecmwf_ifs025', data: null, day: 0 };
+let state = { lat: home.lat, lon: home.lon, model: MODELS.some((m) => m.id === localStorage.getItem('wxModel')) ? localStorage.getItem('wxModel') : 'ecmwf_ifs025', data: null, day: 0 };
 
 // ---------- map ----------
 const map = L.map('map', { zoomControl: false, attributionControl: false }).setView([state.lat, state.lon], 10);

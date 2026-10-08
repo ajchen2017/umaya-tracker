@@ -17,6 +17,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -183,8 +184,10 @@ fun importedDir(context: Context) = File(context.getExternalFilesDir(null), "imp
 private fun importedTracks(context: Context): List<File> =
     importedDir(context).listFiles { f -> f.isFile && (f.extension.equals("gpx", true) || f.extension.equals("kml", true)) }.orEmpty().toList()
 
-/** Copies picked files into [importedDir]; returns how many were GPX/KML. */
-private fun importFiles(context: Context, uris: List<Uri>): Int {
+/** Copies picked files into [importedDir] (外部), or GPX only into the recordings folder (內部, e.g. restoring a
+ *  Google Drive backup — the name is kept so the date still reads); returns how many were taken. */
+private fun importFiles(context: Context, uris: List<Uri>, internal: Boolean): Int {
+    val dir = if (internal) File(context.getExternalFilesDir(null), "gpx").apply { mkdirs() } else importedDir(context)
     var n = 0
     for (uri in uris) runCatching {
         val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
@@ -193,9 +196,11 @@ private fun importFiles(context: Context, uris: List<Uri>): Int {
         val text = context.contentResolver.openInputStream(uri)!!.bufferedReader().use { it.readText() }
         if (!(text.contains("<gpx", true) || text.contains("<kml", true))) return@runCatching
         val ext = if (text.contains("<kml", true)) "kml" else "gpx"
+        if (internal && ext != "gpx") return@runCatching
         val base = name.substringBeforeLast('.').replace(Regex("[\\/:*?\"<>|]"), "_").ifBlank { "track" }
-        var f = File(importedDir(context), "$base.$ext"); var k = 2
-        while (f.exists()) f = File(importedDir(context), "$base-${k++}.$ext")
+        var f = File(dir, "$base.$ext"); var k = 2
+        if (f.exists() && f.readText() == text) return@runCatching // already here (same backup imported twice)
+        while (f.exists()) f = File(dir, "$base-${k++}.$ext")
         f.writeText(text); n++
     }
     return n
@@ -243,7 +248,7 @@ private fun RecordsScreen(onClose: () -> Unit, onShowOnMap: (File) -> Unit) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
-            val n = withContext(Dispatchers.IO) { importFiles(context, uris) }
+            val n = withContext(Dispatchers.IO) { importFiles(context, uris, internal = !external) }
             Toast.makeText(context, if (n > 0) "已匯入 $n 個檔案" else "沒有可匯入的 GPX／KML", Toast.LENGTH_SHORT).show()
             reload++
         }
@@ -269,13 +274,16 @@ private fun RecordsScreen(onClose: () -> Unit, onShowOnMap: (File) -> Unit) {
             }
             Text("✕", fontSize = 18.sp, modifier = Modifier.clickable(onClick = onClose).padding(start = 12.dp))
         }
-        if (open == null) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
-            Seg("內部・我的記錄", !external) { external = false }
+        if (open == null) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp)) {
+            Seg("內部", !external) { external = false }
             Spacer(Modifier.width(4.dp))
-            Seg("外部・匯入", external) { external = true }
-            Spacer(Modifier.weight(1f))
+            Seg("外部", external) { external = true }
+            Spacer(Modifier.width(10.dp))
             Seg("★ 最愛", favOnly) { favOnly = !favOnly }
-            if (external) { Spacer(Modifier.width(4.dp)); Seg("＋ 匯入", false) { picker.launch(arrayOf("*/*")) } }
+            Spacer(Modifier.width(4.dp))
+            Seg("＋ 匯入", false) { picker.launch(arrayOf("*/*")) }
+            Spacer(Modifier.width(4.dp))
+            Seg("☁ 備份", false) { records?.let { backupAll(context, it.map { r -> r.file }, if (external) "外部記錄" else "我的記錄") } }
         }
         val list = records?.let { all -> if (favOnly) all.filter { favKey(it.file) in favs } else all }
         val isFav = { r: TrackRecord -> favKey(r.file) in favs }
@@ -604,6 +612,15 @@ private fun writeTo(context: Context, uri: Uri, text: String) {
     runCatching { context.contentResolver.openOutputStream(uri, "wt")!!.use { it.write(text.toByteArray()) } }
         .onSuccess { Toast.makeText(context, "已匯出", Toast.LENGTH_SHORT).show() }
         .onFailure { Toast.makeText(context, "匯出失敗：${it.message}", Toast.LENGTH_LONG).show() }
+}
+
+/** ☁ 備份: every file of the tab to the share sheet at once — pick Google Drive (or mail, LINE…) to keep a copy. */
+private fun backupAll(context: Context, files: List<File>, label: String) {
+    if (files.isEmpty()) { Toast.makeText(context, "沒有檔案可備份", Toast.LENGTH_SHORT).show(); return }
+    val uris = ArrayList(files.map { FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it) })
+    val send = Intent(Intent.ACTION_SEND_MULTIPLE).setType("*/*").putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+        .putExtra(Intent.EXTRA_SUBJECT, "$label（${files.size} 個檔案）").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    context.startActivity(Intent.createChooser(send, "備份 ${files.size} 個檔案到…（選 Google 雲端硬碟）"))
 }
 
 private fun share(context: Context, r: TrackRecord) {
