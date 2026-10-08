@@ -16,7 +16,6 @@
   header button, .btn { background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.22); border-radius: 8px; padding: 4px 9px; font-size: 13px; }
   #mapbox { position: relative; flex: 1; min-height: 0; }
   #map { position: absolute; inset: 0; }
-  #map .leaflet-tile-pane { filter: brightness(.55) saturate(.7); } /* darker base so the wind lines stand out */
   #wind { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 450; }
   #layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 440; }
   #layers, #alts { display: flex; gap: 4px; padding: 0 10px 6px; overflow-x: auto; scrollbar-width: none; flex: none; }
@@ -67,6 +66,16 @@
   .note { color: var(--dim); font-size: 11px; line-height: 15px; margin-top: 6px; }
   #status { color: var(--dim); text-align: center; padding: 10px; }
   .leaflet-container { background: #2b2f33; }
+  #btnFull { position: absolute; right: 8px; top: 8px; z-index: 460; width: 38px; height: 38px; border-radius: 10px; font-size: 20px; line-height: 20px;
+    background: rgba(20,20,20,.78); color: #fff; border: 1px solid rgba(255,255,255,.25); }
+  #settings { position: absolute; inset: 0; z-index: 2000; background: rgba(15,17,20,.96); overflow-y: auto; padding: 0 14px 24px; display: none; }
+  #settings.open { display: block; }
+  #settings .top { display: flex; align-items: center; padding: 12px 0 6px; position: sticky; top: 0; background: rgba(15,17,20,.98); }
+  #settings .top h2 { flex: 1; margin: 0; font-size: 16px; }
+  #settings h3 { font-size: 12px; color: var(--dim); font-weight: normal; margin: 14px 0 6px; }
+  #settings .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+  #settings .opts button { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.25); border-radius: 16px; padding: 6px 14px; font-size: 13px; }
+  #settings .opts button.on { background: var(--accent); color: #000; border-color: var(--accent); font-weight: bold; }
 </style>
 </head>
 <body>
@@ -74,9 +83,14 @@
   <h1>⛅ 天氣預報</h1>
   <div id="place">—</div>
   <button id="btnMe" title="回到我的位置">📍</button>
+  <button id="btnSet" title="設定">⚙</button>
   <button id="btnClose">✕</button>
 </header>
-<div id="mapbox"><div id="map"></div><canvas id="layer"></canvas><canvas id="wind"></canvas><div id="windInfo">風場載入中…</div></div>
+<div id="mapbox"><div id="map"></div><canvas id="layer"></canvas><canvas id="wind"></canvas><div id="windInfo">風場載入中…</div><button id="btnFull" title="地圖滿版">⛶</button></div>
+<div id="settings">
+  <div class="top"><h2>⚙ 天氣設定</h2><button id="setClose" class="btn">✕</button></div>
+  <div id="setBody"></div>
+</div>
 <div id="sheet" class="half">
 <div id="handle"><span></span></div>
 <div id="timebar"><button id="play" class="btn">▶</button><input id="hour" type="range" min="0" max="0" value="0"><span id="hourLabel">—</span></div>
@@ -123,13 +137,46 @@ const STD_Z = { 925: 800, 850: 1500, 700: 3000, 600: 4200, 500: 5600, 400: 7200,
 HOURLY.push(...CL.map((l) => `cloud_cover_${l}hPa`), 'geopotential_height_400hPa', 'geopotential_height_300hPa');
 const DAILY = ['weather_code', 'temperature_2m_max', 'temperature_2m_min', 'precipitation_sum'];
 
+// ---------- 設定 ----------
+const CFG = Object.assign({ tu: 'C', wu: 'kmh', base: 'topo', dim: 'mid', dens: 'mid', flow: 'mid', speed: 'mid' },
+  (() => { try { return JSON.parse(localStorage.getItem('wxCfg')) || {}; } catch (_) { return {}; } })());
+const W_UNIT = { kmh: 'km/h', ms: 'm/s', kt: '節' };
+const tC = (c) => CFG.tu === 'F' ? c * 9 / 5 + 32 : c;          // °C → chosen unit
+const T = (c) => Math.round(tC(c)) + '°';
+const wC = (k) => CFG.wu === 'ms' ? k / 3.6 : CFG.wu === 'kt' ? k / 1.852 : k; // km/h → chosen unit
+const Wtxt = (k) => Math.round(wC(k)) + ' ' + W_UNIT[CFG.wu];
+const BASES = {
+  topo: ['https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, subdomains: 'abc' }],
+  osm: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }],
+  sat: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 18 }],
+};
+const DIM = { dark: 0.4, mid: 0.55, light: 0.8 };        // base map brightness under the colour layers
+const DENS = { low: 520, mid: 260, high: 130 };           // px² per wind particle
+const FLOW = { slow: 0.45, mid: 1, fast: 2 };            // particle drift speed multiplier
+const SPEEDS = { slow: 1, mid: 3, fast: 6 };              // forecast hours per second while playing
+const SETTINGS = [
+  ['溫度單位', 'tu', [['C', '°C'], ['F', '°F']]],
+  ['風速單位', 'wu', [['kmh', 'km/h'], ['ms', 'm/s'], ['kt', '節 (kt)']]],
+  ['底圖', 'base', [['topo', '地形圖'], ['osm', '街道圖'], ['sat', '衛星影像']]],
+  ['底圖亮度', 'dim', [['dark', '暗'], ['mid', '中'], ['light', '亮']]],
+  ['風線密度', 'dens', [['low', '少'], ['mid', '中'], ['high', '多']]],
+  ['風線流動速度', 'flow', [['slow', '慢'], ['mid', '中'], ['fast', '快']]],
+  ['時間播放速度', 'speed', [['slow', '慢'], ['mid', '中'], ['fast', '快']]],
+];
+
 const q = new URLSearchParams(location.search);
 let home = { lat: parseFloat(q.get('lat')) || 23.47, lon: parseFloat(q.get('lon')) || 120.95 };
 let state = { lat: home.lat, lon: home.lon, model: localStorage.getItem('wxModel') || 'ecmwf_ifs025', data: null, day: 0 };
 
 // ---------- map ----------
 const map = L.map('map', { zoomControl: false, attributionControl: false }).setView([state.lat, state.lon], 10);
-L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, subdomains: 'abc' }).addTo(map);
+let baseLayer = null;
+function applyBase() {
+  if (baseLayer) map.removeLayer(baseLayer);
+  baseLayer = L.tileLayer(...BASES[CFG.base] || BASES.topo).addTo(map);
+  map.getPane('tilePane').style.filter = `brightness(${DIM[CFG.dim] || 0.55}) saturate(.7)`; // darker base so the wind lines stand out
+}
+applyBase();
 const marker = L.marker([state.lat, state.lon]).addTo(map);
 map.on('click', (e) => setPlace(e.latlng.lat, e.latlng.lng));
 document.getElementById('btnMe').onclick = () => { setPlace(home.lat, home.lon); map.setView([home.lat, home.lon], 10); };
@@ -219,7 +266,7 @@ function render() {
     return `<div class="day ${k === state.day ? 'on' : ''} ${avail[k] ? '' : 'na'}" data-k="${k}">
       <div class="d">${k === 0 ? '今天' : '週' + WD[dt.getDay()]}<br>${dt.getMonth() + 1}/${dt.getDate()}</div>
       <div class="e">${WMO(Dly('weather_code')[k])}</div>
-      <div class="t">${mx == null ? '—' : `<b>${Math.round(mx)}°</b> <span>${Math.round(mn)}°</span>`}</div>
+      <div class="t">${mx == null ? '—' : `<b>${T(mx)}</b> <span>${T(mn)}</span>`}</div>
       <div class="r">${rr ? rr.toFixed(rr < 10 ? 1 : 0) + 'mm' : ''}</div></div>`;
   }).join('');
   document.querySelectorAll('.day').forEach((el) => el.onclick = () => {
@@ -286,7 +333,7 @@ function drawGram(nDays) {
   temps.forEach((t, c) => { if (t == null) { started = false; return; } const x = c * COL + COL / 2; started ? g.lineTo(x, yOf(t)) : g.moveTo(x, yOf(t)); started = true; });
   g.stroke();
   g.fillStyle = '#ffccbc';
-  temps.forEach((t, c) => { if (t != null && c % 2 === 0) g.fillText(Math.round(t) + '°', c * COL + COL / 2, yOf(t) - 8); });
+  temps.forEach((t, c) => { if (t != null && c % 2 === 0) g.fillText(T(t), c * COL + COL / 2, yOf(t) - 8); });
 }
 /** A cloud glyph for a cover percentage: bigger and whiter the more cloud; nothing below 3 %. */
 function drawCloud(g, cx, cy, v, low) {
@@ -382,7 +429,7 @@ function renderElev() {
     if (tmin === Infinity) return `<tr><td>${z} m</td><td colspan="3">—</td></tr>`;
     const prec = [rain >= 0.1 ? `<span class="rain">雨 ${rain.toFixed(rain < 10 ? 1 : 0)} mm</span>` : '',
       snow >= 0.1 ? `<span class="snow">雪 ~${snow.toFixed(snow < 10 ? 1 : 0)} cm</span>` : ''].filter(Boolean).join('<br>') || '—';
-    return `<tr><td>${z} m</td><td>${Math.round(tmin)}～${Math.round(tmax)}°C</td><td>${Math.round(wmax)} km/h</td><td>${prec}</td></tr>`;
+    return `<tr><td>${z} m</td><td>${Math.round(tC(tmin))}～${Math.round(tC(tmax))}°${CFG.tu}</td><td>${Wtxt(wmax)}</td><td>${prec}</td></tr>`;
   });
   document.getElementById('elev').innerHTML = '<tr><th>高度</th><th>氣溫</th><th>最大風速</th><th>降水</th></tr>' + rows.join('');
 }
@@ -463,7 +510,8 @@ function buildField() {
   const f = new Float32Array(wind.fcols * wind.frows * 3);
   for (let r = 0; r < wind.frows; r++) for (let c = 0; c < wind.fcols; c++) {
     const ll = map.containerPointToLatLng([c * STEP, r * STEP]), uv = uvAt(ll.lat, ll.lng, wind.hour), o = (r * wind.fcols + c) * 3;
-    if (uv) { f[o] = uv[0] * KPX; f[o + 1] = -uv[1] * KPX; f[o + 2] = Math.hypot(uv[0], uv[1]); } else f[o + 2] = -1;
+    const k = KPX * (FLOW[CFG.flow] || 1);
+    if (uv) { f[o] = uv[0] * k; f[o + 1] = -uv[1] * k; f[o + 2] = Math.hypot(uv[0], uv[1]); } else f[o + 2] = -1;
   }
   wind.field = f;
   drawLayer();
@@ -566,7 +614,7 @@ function fieldAt(x, y) {
   return wind.field[o + 2] < 0 ? null : wind.field.subarray(o, o + 3);
 }
 function resetParticles() {
-  const n = Math.round(wind.W * wind.Hh / 260);
+  const n = Math.round(wind.W * wind.Hh / (DENS[CFG.dens] || 260));
   wind.particles = Array.from({ length: n }, () => ({ x: Math.random() * wind.W, y: Math.random() * wind.Hh, age: Math.random() * 80 }));
   wctx.clearRect(0, 0, wind.W, wind.Hh);
 }
@@ -584,13 +632,14 @@ function updateWindInfo() {
   if (!wind.grid) return;
   const uv = uvAt(state.lat, state.lon, wind.hour);
   const here = uv ? (() => { const sp = Math.hypot(uv[0], uv[1]), from = (Math.atan2(-uv[0], -uv[1]) * 180 / Math.PI + 360) % 360;
-    return `📍 ${DIRS[Math.round(from / 45) % 8]}風 ${Math.round(sp)} km/h`; })() : '📍 —';
+    return `📍 ${DIRS[Math.round(from / 45) % 8]}風 ${Wtxt(sp)}`; })() : '📍 —';
   const L = LAYERS.find((l) => l.id === layerId), lv = L && L.key ? scalarAt(state.lat, state.lon, wind.hour, L.key) : null;
   const lname = L && L.id === 'lvl' ? `${(lvlZ(cloudLvl, curIdx()) / 1000).toFixed(1)} km 雲量` : L && L.name;
-  const layerTxt = L && L.key ? `・${lname} ${lv == null ? '—' : (L.id === 'rain' ? lv.toFixed(1) : Math.round(lv))} ${L.unit}` : '';
+  const val = lv == null ? '—' : L.id === 'rain' ? lv.toFixed(1) + ' ' + L.unit : L.id === 'temp' ? Math.round(tC(lv)) + ' °' + CFG.tu : Math.round(lv) + ' ' + L.unit;
+  const layerTxt = L && L.key ? `・${lname} ${val}` : '';
   const legend = L && L.id === 'rain' ? RAIN_STOPS.map(([v, c]) => `<i style="background:rgb(${c.slice(0, 3)})"></i>${v}`).join('') + ' mm/h'
-    : L && L.id === 'temp' ? TEMP_STOPS.filter((_, k) => k % 2 === 0).map(([v, c]) => `<i style="background:rgb(${c})"></i>${v}`).join('') + '°C'
-    : showWind ? SPEED_COLORS.map(([lim, c], k) => `<i style="background:${c}"></i>${k === 0 ? '' : SPEED_COLORS[k - 1][0]}`).join('') + ' km/h' : '';
+    : L && L.id === 'temp' ? TEMP_STOPS.filter((_, k) => k % 2 === 0).map(([v, c]) => `<i style="background:rgb(${c})"></i>${Math.round(tC(v))}`).join('') + '°' + CFG.tu
+    : showWind ? SPEED_COLORS.map(([lim, c], k) => `<i style="background:${c}"></i>${k === 0 ? '' : Math.round(wC(SPEED_COLORS[k - 1][0]))}`).join('') + ' ' + W_UNIT[CFG.wu] : '';
   el.innerHTML = (showWind ? here : '📍') + layerTxt + (legend ? '<br>' + legend : '');
 }
 document.getElementById('play').onclick = () => {
@@ -604,7 +653,7 @@ function windFrame(ts) {
   const dt = lastTs ? Math.min(0.1, (ts - lastTs) / 1000) : 0; lastTs = ts;
   if (wind.field && !wind.moving) {
     if (wind.playing) {
-      wind.hour = Math.min(wind.times.length - 1, wind.hour + dt * 3); // 3 forecast hours per second
+      wind.hour = Math.min(wind.times.length - 1, wind.hour + dt * (SPEEDS[CFG.speed] || 3)); // forecast hours per second (設定 → 播放速度)
       buildField();
       if ((labelTick += dt) > 0.15) { labelTick = 0; setHour(wind.hour, false); }
       if (wind.hour >= wind.times.length - 1) setPlaying(false);
@@ -658,6 +707,29 @@ handle.addEventListener('pointerup', (e) => {
   if (Math.abs(dy) < 15) setSheet(SHEET_ORDER[(k + 1) % 3]);
   else setSheet(SHEET_ORDER[Math.max(0, Math.min(2, k + (dy < 0 ? 1 : -1)))]);
 });
+// ⛶ map full screen: the sheet shrinks to the timebar; again → back to how it was
+let sheetBefore = 'half';
+document.getElementById('btnFull').onclick = () => {
+  if (sheet.className !== 'min') { sheetBefore = sheet.className; setSheet('min'); } else setSheet(sheetBefore === 'min' ? 'half' : sheetBefore);
+};
+function renderSettings() {
+  const model = `<h3>預報模型</h3><div class="opts">` + MODELS.map((m) =>
+    `<button data-model="${m.id}" class="${m.id === state.model ? 'on' : ''}">${m.name}・${m.note}</button>`).join('') + '</div>';
+  document.getElementById('setBody').innerHTML = model + SETTINGS.map(([title, key, opts]) =>
+    `<h3>${title}</h3><div class="opts">` + opts.map(([v, lab]) => `<button data-k="${key}" data-v="${v}" class="${CFG[key] === v ? 'on' : ''}">${lab}</button>`).join('') + '</div>').join('') +
+    '<div class="note" style="margin-top:16px">設定會保存在這支手機。資料：Open-Meteo；底圖：OpenTopoMap／OpenStreetMap／Esri。</div>';
+  document.querySelectorAll('#setBody button').forEach((b) => b.onclick = () => {
+    if (b.dataset.model) { document.querySelector(`#models button[data-m="${b.dataset.model}"]`).click(); renderSettings(); return; }
+    CFG[b.dataset.k] = b.dataset.v; try { localStorage.setItem('wxCfg', JSON.stringify(CFG)); } catch (_) {}
+    if (b.dataset.k === 'base' || b.dataset.k === 'dim') applyBase();
+    if (b.dataset.k === 'dens') resetParticles();
+    if (b.dataset.k === 'flow') buildField();
+    if (state.data) render();
+    updateWindInfo(); renderSettings();
+  });
+}
+document.getElementById('btnSet').onclick = () => { renderSettings(); document.getElementById('settings').classList.add('open'); };
+document.getElementById('setClose').onclick = () => document.getElementById('settings').classList.remove('open');
 document.getElementById('gram').onclick = chartTap;
 document.getElementById('xs').onclick = chartTap;
 const gs = document.getElementById('gramScroll'), xsc = document.getElementById('xsScroll');
