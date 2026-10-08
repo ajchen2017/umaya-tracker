@@ -459,7 +459,7 @@ async function loadWind() {
     lons.push((b.getWest() + (b.getEast() - b.getWest()) * i / (wind.nx - 1)).toFixed(3));
   }
   const url = 'https://api.open-meteo.com/v1/forecast?' + new URLSearchParams({
-    latitude: lats.join(','), longitude: lons.join(','), hourly: ['wind_speed_10m', 'wind_direction_10m'].concat(LAYERS.filter((l) => l.key).map((l) => l.key)).join(','),
+    latitude: lats.join(','), longitude: lons.join(','), hourly: ['wind_speed_10m', 'wind_direction_10m', 'pressure_msl'].concat(LAYERS.filter((l) => l.key).map((l) => l.key)).join(','),
     models: state.model, forecast_days: 16, timezone: 'auto',
   });
   try {
@@ -469,6 +469,7 @@ async function loadWind() {
     const key = (h, base) => Object.keys(h).find((k) => k.startsWith(base));
     wind.grid = arr.map((pt) => {
       const g = { s: pt.hourly[key(pt.hourly, 'wind_speed_10m')], d: pt.hourly[key(pt.hourly, 'wind_direction_10m_')] || pt.hourly[key(pt.hourly, 'wind_direction_10m')] };
+      g.pressure_msl = pt.hourly[key(pt.hourly, 'pressure_msl')];
       for (const l of LAYERS) if (l.key) g[l.key] = pt.hourly[Object.keys(pt.hourly).find((k) => k === l.key || k.startsWith(l.key + '_'))];
       return g;
     });
@@ -532,6 +533,7 @@ const LAYERS = [
 let cloudLvl = (() => { try { return +localStorage.getItem('wxCloudLvl') || 700; } catch (_) { return 700; } })();
 const curIdx = () => state.data && wind.times ? state.data.hourly.time.indexOf(wind.times[Math.floor(wind.hour)]) : -1;
 let layerId = (() => { try { return localStorage.getItem('wxLayer') || 'cloud'; } catch (_) { return 'cloud'; } })();
+let showIso = (() => { try { return localStorage.getItem('wxIso') === '1'; } catch (_) { return false; } })();
 let showWind = (() => { try { return localStorage.getItem('wxWind') !== '0'; } catch (_) { return true; } })();
 const layerCv = document.getElementById('layer'), lctx = layerCv.getContext('2d');
 const RAIN_STOPS = [[0.1, [129, 212, 250, 0.45]], [0.5, [41, 182, 246, 0.6]], [1.5, [30, 136, 229, 0.7]], [3, [124, 179, 66, 0.75]],
@@ -571,7 +573,9 @@ const small = document.createElement('canvas'), sctx = small.getContext('2d');
 function drawLayer() {
   lctx.setTransform(1, 0, 0, 1, 0, 0); lctx.clearRect(0, 0, layerCv.width, layerCv.height);
   const L = LAYERS.find((l) => l.id === layerId);
+  if (wind.grid && showIso) drawIso();
   if (!L || !L.key || !wind.grid) return;
+  lctx.globalCompositeOperation = 'destination-over'; // colours go under the isobars
   // One pixel per field cell, then scaled up with smoothing — a soft colour field like Windy's.
   small.width = wind.fcols; small.height = wind.frows;
   const img = sctx.createImageData(wind.fcols, wind.frows);
@@ -584,10 +588,52 @@ function drawLayer() {
   sctx.putImageData(img, 0, 0);
   lctx.imageSmoothingEnabled = true;
   lctx.drawImage(small, 0, 0, wind.fcols, wind.frows, 0, 0, wind.fcols * STEP * (layerCv.width / wind.W), wind.frows * STEP * (layerCv.height / wind.Hh));
+  lctx.globalCompositeOperation = 'source-over';
+}
+// 等壓線: sea-level pressure isobars by marching squares over the field grid, labelled in hPa.
+// The step adapts to the pressure range in view (0.5–4 hPa), so a small view still shows a few lines.
+let isoStep = 0;
+function drawIso() {
+  const nc = wind.fcols, nr = wind.frows, v = new Float32Array(nc * nr);
+  let lo = Infinity, hi = -Infinity;
+  for (let r = 0; r < nr; r++) for (let c = 0; c < nc; c++) {
+    const ll = map.containerPointToLatLng([c * STEP, r * STEP]), x = scalarAt(ll.lat, ll.lng, wind.hour, 'pressure_msl');
+    v[r * nc + c] = x == null ? NaN : x;
+    if (x != null) { lo = Math.min(lo, x); hi = Math.max(hi, x); }
+  }
+  if (!(hi > lo)) { isoStep = 0; return; }
+  isoStep = [0.5, 1, 2, 4].find((st) => (hi - lo) / st <= 8) || 4;
+  const dpr = devicePixelRatio || 1;
+  lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  lctx.strokeStyle = 'rgba(255,255,255,.75)'; lctx.lineWidth = 1.2; lctx.font = 'bold 11px system-ui';
+  lctx.textAlign = 'center'; lctx.textBaseline = 'middle';
+  for (let lev = Math.ceil(lo / isoStep) * isoStep; lev <= hi; lev += isoStep) {
+    lctx.beginPath(); let label = null, best = Infinity;
+    for (let r = 0; r < nr - 1; r++) for (let c = 0; c < nc - 1; c++) {
+      const a = v[r * nc + c], b = v[r * nc + c + 1], d = v[(r + 1) * nc + c], e = v[(r + 1) * nc + c + 1];
+      if (isNaN(a) || isNaN(b) || isNaN(d) || isNaN(e)) continue;
+      const x0 = c * STEP, y0 = r * STEP, pts = [];
+      const cut = (p, q, ax, ay, bx, by) => { if ((p - lev) * (q - lev) < 0) { const t = (lev - p) / (q - p); pts.push([ax + (bx - ax) * t, ay + (by - ay) * t]); } };
+      cut(a, b, x0, y0, x0 + STEP, y0); cut(b, e, x0 + STEP, y0, x0 + STEP, y0 + STEP);
+      cut(e, d, x0 + STEP, y0 + STEP, x0, y0 + STEP); cut(d, a, x0, y0 + STEP, x0, y0);
+      for (let k = 0; k + 1 < pts.length; k += 2) {
+        lctx.moveTo(pts[k][0], pts[k][1]); lctx.lineTo(pts[k + 1][0], pts[k + 1][1]);
+        const mx = (pts[k][0] + pts[k + 1][0]) / 2, my = (pts[k][1] + pts[k + 1][1]) / 2, dc = Math.abs(mx - wind.W * 0.6) + Math.abs(my - wind.Hh * 0.35);
+        if (dc < best) { best = dc; label = [mx, my]; }
+      }
+    }
+    lctx.stroke();
+    if (label) {
+      const txt = isoStep < 1 ? lev.toFixed(1) : String(Math.round(lev));
+      lctx.lineWidth = 3; lctx.strokeStyle = 'rgba(0,0,0,.7)'; lctx.strokeText(txt, label[0], label[1]);
+      lctx.fillStyle = '#fff'; lctx.fillText(txt, label[0], label[1]);
+      lctx.lineWidth = 1.2; lctx.strokeStyle = 'rgba(255,255,255,.75)';
+    }
+  }
 }
 function renderLayerButtons() {
   document.getElementById('layers').innerHTML =
-    `<button data-w="1" class="${showWind ? 'on' : ''}">🌬️ 風線</button><span class="sep"></span>` +
+    `<button data-w="1" class="${showWind ? 'on' : ''}">🌬️ 風線</button><button data-i="1" class="${showIso ? 'on' : ''}">〰 等壓線</button><span class="sep"></span>` +
     LAYERS.map((l) => `<button data-l="${l.id}" class="${l.id === layerId ? 'on' : ''}">${l.name}</button>`).join('');
   // 雲・選高度: one chip per pressure level, labelled with its height here (low → high)
   document.getElementById('alts').innerHTML = layerId !== 'lvl' ? '' : CL.slice().reverse().map((l) =>
@@ -598,7 +644,8 @@ function renderLayerButtons() {
     if (wind.grid && wind.grid[0][`cloud_cover_${cloudLvl}hPa`]) drawLayer(); else loadWind(); // fetched on demand
   });
   document.querySelectorAll('#layers button').forEach((b) => b.onclick = () => {
-    if (b.dataset.w) { showWind = !showWind; try { localStorage.setItem('wxWind', showWind ? '1' : '0'); } catch (_) {} if (!showWind) wctx.clearRect(0, 0, wind.W, wind.Hh); }
+    if (b.dataset.i) { showIso = !showIso; try { localStorage.setItem('wxIso', showIso ? '1' : '0'); } catch (_) {} drawLayer(); }
+    else if (b.dataset.w) { showWind = !showWind; try { localStorage.setItem('wxWind', showWind ? '1' : '0'); } catch (_) {} if (!showWind) wctx.clearRect(0, 0, wind.W, wind.Hh); }
     else {
       layerId = b.dataset.l; try { localStorage.setItem('wxLayer', layerId); } catch (_) {}
       const L = LAYERS.find((l) => l.id === layerId);
@@ -640,7 +687,9 @@ function updateWindInfo() {
   const legend = L && L.id === 'rain' ? RAIN_STOPS.map(([v, c]) => `<i style="background:rgb(${c.slice(0, 3)})"></i>${v}`).join('') + ' mm/h'
     : L && L.id === 'temp' ? TEMP_STOPS.filter((_, k) => k % 2 === 0).map(([v, c]) => `<i style="background:rgb(${c})"></i>${Math.round(tC(v))}`).join('') + '°' + CFG.tu
     : showWind ? SPEED_COLORS.map(([lim, c], k) => `<i style="background:${c}"></i>${k === 0 ? '' : Math.round(wC(SPEED_COLORS[k - 1][0]))}`).join('') + ' ' + W_UNIT[CFG.wu] : '';
-  el.innerHTML = (showWind ? here : '📍') + layerTxt + (legend ? '<br>' + legend : '');
+  const p = showIso ? scalarAt(state.lat, state.lon, wind.hour, 'pressure_msl') : null;
+  const isoTxt = showIso ? `・氣壓 ${p == null ? '—' : p.toFixed(1)} hPa` + (isoStep ? `（等壓線每 ${isoStep} hPa）` : '') : '';
+  el.innerHTML = (showWind ? here : '📍') + layerTxt + isoTxt + (legend ? '<br>' + legend : '');
 }
 document.getElementById('play').onclick = () => {
   if (!wind.times) return;
