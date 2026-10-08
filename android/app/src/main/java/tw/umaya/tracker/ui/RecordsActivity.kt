@@ -201,6 +201,11 @@ private fun importFiles(context: Context, uris: List<Uri>): Int {
     return n
 }
 
+/** 我的最愛: starred records, keyed by folder/file name (survives the list reloading; updated on rename). */
+private fun favKey(f: File) = f.parentFile?.name + "/" + f.name
+private fun loadFavs(context: Context): Set<String> = context.getSharedPreferences("records", Context.MODE_PRIVATE).getStringSet("fav", emptySet()).orEmpty().toSet()
+private fun saveFavs(context: Context, favs: Set<String>) = context.getSharedPreferences("records", Context.MODE_PRIVATE).edit().putStringSet("fav", favs).apply()
+
 // ---------- activity ----------
 
 /**
@@ -230,6 +235,9 @@ private fun RecordsScreen(onClose: () -> Unit, onShowOnMap: (File) -> Unit) {
     var reload by remember { mutableIntStateOf(0) }
     var calendarMode by remember { mutableStateOf(false) }
     var external by remember { mutableStateOf(false) }
+    var favs by remember { mutableStateOf(loadFavs(context)) }
+    var favOnly by remember { mutableStateOf(false) }
+    fun toggleFav(f: File) { val k = favKey(f); favs = if (k in favs) favs - k else favs + k; saveFavs(context, favs) }
     var open by remember { mutableStateOf<TrackRecord?>(null) }
     val recordingPath = prefs.gpxFilePath
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -266,23 +274,27 @@ private fun RecordsScreen(onClose: () -> Unit, onShowOnMap: (File) -> Unit) {
             Spacer(Modifier.width(4.dp))
             Seg("外部・匯入", external) { external = true }
             Spacer(Modifier.weight(1f))
-            if (external) Seg("＋ 匯入", false) { picker.launch(arrayOf("*/*")) }
+            Seg("★ 最愛", favOnly) { favOnly = !favOnly }
+            if (external) { Spacer(Modifier.width(4.dp)); Seg("＋ 匯入", false) { picker.launch(arrayOf("*/*")) } }
         }
-        val list = records
+        val list = records?.let { all -> if (favOnly) all.filter { favKey(it.file) in favs } else all }
+        val isFav = { r: TrackRecord -> favKey(r.file) in favs }
         when {
             list == null -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             open != null -> RecordDetail(
                 open!!, recording = !external && open!!.file.absolutePath == recordingPath, onShowOnMap = onShowOnMap,
                 onChanged = { gone -> if (gone) open = null; reload++ },
                 onRenamed = { f -> scope.launch { open = withContext(Dispatchers.IO) { TrackRecord.load(f) }; reload++ } },
+                fav = isFav(open!!), onFav = { toggleFav(open!!.file) },
+                onRenameFav = { old, new -> if (favKey(old) in favs) { favs = favs - favKey(old) + favKey(new); saveFavs(context, favs) } },
             )
             list.isEmpty() -> Text(
-                if (external) "還沒有外部記錄。按「＋ 匯入」加入別人記錄的 GPX 或規劃好的路線（GPX／KML）。" else "還沒有記錄。開始記錄軌跡後，每段記錄都會出現在這裡。",
+                if (favOnly) "沒有加入最愛的記錄。打開一筆記錄，按「☆ 加入最愛」。" else if (external) "還沒有外部記錄。按「＋ 匯入」加入別人記錄的 GPX 或規劃好的路線（GPX／KML）。" else "還沒有記錄。開始記錄軌跡後，每段記錄都會出現在這裡。",
                 color = Color.White.copy(alpha = 0.7f), modifier = Modifier.padding(16.dp),
             )
             // the calendar holds actual recordings only — a planned route has no date
-            calendarMode -> CalendarView(list.filter { it.timed }, recordingPath) { open = it }
-            else -> RecordList(list, recordingPath, monthHeaders = true) { open = it }
+            calendarMode -> CalendarView(list.filter { it.timed }, recordingPath, isFav) { open = it }
+            else -> RecordList(list, recordingPath, monthHeaders = true, isFav = isFav) { open = it }
         }
     }
 }
@@ -296,7 +308,7 @@ private fun Seg(label: String, on: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun RecordList(list: List<TrackRecord>, recordingPath: String?, monthHeaders: Boolean, onOpen: (TrackRecord) -> Unit) {
+private fun RecordList(list: List<TrackRecord>, recordingPath: String?, monthHeaders: Boolean, isFav: (TrackRecord) -> Boolean, onOpen: (TrackRecord) -> Unit) {
     LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp)) {
         var lastMonth = ""
         list.forEach { r ->
@@ -305,13 +317,13 @@ private fun RecordList(list: List<TrackRecord>, recordingPath: String?, monthHea
                 lastMonth = mk
                 item(key = "m$mk") { Text("${mk.take(4)} 年 ${mk.drop(4).toInt()} 月", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp)) }
             }
-            item(key = r.file.absolutePath) { RecordRow(r, r.file.absolutePath == recordingPath) { onOpen(r) } }
+            item(key = r.file.absolutePath) { RecordRow(r, r.file.absolutePath == recordingPath, isFav(r)) { onOpen(r) } }
         }
     }
 }
 
 @Composable
-private fun RecordRow(r: TrackRecord, recording: Boolean, onClick: () -> Unit) {
+private fun RecordRow(r: TrackRecord, recording: Boolean, fav: Boolean, onClick: () -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp).background(Color(0xFF23272C), RoundedCornerShape(10.dp)).clickable(onClick = onClick).padding(10.dp),
@@ -321,6 +333,7 @@ private fun RecordRow(r: TrackRecord, recording: Boolean, onClick: () -> Unit) {
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(r.title, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
+                if (fav) Text(" ★", color = Color(0xFFFFCA28), fontSize = 14.sp)
                 if (recording) Text(" ● 記錄中", color = Color(0xFFFF5252), fontSize = 11.sp)
             }
             Text(if (r.timed) dayLabel(r.start) + " " + hm(r.start) + (r.end?.let { "–" + (if (dayKey(it) != dayKey(r.start)) dayLabel(it) + " " else "") + hm(it) } ?: "") else "路線（無時間資料）・" + r.file.extension.uppercase(),
@@ -360,7 +373,7 @@ private fun TrackThumb(r: TrackRecord, modifier: Modifier, selected: Int = -1) {
 }
 
 @Composable
-private fun CalendarView(list: List<TrackRecord>, recordingPath: String?, onOpen: (TrackRecord) -> Unit) {
+private fun CalendarView(list: List<TrackRecord>, recordingPath: String?, isFav: (TrackRecord) -> Boolean, onOpen: (TrackRecord) -> Unit) {
     val cal = remember { Calendar.getInstance() }
     var ym by remember { mutableIntStateOf(cal.get(Calendar.YEAR) * 12 + cal.get(Calendar.MONTH)) }
     var day by remember { mutableStateOf<String?>(null) }
@@ -409,17 +422,24 @@ private fun CalendarView(list: List<TrackRecord>, recordingPath: String?, onOpen
             if (day != null) "${day!!.substring(4, 6).toInt()}/${day!!.substring(6).toInt()} 的記錄" else "本月 ${shown.size} 筆・" + km(shown.sumOf { it.distance }) + "・↑${shown.sumOf { it.ascent }.toInt()} m",
             color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
         )
-        RecordList(shown, recordingPath, monthHeaders = false, onOpen = onOpen)
+        RecordList(shown, recordingPath, monthHeaders = false, isFav = isFav, onOpen = onOpen)
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun RecordDetail(r: TrackRecord, recording: Boolean, onShowOnMap: (File) -> Unit, onChanged: (gone: Boolean) -> Unit, onRenamed: (File) -> Unit) {
+private fun RecordDetail(
+    r: TrackRecord, recording: Boolean, onShowOnMap: (File) -> Unit, onChanged: (gone: Boolean) -> Unit, onRenamed: (File) -> Unit,
+    fav: Boolean, onFav: () -> Unit, onRenameFav: (old: File, new: File) -> Unit,
+) {
     val context = LocalContext.current
     var sel by remember(r) { mutableIntStateOf(-1) }
     var askDelete by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<String?>(null) }
+    // GPX 編輯器 → reload this record, or open the 「（編輯）」 copy it saved
+    val editor = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        res.data?.getStringExtra(GpxEditorActivity.EXTRA_SAVED)?.let { onRenamed(File(it)) }
+    }
     val exportGpx = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/gpx+xml")) { uri -> uri?.let { writeTo(context, it, r.file.readText()) } }
     val exportKml = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.google-earth.kml+xml")) { uri ->
         uri?.let { writeTo(context, it, if (r.isKml) r.file.readText() else gpxToKml(r.file.readText(), r.title)) }
@@ -459,6 +479,8 @@ private fun RecordDetail(r: TrackRecord, recording: Boolean, onShowOnMap: (File)
         ProfileChart(r, sel) { sel = it }
         Spacer(Modifier.height(10.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Action("star", if (fav) "★ 已加入最愛" else "加入最愛", if (fav) Color(0xFFFFCA28) else Color.White, onFav)
+            if (!recording && !r.isKml) Action("edit", "編輯") { editor.launch(GpxEditorActivity.intent(context, r.file, r.title)) }
             Action("map", "顯示在地圖上") { onShowOnMap(r.file) }
             Action("film", "3D 回放") { ReliveActivity.start(context, listOf(r.file), r.title) }
             Action("globe", "3D 地形") { ReliveActivity.start(context, listOf(r.file), r.title, explore = true) }
@@ -496,7 +518,7 @@ private fun RecordDetail(r: TrackRecord, recording: Boolean, onShowOnMap: (File)
                 TextButton(enabled = name.isNotBlank(), onClick = {
                     renaming = null
                     val f = renameRecord(r.file, name)
-                    if (f == null) Toast.makeText(context, "無法重新命名（檔名重複？）", Toast.LENGTH_LONG).show() else onRenamed(f)
+                    if (f == null) Toast.makeText(context, "無法重新命名（檔名重複？）", Toast.LENGTH_LONG).show() else { onRenameFav(r.file, f); onRenamed(f) }
                 }) { Text("確定") }
             },
             dismissButton = { TextButton(onClick = { renaming = null }) { Text("取消") } },

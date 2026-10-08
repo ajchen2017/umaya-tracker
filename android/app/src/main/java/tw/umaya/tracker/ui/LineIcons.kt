@@ -57,6 +57,8 @@ private val ICONS: Map<String, String> = mapOf(
     "share" to c(18f, 5f, 3f) + c(6f, 12f, 3f) + c(18f, 19f, 3f) + "M8.6 13.5l6.8 4M15.4 6.5l-6.8 4",
     "check" to "M5 12l5 5 9-10",
     "clock" to c(12f, 12f, 9f) + "M12 7v5l3 2",
+    "edit" to "M4 20h4L19 9l-4-4L4 16zM14 6l4 4",
+    "star" to "M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z",
     "calendar" to "M4 6h16v14H4zM4 10h16M8 3v5M16 3v5",
     "link" to "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1",
     "download" to "M12 4v11M7 10l5 5 5-5M5 20h14",

@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>GPX 編輯</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --accent: #64b5f6; --dim: rgba(255,255,255,.62); }
+  html, body { margin: 0; height: 100%; background: #15181c; color: #fff; font-family: system-ui, "Noto Sans TC", sans-serif; font-size: 13px; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 6px; padding: 8px 10px; background: #202020; flex: none; }
+  header h1 { flex: 1; font-size: 15px; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  button { background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.22); border-radius: 8px; padding: 5px 10px; font-size: 13px; }
+  button:disabled { opacity: .35; }
+  button.on { background: var(--accent); color: #000; border-color: var(--accent); font-weight: bold; }
+  button.warn { color: #ff8a80; }
+  #map { flex: 1; min-height: 0; }
+  #map .leaflet-tile-pane { filter: brightness(.8); }
+  .leaflet-container { background: #2b2f33; }
+  #info { flex: none; padding: 6px 10px; background: #202020; font-size: 12px; line-height: 16px; min-height: 32px; }
+  #info b { color: var(--accent); font-weight: normal; }
+  #modes, #sub { flex: none; display: flex; gap: 5px; padding: 6px 10px; background: #202020; overflow-x: auto; scrollbar-width: none; }
+  #sub:empty { display: none; }
+  #modes button, #sub button { flex: none; border-radius: 16px; }
+  #hint { position: absolute; left: 50%; top: 56px; transform: translateX(-50%); z-index: 1000; background: rgba(0,0,0,.72); padding: 4px 10px;
+    border-radius: 12px; font-size: 12px; pointer-events: none; white-space: nowrap; max-width: 92vw; overflow: hidden; text-overflow: ellipsis; }
+  #modal { position: fixed; inset: 0; z-index: 3000; background: rgba(0,0,0,.55); display: none; align-items: flex-end; justify-content: center; }
+  #modal.open { display: flex; }
+  #modal .box { background: #23272c; border-radius: 14px 14px 0 0; width: 100%; max-width: 520px; padding: 12px 14px 18px; max-height: 85vh; overflow-y: auto; }
+  #modal h2 { font-size: 15px; margin: 0 0 6px; }
+  #modal p { color: var(--dim); font-size: 12px; margin: 4px 0 8px; line-height: 17px; }
+  #modal label { display: block; color: var(--dim); font-size: 12px; margin: 8px 0 3px; }
+  #modal input, #modal textarea { width: 100%; box-sizing: border-box; background: #15181c; color: #fff; border: 1px solid rgba(255,255,255,.25); border-radius: 8px; padding: 7px; font-size: 14px; }
+  #modal .btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; justify-content: flex-end; }
+  #modal .list button { display: block; width: 100%; text-align: left; margin-bottom: 6px; padding: 9px 12px; }
+  .wpt { background: #ffca28; color: #000; border-radius: 10px; padding: 1px 6px; font-size: 11px; white-space: nowrap; border: 1px solid #000; transform: translate(-50%, -130%); display: inline-block; }
+  .wpt.sel { background: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <button id="btnBack">‹</button>
+  <h1 id="title">GPX 編輯</h1>
+  <button id="btnUndo" disabled>↶ 復原</button>
+  <button id="btnSave">💾 儲存</button>
+</header>
+<div id="map"></div>
+<div id="hint"></div>
+<div id="info">載入中…</div>
+<div id="sub"></div>
+<div id="modes"></div>
+<div id="modal"><div class="box" id="modalBox"></div></div>
+<script>
+'use strict';
+const bridge = window.Android || null;
+const $ = (id) => document.getElementById(id);
+
+// ---------- data ----------
+// segs: [[{lat, lon, ele, time}]] (time ms or null), wpts: [{lat, lon, ele, time, name, desc, link}]
+let segs = [], wpts = [], trkName = '', dirty = false;
+const undo = [];
+const snapshot = () => JSON.stringify({ segs, wpts });
+function commit(label) { // call BEFORE changing data
+  undo.push(snapshot()); if (undo.length > 60) undo.shift();
+  dirty = true; $('btnUndo').disabled = false;
+  if (label) hint(label + '（可復原）');
+}
+$('btnUndo').onclick = () => {
+  const s = undo.pop(); if (!s) return;
+  ({ segs, wpts } = JSON.parse(s)); sel = { a: -1, b: -1 }; selW = -1;
+  $('btnUndo').disabled = !undo.length; redraw(); hint('已復原');
+};
+
+function parseGpx(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  const tag = (el, n) => { const x = el.getElementsByTagNameNS('*', n)[0]; return x ? x.textContent.trim() : null; };
+  const num = (v) => v == null || v === '' || isNaN(+v) ? null : +v;
+  const time = (v) => { const t = v ? Date.parse(v) : NaN; return isNaN(t) ? null : t; };
+  const pt = (el) => ({ lat: +el.getAttribute('lat'), lon: +el.getAttribute('lon'), ele: num(tag(el, 'ele')), time: time(tag(el, 'time')) });
+  segs = [...doc.getElementsByTagNameNS('*', 'trkseg')].map((s) => [...s.getElementsByTagNameNS('*', 'trkpt')].map(pt));
+  const rte = [...doc.getElementsByTagNameNS('*', 'rte')].map((r) => [...r.getElementsByTagNameNS('*', 'rtept')].map(pt));
+  segs = segs.concat(rte).filter((s) => s.length);
+  wpts = [...doc.getElementsByTagNameNS('*', 'wpt')].map((w) => {
+    const link = w.getElementsByTagNameNS('*', 'link')[0];
+    return { ...pt(w), name: tag(w, 'name') || '航點', desc: tag(w, 'desc') || '', link: link ? link.getAttribute('href') : null };
+  });
+  const trk = doc.getElementsByTagNameNS('*', 'trk')[0];
+  trkName = trk ? (tag(trk, 'name') || '') : '';
+}
+const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const iso = (t) => new Date(t).toISOString().replace(/\.\d{3}Z$/, 'Z');
+function toGpx() {
+  const p = (x) => `lat="${x.lat.toFixed(7)}" lon="${x.lon.toFixed(7)}"`;
+  const body = (x) => (x.ele != null ? ` <ele>${x.ele.toFixed(1)}</ele>` : '') + (x.time != null ? `<time>${iso(x.time)}</time>` : '');
+  const w = wpts.map((x) => `<wpt ${p(x)}>${body(x)}<name>${esc(x.name)}</name>` + (x.desc ? `<desc>${esc(x.desc)}</desc>` : '') +
+    (x.link ? `<link href="${esc(x.link)}"><text>照片</text><type>image/jpeg</type></link>` : '') + '</wpt>\n').join('');
+  const t = segs.filter((s) => s.length).map((s) => '<trkseg>\n' + s.map((x) => `<trkpt ${p(x)}>${body(x)}</trkpt>\n`).join('') + '</trkseg>').join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="umaya-tracker" xmlns="http://www.topografix.com/GPX/1/1">\n${w}<trk><name>${esc(trkName)}</name>${t}</trk></gpx>\n`;
+}
+
+// flat index ⇄ (segment, point)
+const total = () => segs.reduce((n, s) => n + s.length, 0);
+function loc(i) { for (let k = 0; k < segs.length; k++) { if (i < segs[k].length) return [k, i]; i -= segs[k].length; } return null; }
+function flatIdx(k, j) { let n = 0; for (let q = 0; q < k; q++) n += segs[q].length; return n + j; }
+const P = (i) => { const l = loc(i); return l ? segs[l[0]][l[1]] : null; };
+function dist(a, b) { // metres
+  const R = 6371000, r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function statsOf(pts) { // [{...}] contiguous
+  let d = 0, up = 0, down = 0, ref = null;
+  pts.forEach((p, i) => {
+    if (i) d += dist(pts[i - 1], p);
+    if (p.ele != null) { if (ref == null) ref = p.ele; else if (p.ele - ref >= 8) { up += p.ele - ref; ref = p.ele; } else if (ref - p.ele >= 8) { down += ref - p.ele; ref = p.ele; } }
+  });
+  const ts = pts.map((p) => p.time).filter((t) => t != null);
+  return { d, up, down, dur: ts.length > 1 ? ts[ts.length - 1] - ts[0] : null };
+}
+const km = (m) => m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(2) + ' km';
+const dur = (ms) => { const m = Math.round(ms / 60000); return m < 60 ? m + ' 分' : Math.floor(m / 60) + ' 時 ' + (m % 60) + ' 分'; };
+const fmtT = (t) => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`; };
+
+// ---------- 地形高度 (AWS Terrarium DEM, z12) ----------
+const demTiles = new Map();
+function demTile(x, y, z) {
+  const k = `${z}/${x}/${y}`;
+  if (!demTiles.has(k)) demTiles.set(k, new Promise((res) => {
+    const img = new Image(); img.crossOrigin = 'anonymous';
+    img.onload = () => { const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d'); g.drawImage(img, 0, 0); res(g.getImageData(0, 0, 256, 256).data); };
+    img.onerror = () => res(null);
+    img.src = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${k}.png`;
+  }));
+  return demTiles.get(k);
+}
+async function demEle(lat, lon) {
+  const z = 12, n = 2 ** z, x = (lon + 180) / 360 * n, s = Math.sin(lat * Math.PI / 180), y = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n;
+  const d = await demTile(Math.floor(x), Math.floor(y), z); if (!d) return null;
+  const px = Math.min(255, Math.floor((x % 1) * 256)), py = Math.min(255, Math.floor((y % 1) * 256)), o = (py * 256 + px) * 4;
+  return d[o] * 256 + d[o + 1] + d[o + 2] / 256 - 32768;
+}
+
+// ---------- map ----------
+const map = L.map('map', { zoomControl: false, attributionControl: false, preferCanvas: true });
+L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, subdomains: 'abc' }).addTo(map);
+const lineLayer = L.layerGroup().addTo(map), dotLayer = L.layerGroup().addTo(map), wptLayer = L.layerGroup().addTo(map);
+let mode = 'select', sel = { a: -1, b: -1 }, selW = -1, newSeg = false, freehand = false;
+let hintTimer = null;
+function hint(t, ms = 2600) { const h = $('hint'); h.textContent = t; h.style.display = t ? '' : 'none'; clearTimeout(hintTimer); if (t && ms) hintTimer = setTimeout(() => (h.style.display = 'none'), ms); }
+
+function selRange() { if (sel.a < 0) return null; const b = sel.b < 0 ? sel.a : sel.b; return [Math.min(sel.a, b), Math.max(sel.a, b)]; }
+function redraw() {
+  lineLayer.clearLayers(); dotLayer.clearLayers(); wptLayer.clearLayers();
+  segs.forEach((s) => s.length > 1 && L.polyline(s.map((p) => [p.lat, p.lon]), { color: '#ff7043', weight: 4, interactive: false }).addTo(lineLayer));
+  const r = selRange();
+  if (r && r[1] > r[0]) { // highlighted range, segment by segment
+    const [ka, ja] = loc(r[0]), [kb, jb] = loc(r[1]);
+    for (let k = ka; k <= kb; k++) {
+      const s = segs[k].slice(k === ka ? ja : 0, k === kb ? jb + 1 : undefined);
+      if (s.length > 1) L.polyline(s.map((p) => [p.lat, p.lon]), { color: '#ffeb3b', weight: 7, opacity: .9, interactive: false }).addTo(lineLayer);
+    }
+  }
+  const all = segs.flat();
+  if (all.length) {
+    L.circleMarker([all[0].lat, all[0].lon], { radius: 7, color: '#fff', weight: 2, fillColor: '#66bb6a', fillOpacity: 1, interactive: false }).addTo(dotLayer);
+    L.circleMarker([all[all.length - 1].lat, all[all.length - 1].lon], { radius: 7, color: '#fff', weight: 2, fillColor: '#ef5350', fillOpacity: 1, interactive: false }).addTo(dotLayer);
+  }
+  // every point as a dot once zoomed in (capped), so single points can be picked, moved or erased
+  if (map.getZoom() >= 15) {
+    const b = map.getBounds().pad(0.1); let n = 0;
+    for (let i = 0; i < all.length && n < 1500; i++) if (b.contains([all[i].lat, all[i].lon])) {
+      n++; L.circleMarker([all[i].lat, all[i].lon], { radius: 3.5, color: '#fff', weight: 1, fillColor: '#ff7043', fillOpacity: 1, interactive: false }).addTo(dotLayer);
+    }
+  }
+  [sel.a, sel.b].filter((i) => i >= 0).forEach((i) => { const p = P(i); if (p) L.circleMarker([p.lat, p.lon], { radius: 8, color: '#000', weight: 2, fillColor: '#ffeb3b', fillOpacity: 1, interactive: false }).addTo(dotLayer); });
+  wpts.forEach((w, i) => {
+    const m = L.marker([w.lat, w.lon], { draggable: mode === 'move', icon: L.divIcon({ className: '', html: `<span class="wpt ${i === selW ? 'sel' : ''}">📍${esc(w.name)}</span>`, iconSize: [0, 0] }) });
+    m.on('click', (e) => { L.DomEvent.stop(e); onWaypointTap(i); });
+    m.on('dragstart', () => commit());
+    m.on('dragend', () => { const ll = m.getLatLng(); wpts[i].lat = ll.lat; wpts[i].lon = ll.lng; redraw(); hint('航點已移動（可復原）'); });
+    m.addTo(wptLayer);
+  });
+  renderInfo(); renderSub();
+}
+map.on('zoomend moveend', () => { if (!dragging) redraw(); });
+
+function renderInfo() {
+  const all = segs.flat(), r = selRange();
+  // per segment, so the gap between segments isn't counted as walked
+  const st = segs.map(statsOf).reduce((a, b) => ({ d: a.d + b.d, up: a.up + b.up, down: a.down + b.down }), { d: 0, up: 0, down: 0 });
+  const ts = all.map((p) => p.time).filter((t) => t != null); st.dur = ts.length > 1 ? Math.max(...ts) - Math.min(...ts) : null;
+  let html = `${all.length} 點・${segs.length} 段・${km(st.d)}・↑${Math.round(st.up)} ↓${Math.round(st.down)} m` + (st.dur ? '・' + dur(st.dur) : '') + `・航點 ${wpts.length}`;
+  if (r) {
+    const pts = []; for (let i = r[0]; i <= r[1]; i++) pts.push(P(i));
+    const p = P(r[0]);
+    if (r[0] === r[1]) html += `<br><b>選取第 ${r[0] + 1} 點</b>：海拔 ${p.ele != null ? Math.round(p.ele) + ' m' : '—'}` + (p.time != null ? '・' + fmtT(p.time) : '・無時間') + `・${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`;
+    else { const s = statsOf(pts); html += `<br><b>選取 ${r[0] + 1}～${r[1] + 1}（${pts.length} 點）</b>：${km(s.d)}・↑${Math.round(s.up)} ↓${Math.round(s.down)} m` + (s.dur ? '・' + dur(s.dur) : ''); }
+  }
+  $('info').innerHTML = html;
+}
+
+// ---------- modes ----------
+const MODES = [['select', '☝ 選取'], ['move', '✥ 移動點'], ['draw', '✏️ 手畫'], ['erase', '⌫ 刪點'], ['wpt', '📍 航點'], ['tools', '⋯ 工具']];
+const MODE_HINT = {
+  select: '點軌跡選一點，再點另一點選一段；點空白處取消',
+  move: '按住軌跡點或航點拖曳到新位置',
+  draw: '點地圖加點：接在選取點之後，沒選就接在軌跡尾端',
+  erase: '點軌跡上的點刪除它',
+  wpt: '點地圖新增航點；點航點可編輯或刪除',
+};
+function renderModes() {
+  $('modes').innerHTML = MODES.map(([id, lab]) => `<button data-m="${id}" class="${id === mode ? 'on' : ''}">${lab}</button>`).join('');
+  document.querySelectorAll('#modes button').forEach((b) => b.onclick = () => {
+    if (b.dataset.m === 'tools') { openTools(); return; }
+    mode = b.dataset.m; freehand = false; newSeg = false; setFreehand(false);
+    renderModes(); redraw(); hint(MODE_HINT[mode], 4000);
+  });
+}
+function renderSub() {
+  let h = '';
+  if (mode === 'draw') h = `<button id="sNew" class="${newSeg ? 'on' : ''}">＋ 新的一段</button><button id="sFree" class="${freehand ? 'on' : ''}">✍ 手指自由畫</button>`;
+  if (mode === 'select' && sel.a >= 0) h = `<button id="sDel">刪除選取</button><button id="sKeep">只保留選取</button><button id="sSplit">在此分割</button><button id="sClear">取消選取</button>`;
+  $('sub').innerHTML = h;
+  const on = (id, f) => { const e = $(id); if (e) e.onclick = f; };
+  on('sNew', () => { newSeg = !newSeg; sel = { a: -1, b: -1 }; renderSub(); hint(newSeg ? '下一個點會開始新的一段' : ''); });
+  on('sFree', () => { freehand = !freehand; setFreehand(freehand); renderSub(); hint(freehand ? '用一根手指在地圖上畫線（地圖暫時不能拖動，再按一次結束）' : '', 4000); });
+  on('sDel', () => deleteSel(true));
+  on('sKeep', keepSel);
+  on('sSplit', splitAtSel);
+  on('sClear', () => { sel = { a: -1, b: -1 }; redraw(); });
+}
+
+// nearest track point within tol px of a container point
+function nearest(cp, tol = 24) {
+  let best = -1, bd = tol * tol, i = 0;
+  for (const s of segs) for (const p of s) {
+    const q = map.latLngToContainerPoint([p.lat, p.lon]), d = (q.x - cp.x) ** 2 + (q.y - cp.y) ** 2;
+    if (d < bd) { bd = d; best = i; } i++;
+  }
+  return best;
+}
+
+map.on('click', (e) => {
+  if (dragging) return;
+  const i = nearest(e.containerPoint);
+  if (mode === 'select') {
+    if (i < 0) sel = { a: -1, b: -1 };
+    else if (sel.a < 0 || sel.b >= 0) sel = { a: i, b: -1 };
+    else sel.b = i;
+    redraw();
+  } else if (mode === 'erase') {
+    if (i < 0) return;
+    commit('已刪除一點'); const [k, j] = loc(i); segs[k].splice(j, 1); segs = segs.filter((s) => s.length); sel = { a: -1, b: -1 }; redraw();
+  } else if (mode === 'draw') addDrawn([e.latlng]);
+  else if (mode === 'wpt') addWaypoint(e.latlng);
+});
+
+// ---------- 手畫 ----------
+/** Adds points after the selected point, else at the end (or as a new segment); time interpolated, height from the DEM. */
+function addDrawn(lls, noCommit) {
+  if (!noCommit) commit();
+  let k, j;
+  if (newSeg || !segs.length) { segs.push([]); k = segs.length - 1; j = -1; newSeg = false; }
+  else if (sel.a >= 0 && sel.b < 0) [k, j] = loc(sel.a);
+  else { k = segs.length - 1; j = segs[k].length - 1; }
+  const added = lls.map((ll) => ({ lat: ll.lat, lon: ll.lng, ele: null, time: null }));
+  segs[k].splice(j + 1, 0, ...added);
+  fillTimes(segs[k]);
+  sel = { a: flatIdx(k, j + added.length), b: -1 };
+  redraw();
+  Promise.all(added.map((p) => demEle(p.lat, p.lon).then((e) => { if (e != null) p.ele = Math.round(e * 10) / 10; }))).then(() => renderInfo());
+}
+/** Points without time between two timed points get times spread by distance. */
+function fillTimes(s) {
+  for (let a = 0; a < s.length; a++) {
+    if (s[a].time == null) continue;
+    let b = a + 1; while (b < s.length && s[b].time == null) b++;
+    if (b >= s.length || b === a + 1) continue;
+    let tot = 0; const cum = [0];
+    for (let q = a + 1; q <= b; q++) { tot += dist(s[q - 1], s[q]); cum.push(tot); }
+    for (let q = a + 1; q < b; q++) s[q].time = Math.round(s[a].time + (s[b].time - s[a].time) * (tot ? cum[q - a] / tot : (q - a) / (b - a)));
+    a = b - 1;
+  }
+}
+
+// pointer drags: 移動點 and 手指自由畫 (capture phase, so the map doesn't pan meanwhile)
+let dragging = null;
+const box = map.getContainer();
+function cpOf(e) { const r = box.getBoundingClientRect(); return L.point(e.clientX - r.left, e.clientY - r.top); }
+box.addEventListener('pointerdown', (e) => {
+  if (!e.isPrimary) return;
+  if (mode === 'move') {
+    const i = nearest(cpOf(e), 28); if (i < 0) return;
+    e.stopPropagation(); commit(); dragging = { kind: 'pt', i }; box.setPointerCapture(e.pointerId); map.dragging.disable();
+  } else if (mode === 'draw' && freehand) {
+    e.stopPropagation(); commit(); dragging = { kind: 'free', pts: [map.containerPointToLatLng(cpOf(e))], last: cpOf(e) };
+    box.setPointerCapture(e.pointerId);
+  }
+}, true);
+box.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  e.stopPropagation();
+  const cp = cpOf(e), ll = map.containerPointToLatLng(cp);
+  if (dragging.kind === 'pt') { const p = P(dragging.i); p.lat = ll.lat; p.lon = ll.lng; sel = { a: dragging.i, b: -1 }; redraw(); }
+  else if (cp.distanceTo(dragging.last) > 10) {
+    dragging.pts.push(ll); dragging.last = cp;
+    if (dragging.line) dragging.line.setLatLngs(dragging.pts); else dragging.line = L.polyline(dragging.pts, { color: '#ffeb3b', weight: 3 }).addTo(map);
+  }
+}, true);
+function endDrag(e) {
+  if (!dragging) return;
+  e.stopPropagation();
+  const d = dragging; dragging = null;
+  if (d.kind === 'pt') { map.dragging.enable(); const p = P(d.i); demEle(p.lat, p.lon).then((v) => { if (v != null) { p.ele = Math.round(v * 10) / 10; renderInfo(); } }); hint('已移動（高度改用地形高度，可復原）'); redraw(); }
+  else { if (d.line) map.removeLayer(d.line); if (d.pts.length > 1) addDrawn(d.pts, true); else undo.pop(); }
+}
+box.addEventListener('pointerup', endDrag, true);
+box.addEventListener('pointercancel', endDrag, true);
+function setFreehand(on) { if (on) map.dragging.disable(); else map.dragging.enable(); }
+
+// ---------- 選取區段的操作 ----------
+function deleteSel(join) {
+  const r = selRange(); if (!r) return;
+  commit('已刪除選取');
+  const [ka, ja] = loc(r[0]), [kb, jb] = loc(r[1]);
+  const head = segs[ka].slice(0, ja), tail = segs[kb].slice(jb + 1);
+  const repl = join ? [head.concat(tail)] : [head, tail];
+  segs.splice(ka, kb - ka + 1, ...repl.filter((s) => s.length));
+  sel = { a: -1, b: -1 }; redraw();
+}
+function keepSel() {
+  const r = selRange(); if (!r || r[1] === r[0]) { hint('先選一段（點兩個點）'); return; }
+  commit('只保留選取區段');
+  const [ka, ja] = loc(r[0]), [kb, jb] = loc(r[1]), out = [];
+  for (let k = ka; k <= kb; k++) out.push(segs[k].slice(k === ka ? ja : 0, k === kb ? jb + 1 : undefined));
+  segs = out.filter((s) => s.length); sel = { a: -1, b: -1 }; redraw();
+}
+function splitAtSel() {
+  if (sel.a < 0) return;
+  const [k, j] = loc(sel.a); if (j === 0) { hint('這已經是一段的起點'); return; }
+  commit('已分割'); segs.splice(k, 1, segs[k].slice(0, j + 1), segs[k].slice(j + 1)); segs = segs.filter((s) => s.length);
+  sel = { a: -1, b: -1 }; redraw();
+}
+
+// ---------- 航點 ----------
+async function addWaypoint(ll) {
+  const r = await ask('新增航點', [['name', '名稱', ''], ['desc', '說明（可留空）', '']], [['ok', '新增'], ['cancel', '取消']]);
+  if (!r || r.btn !== 'ok') return;
+  commit('已新增航點');
+  const w = { lat: ll.lat, lon: ll.lng, ele: null, time: null, name: r.name || '航點', desc: r.desc, link: null };
+  wpts.push(w); redraw();
+  demEle(w.lat, w.lon).then((e) => { if (e != null) w.ele = Math.round(e * 10) / 10; });
+}
+async function onWaypointTap(i) {
+  const w = wpts[i]; selW = i; redraw();
+  const r = await ask('航點', [['name', '名稱', w.name], ['desc', '說明', w.desc]],
+    [['ok', '儲存'], ['del', '刪除'], ['cancel', '取消']], `海拔 ${w.ele != null ? Math.round(w.ele) + ' m' : '—'}` + (w.time ? '・' + fmtT(w.time) : '') + (w.link ? '・有照片' : '') + '。要移動航點：切到「移動點」再拖曳。');
+  selW = -1;
+  if (r && r.btn === 'ok') { commit('航點已更新'); w.name = r.name || '航點'; w.desc = r.desc; }
+  if (r && r.btn === 'del') { commit('已刪除航點'); wpts.splice(i, 1); }
+  redraw();
+}
+
+// ---------- 工具 ----------
+async function openTools() {
+  const has = sel.a >= 0, timed = segs.flat().some((p) => p.time != null);
+  const r = await ask('工具', [], [], null, [
+    ['reverse', '⇄ 反轉軌跡（時間反向）', true],
+    ['time', '🕒 時間修正（平移／設定起點／依速度重建）', true],
+    ['ele', '⛰ 高度修正（地形高度／平移／平滑）', true],
+    ['merge', '🔗 合併所有段落成一段', segs.length > 1],
+    ['simplify', '〰 簡化（減少點數）', true],
+    ['delJoin', '✂ 刪除選取（前後連接）', has],
+    ['delGap', '✂ 刪除選取（斷開）', has],
+    ['keep', '▣ 只保留選取區段', has && sel.b >= 0],
+    ['rename', '✎ 軌跡名稱', true],
+  ]);
+  if (!r) return;
+  ({ reverse: reverseTrack, time: timeTools, ele: eleTools, merge: () => { commit('已合併'); segs = [segs.flat()]; redraw(); },
+    simplify: simplifyTool, delJoin: () => deleteSel(true), delGap: () => deleteSel(false), keep: keepSel,
+    rename: async () => { const q = await ask('軌跡名稱', [['n', '名稱', trkName]], [['ok', '確定'], ['cancel', '取消']]); if (q && q.btn === 'ok') { commit(); trkName = q.n; } },
+  })[r.btn]();
+  void timed;
+}
+function reverseTrack() {
+  commit('已反轉（時間跟著反向）');
+  const all = segs.flat(), ts = all.map((p) => p.time).filter((t) => t != null), t0 = Math.min(...ts), t1 = Math.max(...ts);
+  segs = segs.reverse().map((s) => s.reverse());
+  // keep time running forward: each point gets t0 + (t1 − its old time), so the walk is replayed backwards
+  if (ts.length) segs.forEach((s) => s.forEach((p) => { if (p.time != null) p.time = t0 + (t1 - p.time); }));
+  sel = { a: -1, b: -1 }; redraw();
+}
+async function timeTools() {
+  const all = segs.flat(), first = all.find((p) => p.time != null);
+  const pad = (n) => String(n).padStart(2, '0');
+  const local = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const r = await ask('時間修正', [['shift', '平移（小時，可負數、小數，例：-5.75）', '0'], ['start', '或：起點時間設為', first ? local(first.time) : local(Date.now())],
+    ['speed', '依平均速度重建所有時間（km/h，從上面的起點時間開始；留空不用）', '']],
+  [['shift', '套用平移'], ['start', '套用起點時間'], ['speed', '依速度重建'], ['cancel', '取消']],
+  first ? `目前起點 ${fmtT(first.time)}` : '這條軌跡沒有時間資料，可用「依速度重建」產生。', null, { start: 'datetime-local' });
+  if (!r || r.btn === 'cancel') return;
+  if (r.btn === 'shift') {
+    const h = parseFloat(r.shift); if (!h) return; commit(`時間已平移 ${h} 小時`);
+    all.forEach((p) => { if (p.time != null) p.time += h * 3600000; });
+  } else if (r.btn === 'start') {
+    const t = Date.parse(r.start); if (isNaN(t) || !first) { hint('沒有時間可平移，請用依速度重建'); return; }
+    commit('起點時間已更新'); const dt = t - first.time; all.forEach((p) => { if (p.time != null) p.time += dt; });
+  } else if (r.btn === 'speed') {
+    const v = parseFloat(r.speed), t = Date.parse(r.start); if (!(v > 0) || isNaN(t)) { hint('請填速度與起點時間'); return; }
+    commit('已依速度重建時間'); let tt = t, prev = null;
+    for (const s of segs) for (const p of s) { if (prev) tt += dist(prev, p) / (v / 3.6) * 1000; p.time = Math.round(tt); prev = p; }
+  }
+  redraw();
+}
+async function eleTools() {
+  const r = await ask('高度修正', [['off', '整體平移（公尺，可負數）', '0']],
+    [['dem', '全部改用地形高度'], ['demSel', '選取區段改用地形高度'], ['off', '套用平移'], ['smooth', '平滑（去除跳動）'], ['cancel', '取消']],
+    '地形高度來自 AWS Terrain Tiles（約 30 m 解析度），適合修正 GPS 高度亂跳。');
+  if (!r || r.btn === 'cancel') return;
+  const all = segs.flat();
+  if (r.btn === 'off') { const o = parseFloat(r.off); if (!o) return; commit(`高度已平移 ${o} m`); all.forEach((p) => { if (p.ele != null) p.ele += o; }); }
+  else if (r.btn === 'smooth') {
+    commit('高度已平滑');
+    segs.forEach((s) => { const e = s.map((p) => p.ele); s.forEach((p, i) => { const w = e.slice(Math.max(0, i - 3), i + 4).filter((x) => x != null); if (p.ele != null && w.length) p.ele = Math.round(w.reduce((a, b) => a + b, 0) / w.length * 10) / 10; }); });
+  } else {
+    const rr = r.btn === 'demSel' ? selRange() : [0, all.length - 1]; if (!rr) { hint('先選一段'); return; }
+    commit(); hint('讀取地形高度中…', 0);
+    const pts = all.slice(rr[0], rr[1] + 1); let ok = 0;
+    await Promise.all(pts.map((p) => demEle(p.lat, p.lon).then((e) => { if (e != null) { p.ele = Math.round(e * 10) / 10; ok++; } })));
+    hint(ok ? `已改用地形高度：${ok} 點（可復原）` : '讀不到地形高度（需要網路）');
+  }
+  redraw();
+}
+async function simplifyTool() {
+  const r = await ask('簡化軌跡', [['tol', '容許偏差（公尺）', '5']], [['ok', '簡化'], ['cancel', '取消']], '刪掉幾乎在直線上的點（Douglas–Peucker），形狀、起訖不變。');
+  if (!r || r.btn !== 'ok') return;
+  const tol = parseFloat(r.tol) || 5, before = total();
+  commit();
+  const xy = (p, o) => [(p.lon - o.lon) * 111320 * Math.cos(o.lat * Math.PI / 180), (p.lat - o.lat) * 110540];
+  function dp(s) {
+    if (s.length < 3) return s;
+    const keep = new Uint8Array(s.length); keep[0] = keep[s.length - 1] = 1; const st = [[0, s.length - 1]];
+    while (st.length) {
+      const [a, b] = st.pop(), A = xy(s[a], s[a]), B = xy(s[b], s[a]); let md = 0, mi = -1;
+      for (let i = a + 1; i < b; i++) {
+        const Q = xy(s[i], s[a]), dx = B[0] - A[0], dy = B[1] - A[1], L2 = dx * dx + dy * dy;
+        const t = L2 ? Math.max(0, Math.min(1, (Q[0] * dx + Q[1] * dy) / L2)) : 0, d = Math.hypot(Q[0] - t * dx, Q[1] - t * dy);
+        if (d > md) { md = d; mi = i; }
+      }
+      if (md > tol) { keep[mi] = 1; st.push([a, mi], [mi, b]); }
+    }
+    return s.filter((_, i) => keep[i]);
+  }
+  segs = segs.map(dp); sel = { a: -1, b: -1 }; redraw();
+  hint(`${before} → ${total()} 點（可復原）`);
+}
+
+// ---------- modal ----------
+let modalDone = null;
+/** fields: [[key, label, value]]; buttons: [[id, label]]; list: [[id, label, enabled]] (a menu); resolves {btn, ...values} or null. */
+function ask(title, fields, buttons, note, list, types = {}) {
+  return new Promise((res) => {
+    modalDone = res;
+    $('modalBox').innerHTML = `<h2>${title}</h2>` + (note ? `<p>${note}</p>` : '') +
+      fields.map(([k, lab, v]) => `<label>${lab}</label><input data-k="${k}" type="${types[k] || 'text'}" value="${esc(v ?? '')}">`).join('') +
+      (list ? '<div class="list">' + list.map(([id, lab, en]) => `<button data-b="${id}" ${en ? '' : 'disabled'}>${lab}</button>`).join('') + '</div>' : '') +
+      `<div class="btns">` + buttons.map(([id, lab]) => `<button data-b="${id}" class="${id === 'del' ? 'warn' : ''}">${lab}</button>`).join('') + (list ? '<button data-b="cancel">關閉</button>' : '') + '</div>';
+    $('modal').classList.add('open');
+    document.querySelectorAll('#modalBox button').forEach((b) => b.onclick = () => {
+      const out = { btn: b.dataset.b }; document.querySelectorAll('#modalBox input').forEach((i) => (out[i.dataset.k] = i.value));
+      closeModal(out.btn === 'cancel' ? null : out);
+    });
+  });
+}
+function closeModal(v) { $('modal').classList.remove('open'); const f = modalDone; modalDone = null; if (f) f(v); }
+$('modal').onclick = (e) => { if (e.target === $('modal')) closeModal(null); };
+
+// ---------- save / back ----------
+$('btnSave').onclick = async () => {
+  const r = await ask('儲存', [], [['copy', '另存新檔'], ['over', '覆蓋原檔'], ['cancel', '取消']], '「覆蓋原檔」第一次會把原始檔備份成 .orig；「另存新檔」原檔不動，新檔名加上（編輯）。');
+  if (!r) return;
+  if (!bridge) { console.log(toGpx()); hint('（瀏覽器測試：GPX 已輸出到 console）'); dirty = false; return; }
+  const path = bridge.save(toGpx(), r.btn === 'copy');
+  if (path) { dirty = false; hint('已儲存：' + path.split('/').pop(), 4000); } else hint('儲存失敗', 4000);
+};
+async function goBack() {
+  if (modalDone) { closeModal(null); return; }
+  if (dirty) {
+    const r = await ask('還沒儲存', [], [['leave', '不儲存，離開'], ['cancel', '繼續編輯']], '剛才的修改還沒儲存。');
+    if (!r || r.btn !== 'leave') return;
+  }
+  if (bridge) bridge.close(); else history.back();
+}
+$('btnBack').onclick = goBack;
+window.onAndroidBack = goBack;
+
+// ---------- boot ----------
+const text = bridge ? bridge.getGpx() : (window.TEST_GPX || '');
+parseGpx(text);
+$('title').textContent = (bridge && bridge.getTitle()) || trkName || 'GPX 編輯';
+const ll = segs.flat().map((p) => [p.lat, p.lon]).concat(wpts.map((w) => [w.lat, w.lon]));
+if (ll.length) map.fitBounds(ll, { padding: [30, 30] }); else map.setView([23.47, 120.95], 12);
+renderModes(); redraw(); hint(MODE_HINT.select, 4000);
+</script>
+</body>
+</html>

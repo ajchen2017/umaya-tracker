@@ -59,6 +59,12 @@
             android:screenOrientation="portrait" />
 
         <activity
+            android:name=".ui.GpxEditorActivity"
+            android:exported="false"
+            android:label="GPX 編輯"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
+
+        <activity
             android:name=".ui.RecordsActivity"
             android:exported="false"
             android:label="記錄管理" />
